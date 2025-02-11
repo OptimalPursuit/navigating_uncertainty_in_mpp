@@ -1,0 +1,142 @@
+algorithm:
+  adaptive_feasibility_lambda: false
+  clip_range: 0.2
+  demand_lambda: 1.0
+  entropy_lambda: 0.010071090711145904
+  feasibility_lambda: 0.01
+  gae_lambda: 0.95
+  gamma: 0.99
+  kl_penalty_lambda: None
+  kl_threshold: None
+  lagrangian_multiplier_0: 1.0
+  lagrangian_multiplier_1: 1.0
+  lagrangian_multiplier_10: 1.0
+  lagrangian_multiplier_11: 1.0
+  lagrangian_multiplier_12: 1.0
+  lagrangian_multiplier_13: 1.0
+  lagrangian_multiplier_14: 1.0
+  lagrangian_multiplier_15: 1.0
+  lagrangian_multiplier_16: 1.0
+  lagrangian_multiplier_17: 1.0
+  lagrangian_multiplier_18: 1.0
+  lagrangian_multiplier_19: 1.0
+  lagrangian_multiplier_2: 1.0
+  lagrangian_multiplier_20: 1.0
+  lagrangian_multiplier_21: 1.0
+  lagrangian_multiplier_22: 1.0
+  lagrangian_multiplier_23: 1.0
+  lagrangian_multiplier_24: 1.0
+  lagrangian_multiplier_3: 1.0
+  lagrangian_multiplier_4: 1.0
+  lagrangian_multiplier_5: 1.0
+  lagrangian_multiplier_6: 1.0
+  lagrangian_multiplier_7: 1.0
+  lagrangian_multiplier_8: 1.0
+  lagrangian_multiplier_9: 1.0
+  max_grad_norm: 0.5
+  mini_batch_size: 0.25
+  normalize_adv: false
+  normalize_return: false
+  ppo_epochs: 5
+  projection_lambda: 0.01
+  stability_lambda: 1.0
+  tau: 0.005
+  type: sac
+  vf_lambda: 0.5
+alpha:
+  value: 0.05
+batch_size:
+  value: 64
+dropout_rate:
+  value: 0.008972135903337364
+entropy_lambda:
+  value: 0.010071090711145904
+env:
+  CI_target: 1.25
+  LCG_target: 0.95
+  TEU: 1000
+  VCG_target: 1.05
+  bays: 10
+  capacity:
+  - 50
+  cargo_classes: 6
+  customer_classes: 2
+  cv_demand: 0.5
+  decks: 2
+  demand_uncertainty: true
+  episode_order: standard
+  generalization: false
+  hatch_overstowage_costs: 0.333333
+  hatch_overstowage_mask: false
+  iid_demand: true
+  long_crane_costs: 0.5
+  normalize_obs: true
+  ports: 4
+  seed: 42
+  spot_percentage: 0.3
+  stability_difference: 0.1
+  utilization_rate_initial_demand: 1.1
+  weight_classes: 3
+feasibility_lambda:
+  value: 0.6773126513364854
+hidden_dim:
+  value: 128
+lr:
+  value: 0.00020407622212291503
+mini_batch_size:
+  value: 0.25
+model:
+  batch_size: 64
+  critic_temperature: 1.0
+  decoder_type: attention
+  demand_aggregation: full
+  dropout_rate: 0.008972135903337364
+  embed_dim: 128
+  encoder_type: attention
+  hidden_dim: 128
+  init_dim: 8
+  logger: wandb
+  lr_end_factor: 0.5
+  normalization: layer
+  num_decoder_layers: 3
+  num_encoder_layers: 3
+  num_heads: 8
+  out_bias_pointer_attn: false
+  phase: train
+  scale_max: 1.931286785557626
+  tanh_clipping: 0
+  tanh_squashing: false
+  temperature: 1.0
+  test_decode_type: continuous_projection
+  train_decode_type: continuous_sampling
+  val_decode_type: continuous_projection
+num_decoder_layers:
+  value: 3
+num_encoder_layers:
+  value: 3
+num_heads:
+  value: 8
+ppo_epochs:
+  value: 5
+scale_max:
+  value: 1.931286785557626
+testing:
+  num_episodes: 30
+  timestamp: '20250123_171145'
+training:
+  lr: 0.00020407622212291503
+  optimizer: Adam
+  projection_kwargs:
+    alpha: 0.05
+    delta: 0.05
+    max_iter: 100
+    n_action: 20
+    n_constraints: 25
+    project_per_port: false
+  projection_type: weighted_scaling_policy_clipping
+  test_data_size: 5000
+  train_data_size: 72000000
+  val_data_size: 5000
+  validation_freq: 0.1
+  validation_patience: 2
+wandb_version: 1

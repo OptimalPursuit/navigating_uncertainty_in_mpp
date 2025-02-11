@@ -1,0 +1,10 @@
+/checkpoints/
+/output_files/
+/wandb/
+/lightning_logs/
+/__pycache__/
+/environment/__pycache__/
+/models/__pycache__/
+/.idea/
+/EDA/
+/not_on_git/
