@@ -1,7 +1,7 @@
-# [Navigating Demand Uncertainty in Container Shipping: Deep Reinforcement Learning for Enabling Adaptive and Feasible Master Stowage Planning]
+# Navigating Demand Uncertainty in Container Shipping: Deep Reinforcement Learning for Enabling Adaptive and Feasible Master Stowage Planning
 
 ## Overview
-This repository contains supplementary code for our double-blind submission to [IJCAI 2025].
+This repository contains supplementary code for our double-blind submission to IJCAI 2025.
 
 ## Submission Guidelines
 To ensure compliance with double-blind review requirements, we have taken the following measures:
