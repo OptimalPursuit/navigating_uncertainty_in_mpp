@@ -148,11 +148,11 @@ class AttentionDecoderWithCache(nn.Module):
         if self.scale_max is not None:
             std = std.clamp(max=self.scale_max)
 
-        # Apply the mask to the mean and std
+        # Apply the action mask to the mean and std logits
         mask = td.get("action_mask", None)
         if mask is not None:
             mean = torch.where(mask, mean.squeeze(), 1e-6)
-            std = torch.where(mask, std.squeeze(), 1.0)
+            std = torch.where(mask, std.squeeze(), 1e-6)
         return mean.squeeze(), std.squeeze()
 
     def pre_decoder_hook(self, td: TensorDict, env, embeddings: Tensor, num_starts: int = 0) -> Tuple[TensorDict, TensorDict, PrecomputedCache]:
