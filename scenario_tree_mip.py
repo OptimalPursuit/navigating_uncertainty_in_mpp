@@ -10,7 +10,7 @@ import sys
 import os
 import json
 import argparse
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 
 path = 'add path to cplex here'
 sys.path.append(path)
@@ -18,7 +18,7 @@ sys.path.append(path)
 # Module imports
 path_to_main = os.path.abspath(os.path.join(os.path.dirname(__file__), ''))
 sys.path.append(path_to_main)
-from main import adapt_env_kwargs, make_env
+from main import *
 from environment.utils import get_pol_pod_pair
 from rl_algorithms.utils import set_unique_seed
 
@@ -116,7 +116,7 @@ def onboard_groups(ports:int, pol:int, transport_indices:list) -> np.array:
 
 # Main function
 def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=3, max_paths:int=784, seed:int=42,
-         perfect_information:bool=False, deterministic:bool=False, warm_solution:bool=False,) -> Tuple[Dict, Dict]:
+         perfect_information:bool=False, deterministic:bool=False, algorithm:str='multi_stage', warm_solution:bool=False,) -> Tuple[Dict, Dict]:
     # Scenario tree parameters
     M = 10 ** 3 # Big M
     num_nodes_per_stage = [1*scenarios_per_stage**stage for stage in range(stages)]
@@ -330,10 +330,11 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             start_dict = _get_warm_start_dict(warm_solution)
             mdl.add_mip_start({x[key]: value for key, value in start_dict.items()}, write_level=1)
 
-    def build_tree_block_mpp(stages:int, demand:np.array, warm_solution:Optional[Dict]=None) -> None:
+    def build_tree_block_mpp(stages:int, demand:np.array, warm_solution:Optional[Dict]=None, start_stage:int=0) -> None:
         """Function to build the scenario tree; with decisions and constraints for each node"""
-        for stage in range(stages):
-            for node_id in range(num_nodes_per_stage[stage]):
+        for stage in range(start_stage, start_stage+stages):
+            scenarios = num_nodes_per_stage[:2][stage-start_stage] if stochastic_algorithm == 'rolling_horizon' else num_nodes_per_stage[stage]
+            for node_id in range(scenarios):
                 # Crane intensity:
                 CI[stage, node_id] = mdl.continuous_var(name=f'CI_{stage}_{node_id}', lb=0)
                 CI_target[stage, node_id] = mdl.continuous_var(name=f'CI_target_{stage}_{node_id}', lb=0)
@@ -375,7 +376,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             all_load_moves.append(load_moves)
 
             # constraints for the current stage and node
-            for node_id in range(num_nodes_per_stage[stage]):
+            for node_id in range(scenarios):
                 print(f"Stage {stage}, Node {node_id}")
                 for (i, j) in on_board:
                     for k in range(K):
@@ -395,7 +396,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 <= capacity[b, d, bl]
                             )
 
-                            if not perfect_information:
+                            if not perfect_information and stochastic_algorithm != 'rolling_horizon':
                                 demand_history1 = get_demand_history(stage, demand, num_nodes_per_stage)
                                 for node_id2 in range(node_id + 1, num_nodes_per_stage[stage]):
                                     demand_history2 = get_demand_history(stage, demand, num_nodes_per_stage)
@@ -406,6 +407,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                                 mdl.add_constraint(
                                                     x[stage, node_id, b, d, bl, k, i, j] == x[stage, node_id2, b, d, bl, k, i, j]
                                                 )
+                            # todo: check if rolling horizon update of utilization works
 
                         # Open hatch (d=1 is below deck)
                         mdl.add_constraint(
@@ -514,75 +516,302 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             start_dict = _get_warm_start_dict(warm_solution)
             mdl.add_mip_start({x[key]: value for key, value in start_dict.items()}, write_level=1)
 
-    # Build the scenario tree
-    if config.env.env_name == "mpp":
-        build_tree_mpp(stages, demand, warm_solution)
-    elif config.env.env_name == "block_mpp":
-        build_tree_block_mpp(stages, demand, warm_solution)
+    def build_rolling_block_mpp(stages: int,
+                                demand: np.array,
+                                warm_solution: Optional[Dict] = None) -> Dict:
+        """
+        Rolling horizon wrapper around build_tree_block_mpp.
+        At each stage t:
+            - Build a 2-stage problem (current + next port scenarios)
+            - Solve and apply stage-0 decisions
+            - Move forward
+        """
+        rolling_horizon_x = {}
+        rolling_horizon_HO = {}
+        rolling_horizon_CM = {}
 
-    # Define the objective function
+
+        # TODO: PERFORMANCE HIGHER THAN PI! Check why
+        for t in range(stages):
+            print(f"\n--- Rolling horizon solve at stage {t} ---")
+            mdl.clear()
+            if t < stages - 1:
+                # Rolling horizon → 2-stage problem (current + next port scenarios)
+                two_stage_demand = {(t, 0): demand[(t, 0)]}
+                for s in range(scenarios_per_stage):
+                    two_stage_demand[(t + 1, s)] = demand[(t + 1, s)]
+
+                build_tree_block_mpp(stages=2,
+                                     demand=two_stage_demand,
+                                     warm_solution=warm_solution,
+                                     start_stage=t)
+            else:
+                # Last port → deterministic one-stage
+                last_stage_demand = {(t, 0): demand[(t, 0)]}
+                build_tree_block_mpp(stages=1,
+                                     demand=last_stage_demand,
+                                     warm_solution=warm_solution,
+                                     start_stage=t)
+            objective = objective_function(x, HO, CM, revenues_, start_stage=t)
+            sol = solve_model(mdl, objective)
+
+            if sol is None:
+                raise RuntimeError(f"No solution found at stage {t}")
+
+            # Extract current stage decisions
+            rolling_horizon_CM[t, 0] = CM[(t, 0)].solution_value
+            for b in range(B):
+                for bl in range(BL):
+                    rolling_horizon_HO[t, 0, b, bl] = HO[(t, 0, b, bl)].solution_value
+                    for d in range(D):
+                        for k in range(K):
+                            for j in range(t + 1, P):
+                                rolling_horizon_x[t, 0, b, d, bl, k, t, j] = x[(t, 0, b, d, bl, k, t, j)].solution_value
+
+        # todo: get all current stage decisions together in an objective
+        # Compute objective over all current stage decisions
+        objective = objective_function(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_,)
+        print(f"Rolling horizon objective: {objective}")
+        return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective}
+
+    def progressive_hedging_block_mpp(
+            stages: int,
+            demand: np.ndarray,  # shape [stages, max_nodes_per_stage, K, P] or similar
+            scenario_indices: list,  # subset of scenarios to use
+            rho: float = 1.0,
+            max_iter: int = 10,
+            tol: float = 1e-3,
+            warm_solution: Optional[Dict] = None
+    ):
+        """
+        Progressive Hedging for block MPP using demand indexed by stage,node_id.
+        """
+        # Initialize consensus and duals for first-stage variables
+        consensus = {}
+        duals = {}
+
+        # First-stage keys
+        for node_id in range(num_nodes_per_stage[0]):
+            for b in range(B):
+                for d in range(D):
+                    for bl in range(BL):
+                        for k in range(K):
+                            for i in range(0, 1):  # stage 0 only
+                                for j in range(P):
+                                    key = (0, node_id, b, d, bl, k, i, j)
+                                    consensus[key] = 0.0
+                                    duals[key] = 0.0
+
+        # PH iterations
+        for ph_iter in range(max_iter):
+            scenario_solutions = {}
+
+            for s in scenario_indices:
+                # Extract scenario-specific demand tree
+                # todo: check whether we get proper subproblem for PH
+                demand_s = demand[:, s]
+
+                # Build scenario tree
+                build_tree_block_mpp(stages, demand_s, warm_solution)
+
+                # Add PH penalties for first-stage variables
+                # todo: check x_vars definition
+                for key, var in x_vars.items():
+                    if key[0] == 0:
+                        penalty_expr = rho * (var - consensus[key]) ** 2 + duals[key] * (var - consensus[key])
+                        mdl.minimize(mdl.objective + penalty_expr)
+
+                # Solve scenario
+                mdl.solve()
+
+                # Store first-stage solution
+                scenario_solutions[s] = {key: x_vars[key].solution_value for key in x_vars if key[0] == 0}
+
+            # Update consensus
+            for key in consensus:
+                consensus[key] = sum(scenario_solutions[s][key] for s in scenario_indices) / len(scenario_indices)
+
+            # Update duals
+            for key in duals:
+                duals[key] += rho * sum(scenario_solutions[s][key] - consensus[key] for s in scenario_indices) / len(
+                    scenario_indices)
+
+            # Convergence check
+            max_dev = max(abs(scenario_solutions[s][key] - consensus[key])
+                          for s in scenario_indices for key in consensus)
+            # todo: log objective value
+            print(f"PH Iter {ph_iter}: Max deviation = {max_dev}")
+            if max_dev < tol:
+                break
+
+        return consensus, duals
+
+
+    def objective_function(x:Any, HO:Any, CM:Any, revenues:Any, start_stage:int=None) -> Any:
+        """Define the objective function"""
+
+        # Objective: Maximize the total expected revenue over all scenarios
+        probabilities = {}
+        if stochastic_algorithm == "multi_stage":
+            for (stage, node_id) in node_list:
+                probabilities[stage, node_id] = 1 / num_nodes_per_stage[stage]
+
+            if config.env.env_name == "mpp":
+                objective = mdl.sum(
+                    probabilities[stage, node_id] * (
+                            mdl.sum(
+                                revenues[stage, k, j] * x[stage, node_id, b, d, k, stage, j]
+                                for j in range(stage + 1, P)  # Loop over discharge ports
+                                for b in range(B)  # Loop over bays
+                                for d in range(D)  # Loop over decks
+                                for k in range(K)  # Loop over cargo classes
+                            )
+                            - mdl.sum(env.ho_costs * HO[stage, node_id, b] for b in range(B))
+                            - env.cm_costs * CM[stage, node_id]
+                    )
+                    for stage in range(stages)  # Iterate over all stages
+                    for node_id in range(num_nodes_per_stage[stage])  # Iterate over nodes at each stage
+                )
+            elif config.env.env_name == "block_mpp":
+                objective = mdl.sum(
+                    probabilities[stage, node_id] * (
+                            mdl.sum(
+                                revenues[stage, k, j] * x[stage, node_id, b, d, bl, k, stage, j]
+                                for j in range(stage + 1, P)  # Loop over discharge ports
+                                for b in range(B)  # Loop over bays
+                                for d in range(D)  # Loop over decks
+                                for k in range(K)  # Loop over cargo classes
+                                for bl in range(BL)  # Loop over blocks
+                            )
+                            - mdl.sum(env.ho_costs * HO[stage, node_id, b, bl] for b in range(B) for bl in range(BL))
+                            - env.cm_costs * CM[stage, node_id]
+                    )
+                    for stage in range(stages)  # Iterate over all stages
+                    for node_id in range(num_nodes_per_stage[stage])  # Iterate over nodes at each stage
+                )
+            else:
+                raise ValueError("Invalid environment name")
+
+        elif stochastic_algorithm == "rolling_horizon":
+            # todo: change conditionals here; we need rh for full objective
+            print("Rolling horizon combined objective function")
+            if start_stage is None:
+                objective = mdl.sum(
+                    (
+                            mdl.sum(
+                                revenues[stage, k, j] * x[stage, 0, b, d, bl, k, stage, j]
+                                for j in range(stage + 1, P)  # Loop over discharge ports
+                                for b in range(B)  # Loop over bays
+                                for d in range(D)  # Loop over decks
+                                for k in range(K)  # Loop over cargo classes
+                                for bl in range(BL)  # Loop over blocks
+                            )
+                            - mdl.sum(env.ho_costs * HO[stage, 0, b, bl] for b in range(B) for bl in range(BL))
+                            - env.cm_costs * CM[stage, 0]
+                    )
+                    for stage in range(stages)  # Iterate over all stages
+                    )
+
+            elif start_stage is not None:
+                # Probabilities for two stages
+                scenarios_per_stage = num_nodes_per_stage[:2]
+                for stage in range(start_stage, start_stage+2):
+                    for node_id in range(scenarios_per_stage[stage-start_stage]):
+                        probabilities[stage, node_id] = 1 / scenarios_per_stage[stage-start_stage]
+
+                # todo: implement last step as deterministic (consider in probabilities, stages, scenarios_per_stage)
+                # Objective
+                if start_stage < stages - 1:
+                    print(f"Rolling horizon objective at stage {start_stage} over 2 stages")
+                    objective = mdl.sum(
+                        probabilities[stage, node_id] * (
+                                mdl.sum(
+                                    revenues_[stage, k, j] * x[stage, node_id, b, d, bl, k, stage, j]
+                                    for j in range(stage + 1, P)  # Loop over discharge ports
+                                    for b in range(B)  # Loop over bays
+                                    for d in range(D)  # Loop over decks
+                                    for k in range(K)  # Loop over cargo classes
+                                    for bl in range(BL)  # Loop over blocks
+                                )
+                                - mdl.sum(env.ho_costs * HO[stage, node_id, b, bl] for b in range(B) for bl in range(BL))
+                                - env.cm_costs * CM[stage, node_id]
+                        )
+                        for stage in range(start_stage, start_stage+2)  # Iterate over all stages
+                        for node_id in range(scenarios_per_stage[stage-start_stage])  # Iterate over nodes at each stage
+                    )
+                else:
+                    print(f"Rolling horizon objective at last stage {start_stage} (deterministic)")
+                    objective = mdl.sum(
+                        probabilities[start_stage, node_id] * (
+                                mdl.sum(
+                                    revenues_[start_stage, k, j] * x[start_stage, node_id, b, d, bl, k, start_stage, j]
+                                    for j in range(start_stage + 1, P)  # Loop over discharge ports
+                                    for b in range(B)  # Loop over bays
+                                    for d in range(D)  # Loop over decks
+                                    for k in range(K)  # Loop over cargo classes
+                                    for bl in range(BL)  # Loop over blocks
+                                )
+                                - mdl.sum(env.ho_costs * HO[start_stage, node_id, b, bl] for b in range(B) for bl in range(BL))
+                                - env.cm_costs * CM[start_stage, node_id]
+                        )
+                        for node_id in range(scenarios_per_stage[0])  # Iterate over nodes at the last stage
+                    )
+
+
+        elif stochastic_algorithm == "progressive_hedging":
+            raise NotImplementedError("Objective function for progressive hedging not implemented yet")
+
+
+        return objective
+
+    def solve_model(mdl:Model, objective:Any) -> Any:
+        mdl.maximize(objective)
+        mdl.context.cplex_parameters.read.datacheck = 2
+        mdl.parameters.mip.strategy.file = 3
+        mdl.parameters.emphasis.memory = 1  # Prioritize memory savings over speed
+        mdl.parameters.threads = 1  # Use only 1 thread to reduce memory usage
+        mdl.parameters.mip.tolerances.mipgap = 0.001  # 0.1%
+        mdl.set_time_limit(3600)  # 1 hour
+        solution = mdl.solve(log_output=True)
+        return solution
+
     # Reshape revenues to match the shape of x
-    revenues_ = np.zeros((stages, K, P, ))
+    revenues_ = np.zeros((stages, K, P,))
     for stage in range(stages):
         for pod in range(stage + 1, P):
             for cargo_class in range(K):
                 t = cargo_class + transport_indices.index((stage, pod)) * K
                 revenues_[stage, cargo_class, pod,] = revenues[t]
 
-    # Objective: Maximize the total expected revenue over all scenarios
-    probabilities = {}
-    for (stage, node_id) in node_list:
-        probabilities[stage, node_id] = 1 / num_nodes_per_stage[stage]
-
+    # Build the scenario tree
     if config.env.env_name == "mpp":
-        objective = mdl.sum(
-            probabilities[stage, node_id] * (
-                mdl.sum(
-                    revenues_[stage, k, j] * x[stage, node_id, b, d, k, stage, j]
-                    for j in range(stage + 1, P) # Loop over discharge ports
-                    for b in range(B)  # Loop over bays
-                    for d in range(D)  # Loop over decks
-                    for k in range(K)  # Loop over cargo classes
-                )
-                - mdl.sum(env.ho_costs * HO[stage, node_id, b] for b in range(B))
-                - env.cm_costs * CM[stage, node_id]
-            )
-            for stage in range(stages)  # Iterate over all stages
-            for node_id in range(num_nodes_per_stage[stage])  # Iterate over nodes at each stage
-        )
+        build_tree_mpp(stages, demand, warm_solution)
+        objective = objective_function(x, HO, CM, revenues_)
+        solution = solve_model(mdl, objective)
     elif config.env.env_name == "block_mpp":
-        objective = mdl.sum(
-            probabilities[stage, node_id] * (
-                mdl.sum(
-                    revenues_[stage, k, j] * x[stage, node_id, b, d, bl, k, stage, j]
-                    for j in range(stage + 1, P) # Loop over discharge ports
-                    for b in range(B)  # Loop over bays
-                    for d in range(D)  # Loop over decks
-                    for k in range(K)  # Loop over cargo classes
-                    for bl in range(BL)  # Loop over blocks
-                )
-                - mdl.sum(env.ho_costs * HO[stage, node_id, b, bl] for b in range(B) for bl in range(BL))
-                - env.cm_costs * CM[stage, node_id]
-            )
-            for stage in range(stages)  # Iterate over all stages
-            for node_id in range(num_nodes_per_stage[stage])  # Iterate over nodes at each stage
-        )
+        if stochastic_algorithm == "multi_stage":
+            build_tree_block_mpp(stages, demand, warm_solution)
+            objective = objective_function(x, HO, CM, revenues_)
+            solution = solve_model(mdl, objective)
+        elif stochastic_algorithm == "rolling_horizon":
+            solution = build_rolling_block_mpp(stages, demand, warm_solution)
+        elif stochastic_algorithm == "progressive_hedging":
+            pass
+            # solution = progressive_hedging_block_mpp(stages, demand, scenario_indices, rho=1.0, max_iter=10, tol=1e-3, warm_solution=warm_solution)
+        else:
+            raise ValueError("Invalid stochastic algorithm")
     else:
         raise ValueError("Invalid environment name")
-    mdl.maximize(objective)
-    mdl.context.cplex_parameters.read.datacheck = 2
-    mdl.parameters.mip.strategy.file = 3
-    mdl.parameters.emphasis.memory = 1  # Prioritize memory savings over speed
-    mdl.parameters.threads = 1  # Use only 1 thread to reduce memory usage
-    mdl.parameters.mip.tolerances.mipgap = 0.001  # 0.1%
-    mdl.set_time_limit(3600)  # 1 hour
-
-    # Solve the model
-    solution = mdl.solve(log_output=True)
 
     # Print the solution # todo: fix this properly for mpp and block_mpp; now set to block_mpp
     if solution:
-        print(f"Objective value: {solution.objective_value}")
+        if "objective_value" in solution:
+            obj = solution["objective_value"]
+            print(f"Objective value (rolling horizon): {solution['objective_value']}")
+        else:
+            obj = solution.objective_value
+            print(f"Objective value: {solution.objective_value}")
+        breakpoint()
 
         # Analyze the solution
         x_ = np.zeros((stages, max_paths, B, D, BL, K, P, P))
@@ -593,22 +822,29 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         HM_ = np.zeros((stages, max_paths, B, BL,))
         CI_ = np.zeros((stages, max_paths,))
         CI_target_ = np.zeros((stages, max_paths,))
+        CM_ = np.zeros((stages, max_paths,))
         LM_ = np.zeros((stages, max_paths,))
         VM_ = np.zeros((stages, max_paths,))
         TW_ = np.zeros((stages, max_paths,))
         demand_ = np.zeros((stages, max_paths, K, P))
         revenue_ = np.zeros((stages,max_paths))
         cost_ = np.zeros((stages,max_paths))
+
+        # scenarios
+        scenarios = num_nodes_per_stage if stochastic_algorithm == 'multi_stage' else [1] * stages
         for stage in range(stages):
-            for node_id in range(num_nodes_per_stage[stage]):
+            for node_id in range(scenarios[stage]):
                 for bay in range(B):
                     for block in range(BL):
                         for deck in range(D):
                             for cargo_class in range(K):
                                 for pol in range(stage + 1):
                                     for pod in range(pol + 1, P):
-                                        x_[stage, node_id, bay, deck, block, cargo_class, pol, pod] = x[stage, node_id, bay, deck, block, cargo_class, pol, pod].solution_value
-                                        revenue_[stage, node_id,] += revenues_[stage, cargo_class, pod] * x[stage, node_id, bay, deck, block, cargo_class, pol, pod].solution_value
+                                        if stochastic_algorithm == "rolling_horizon":
+                                            x_[stage, node_id, bay, deck, block, cargo_class, pol, pod] = solution["x"].get((stage, node_id, bay, deck, block, cargo_class, pol, pod), 0)
+                                        else:
+                                            x_[stage, node_id, bay, deck, block, cargo_class, pol, pod] = x[stage, node_id, bay, deck, block, cargo_class, pol, pod].solution_value
+                                        revenue_[stage, node_id,] += revenues_[stage, cargo_class, pod] * x_[stage, node_id, bay, deck, block, cargo_class, pol, pod]
                                         demand_[stage, node_id, cargo_class, pod] = demand[stage, node_id][cargo_class, pod]
 
                         for pod in range(stage + 1, P):
@@ -617,16 +853,26 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                ob_demand[stage, node_id, k, pod] = demand[stage, node_id][k, pod]
                         mixing_[stage, node_id, bay, block,] = mixing[stage, node_id, bay, block,].solution_value
 
-                        HO_[stage, node_id, bay, block,] = HO[stage, node_id, bay, block,].solution_value
-                        HM_[stage, node_id, bay, block,] = HM[stage, node_id, bay, block,].solution_value
-                        cost_[stage,node_id,] += env.ho_costs * HO[stage, node_id, bay, block].solution_value
+                        if stochastic_algorithm == "rolling_horizon":
+                            HO_[stage, node_id, bay, block,] = solution["HO"].get((stage, node_id, bay, block), 0)
+                            HM_[stage, node_id, bay, block,] = 1 if HO_[stage, node_id, bay, block,] > 0 else 0
+                        else:
+                            HO_[stage, node_id, bay, block,] = HO[stage, node_id, bay, block,].solution_value
+                            HM_[stage, node_id, bay, block,] = HM[stage, node_id, bay, block,].solution_value
+                        cost_[stage, node_id,] += env.ho_costs * HO_[stage, node_id, bay, block]
 
-                CI_[stage, node_id] = CI[stage, node_id].solution_value
-                CI_target_[stage, node_id] = CI_target[stage, node_id].solution_value
 
-                LM_[stage, node_id] = LM[stage, node_id].solution_value
-                VM_[stage, node_id] = VM[stage, node_id].solution_value
-                TW_[stage, node_id] = TW[stage, node_id].solution_value
+                if stochastic_algorithm == "rolling_horizon":
+                    CM_[stage, node_id] = solution["CM"].get((stage, node_id), 0)
+                    # todo: implement CI, stability etc. in rolling horizon
+                else:
+                    CM_[stage, node_id] = CM[stage, node_id].solution_value
+                    CI_[stage, node_id] = CI[stage, node_id].solution_value
+                    CI_target_[stage, node_id] = CI_target[stage, node_id].solution_value
+                    LM_[stage, node_id] = LM[stage, node_id].solution_value
+                    VM_[stage, node_id] = VM[stage, node_id].solution_value
+                    TW_[stage, node_id] = TW[stage, node_id].solution_value
+                cost_[stage, node_id,] += env.cm_costs * CM_[stage, node_id]
 
         # Get metrics from the solution
         num_nodes_per_stage = np.array(num_nodes_per_stage)
@@ -634,7 +880,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         mean_teu_load_per_port = (x_ * teus.reshape(1, 1, 1, 1, 1, K, 1, 1)).sum(axis=(1,2, 3, 4, 5, 6, 7)) # Shape (stages,)
         mean_load_per_location = np.sum(x_, axis=(1, 4, 5, 6)) / num_nodes_per_stage.reshape(-1, 1, 1, 1) # Shape (stages, B, D, BL)
         mean_hatch_overstowage = np.sum(HO_, axis=(1, 2, 3)) / num_nodes_per_stage # Shape (stages,)
-        mean_ci = np.sum(CI_, axis=1) / num_nodes_per_stage # Shape (stages,)
+        # mean_ci = np.sum(CI_, axis=1) / num_nodes_per_stage # Shape (stages,)
         mean_pd = np.sum(PD_, axis=(1, 2, 3, 4)) / num_nodes_per_stage # Shape (stages,)
         mean_mixing = np.sum(mixing_, axis=(1, 2, 3)) / num_nodes_per_stage # Shape (stages,)
 
@@ -659,7 +905,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             "ports":P,
             "scenarios":scenarios_per_stage,
             # Solver results
-            "obj":solution.objective_value,
+            "obj":obj,
             "time":mdl.solve_details.time,
             "gap":mdl.solve_details.mip_relative_gap,
             # Solution metrics
@@ -667,7 +913,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             "mean_teu_load_per_port":mean_teu_load_per_port.tolist(),
             "mean_load_per_location":mean_load_per_location.tolist(),
             "mean_hatch_overstowage":mean_hatch_overstowage.tolist(),
-            "mean_ci":mean_ci.tolist(),
+            # "mean_ci":mean_ci.tolist(),
             "mean_demand":mean_demand.tolist(),
             "mean_revenue":mean_revenue.tolist(),
             "mean_cost":mean_cost.tolist(),
@@ -682,11 +928,11 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             "PD": PD_.tolist(),
             "HO_": HO_.tolist(),
             "HM_": HM_.tolist(),
-            "CI_": CI_.tolist(),
-            "CI_target_": CI_target_.tolist(),
-            "LM_": LM_.tolist(),
-            "VM_": VM_.tolist(),
-            "TW_": TW_.tolist(),
+            # "CI_": CI_.tolist(),
+            # "CI_target_": CI_target_.tolist(),
+            # "LM_": LM_.tolist(),
+            # "VM_": VM_.tolist(),
+            # "TW_": TW_.tolist(),
         }
     else:
         # Print the error
@@ -709,28 +955,28 @@ if __name__ == "__main__":
     parser.add_argument("--scenarios", type=int, default=20)
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=30)
+    parser.add_argument("--stochastic_algorithm", type=str, default="rolling_horizon")  # multi_stage, rolling_horizon, progressive_hedging
     # todo: add warm solution
     parser = parser.parse_args()
 
     # Load the configuration file
-    with open(f'{path_to_main}/config.yaml', 'r') as file:
-        config = yaml.safe_load(file)
-        config = DotMap(config)
-        config = adapt_env_kwargs(config)
+    path = f'{path_to_main}/config.yaml'
+    config = load_config(path)
 
-        # Add the arguments to the configuration
-        config.env.ports = parser.ports
-        config.env.teu = parser.teu
-        config.env.perfect_information = parser.perfect_information
-        config.env.deterministic = parser.deterministic
-        config.env.generalization = parser.generalization
-        config.testing.num_episodes = parser.num_episodes
+    # Add the arguments to the configuration
+    config.env.ports = parser.ports
+    config.env.teu = parser.teu
+    config.env.perfect_information = parser.perfect_information
+    config.env.deterministic = parser.deterministic
+    config.env.generalization = parser.generalization
+    config.testing.num_episodes = parser.num_episodes
 
     # Set parameters
     perfect_information = parser.perfect_information
     deterministic = parser.deterministic
     generalization = config.env.generalization
     num_episodes = config.testing.num_episodes
+    stochastic_algorithm = parser.stochastic_algorithm
     scenario_range = parser.scenario_range if not generalization else False
     if deterministic:
         num_scenarios = [1]
@@ -761,7 +1007,8 @@ if __name__ == "__main__":
             demand_sub_tree = get_scenario_tree_indices(demand_tree, scen)
 
             # Run the main logic and get results and variables
-            result, var = main(env, demand_sub_tree, scen, stages, max_paths, seed, perfect_information, deterministic)
+            result, var = main(env, demand_sub_tree, scen, stages, max_paths, seed, perfect_information, deterministic, stochastic_algorithm)
+            breakpoint()
 
             # setup folder
             if not os.path.exists("results/SMIP/scenario_tree/block_mpp/"):
