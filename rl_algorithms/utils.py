@@ -25,6 +25,13 @@ def adapt_env_kwargs(config:DotMap) -> DotMap:
     config_env.weight_classes = 3 if config_env.cargo_classes % 3 == 0 else 2 # 2 weights for 2 classes, 3 weights for 3,6 classes
     config_env.capacity = [50] if config_env.TEU == 1000 else [500]
     config_env.blocks = 1 if config_env.TEU == 1000 else 2
+    config_env.block_stowage_mask = False if config_env.TEU == 1000 else True
+
+    # adapt n_action and n_constraints:
+    config_env.n_action = 20 if config_env.TEU == 1000 else 80
+    config_env.n_constraints = 25 if config_env.TEU == 1000 else 85
+    config_env.training.projection_kwargs.n_action = config_env.n_action
+    config_env.training.projection_kwargs.n_constraints = config_env.n_constraints
     return config
 
 def recursive_check_for_nans(td:TensorDict, parent_key="") -> None:
