@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 import cvxpy as cp
 from cvxpylayers.torch import CvxpyLayer
@@ -12,11 +13,11 @@ class EmptyLayer(nn.Module):
     def forward(self, x:Tensor, **kwargs) -> Tensor:
         return x
 
-class LinearViolationAdaption(nn.Module):
-    """Convex violation layer to enforce soft feasibility by projecting solutions towards feasible region."""
+class InnerConvexViolationProjection(nn.Module):
+    """Convex violation layer to enforce soft feasibility by projecting solutions inside the feasible region."""
 
     def __init__(self, **kwargs):
-        super(LinearViolationAdaption, self).__init__()
+        super(InnerConvexViolationProjection, self).__init__()
         self.alpha = kwargs.get('alpha', 0.005)
         self.scale = kwargs.get('scale', 0.001)
         self.delta = kwargs.get('delta', 0.1)
@@ -74,6 +75,93 @@ class LinearViolationAdaption(nn.Module):
             if count > self.max_iter:
                 break
         # Return the adjusted x_, reshaped to remove n_step dimension if it was initially 2D
+        return x_.squeeze(1) if n_step == 1 else x_
+
+class BoundConvexViolationProjection(nn.Module):
+    """
+    Convex violation projection layer with optional variable and constraint masking.
+    Projects x iteratively onto a feasible region defined by Ax <= b (or similar),
+    respecting frozen variables and optionally ignoring masked constraints.
+    """
+
+    def __init__(self, **kwargs):
+        super(BoundConvexViolationProjection, self).__init__()
+        self.alpha = kwargs.get('alpha', 0.005)
+        self.scale = kwargs.get('scale', 0.001)
+        self.delta = kwargs.get('delta', 0.1)
+        self.max_iter = kwargs.get('max_iter', 100)
+        self.use_early_stopping = kwargs.get('use_early_stopping', True)
+
+    def forward(
+            self,
+            x: Tensor,
+            A: Tensor,
+            b: Tensor,
+            var_mask: Tensor = None,  # shape [batch, n] or [n], 1=active,0=frozen
+    ) -> Tensor:
+
+        # Check dimensions
+        if b.dim() not in [2, 3] or A.dim() not in [3, 4]:
+            raise ValueError("Invalid dimensions: 'b' must have dim 2 or 3 and 'A' must have dim 3 or 4.")
+
+        # Shapes
+        batch_size = b.shape[0]
+        m = b.shape[-1]
+        n_step = 1 if b.dim() == 2 else b.shape[-2]
+
+        # Prepare tensors
+        x_ = x.clone()
+        b = b.unsqueeze(1) if b.dim() == 2 else b  # [batch, 1, m] or [batch, n_step, m]
+        A = A.unsqueeze(1) if A.dim() == 3 else A  # [batch, 1, m, n] or [batch, n_step, m, n]
+        x_ = x_.unsqueeze(1) if x_.dim() == 2 else x_  # [batch, 1, n] or [batch, n_step, n]
+
+        # Variable mask
+        if var_mask is None:
+            var_mask = torch.ones(batch_size, x_.shape[-1], device=x.device)
+        if var_mask.dim() == 2:
+            var_mask = var_mask.unsqueeze(-2) # [batch, n_step, n]
+
+        # Constraint mask: only compute constraints affected by active variables
+        constr_mask = (torch.matmul(var_mask.unsqueeze(-2), A.abs().transpose(-2,-1)).squeeze(-2) > 0)  # [batch, n_step, m]
+
+        # Active mask: per batch/step
+        active_mask = torch.ones(batch_size, n_step, dtype=torch.bool, device=x.device)
+
+        # Early exit if NaNs
+        if torch.isnan(x_).any():
+            return x_.squeeze(1) if n_step == 1 else x_
+
+        count = 0
+        while torch.any(active_mask):
+            # Apply variable mask before computing residual
+            x_masked = x_ * var_mask
+
+            # Compute residual: r = Ax - b
+            residual = torch.matmul(x_masked.unsqueeze(-2), A.transpose(-2, -1)).squeeze(-2) - b  # [batch, n_step, m]
+            residual = residual * constr_mask  # mask inactive constraints
+
+            # Two-sided violation
+            violation_term = F.relu(residual) - F.relu(-residual - self.delta)  # [batch, n_step, m]
+
+            # Gradient: A^T g(r)
+            penalty_gradient = torch.matmul(violation_term.unsqueeze(-2), A).squeeze(-2)  # [batch, n_step, n]
+
+            # Total violation per batch/step for early stopping
+            total_violation = torch.sum(F.relu(residual), dim=-1)  # [batch, n_step]
+            active_mask = total_violation >= self.delta  # keep only violating steps active
+
+            if self.use_early_stopping and not torch.any(active_mask):
+                break
+
+            # Update only active variables
+            update = self.alpha * penalty_gradient
+            x_ = torch.where(active_mask.unsqueeze(-1), x_ - update, x_)
+            x_ = torch.clamp(x_, min=0)  # enforce non-negativity
+
+            count += 1
+            if count >= self.max_iter:
+                break
+
         return x_.squeeze(1) if n_step == 1 else x_
 
 class CvxpyProjectionLayer(nn.Module):
@@ -164,8 +252,10 @@ class CvxpyProjectionLayer(nn.Module):
 
 class ProjectionFactory:
     _class_map = {
-        'linear_violation':LinearViolationAdaption,
-        'linear_violation_policy_clipping':LinearViolationAdaption,
+        'linear_violation':InnerConvexViolationProjection,
+        'linear_violation_policy_clipping':InnerConvexViolationProjection,
+        'inner_convex_violation':InnerConvexViolationProjection,
+        'bound_convex_violation':BoundConvexViolationProjection,
         'convex_program':CvxpyProjectionLayer,
         'convex_program_policy_clipping':CvxpyProjectionLayer,
     }
