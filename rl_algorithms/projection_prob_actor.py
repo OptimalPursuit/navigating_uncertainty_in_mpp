@@ -85,6 +85,10 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"])
         return out["action"]
 
+    def bound_violation_projection(self, out:TensorDict) -> Tensor:
+        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=out["observation", "action_mask"].float())
+        return out["action"]
+
     def violation_projection_policy_clipping(self, out:TensorDict) -> Tensor:
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"])
         out["action"] = self.policy_clipping_projection(out)
@@ -99,6 +103,8 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             "weighted_scaling": self.weighted_scaling_projection,
             "linear_violation": self.violation_projection,
             "linear_violation_policy_clipping": self.violation_projection_policy_clipping,
+            "inner_convex_violation": self.violation_projection,
+            "bound_convex_violation": self.bound_violation_projection,
             "policy_clipping": self.policy_clipping_projection,
             "weighted_scaling_policy_clipping": self.weighted_scaling_policy_clipping_projection,
             "convex_program":self.convex_program,
@@ -172,12 +178,58 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             raise ValueError(f"Invalid dimension of A: {A.dim()}")
         return jacobian
 
+    def jacobian_violation_bound(self, out:TensorDict) -> Tensor:
+        """
+           Compute the Jacobian of a two-sided violation projection:
+               J_g(x) = I + alpha * A^T D A
+           where D = diag(g'(r)), with g'(r_i) = 1 if r_i>0, -1 if r_i<-epsilon, else 0.
+
+           Supports batch and optional sequence dimensions:
+             A: [batch, m, n] or [batch, seq, m, n]
+             x: [batch, n] or [batch, seq, n]
+             b: [batch, m] or [batch, seq, m]
+           """
+        # Input
+        x = out["action"]
+        A = out["lhs_A"]
+        b = out["rhs"]
+        epsilon = 1e-6
+        alpha = self.projection_layer.alpha
+
+        # Compute residual
+        r = torch.matmul(x.unsqueeze(-2), A.transpose(-2, -1)).squeeze(-2) - b  # [batch, n_step, m]
+
+        # Compute signed derivative
+        D = torch.zeros_like(r)
+        D[r > 0] = 1.0
+        D[r < -epsilon] = -1.0  # negative side
+        # D[r in [-epsilon, 0]] = 0 implicitly
+
+        # Embed into diagonal matrices
+        D_diag = torch.diag_embed(D)  # [batch, m, m] or [batch, seq, m, m]
+
+        # Identity matrix
+        n = x.shape[-1]
+        if x.dim() == 2:
+            I = torch.eye(n, device=x.device).unsqueeze(0)  # [1, n, n]
+            jacobian = I + alpha * torch.bmm(A.transpose(1, 2), torch.bmm(D_diag, A))  # [batch, n, n]
+        elif x.dim() == 3:
+            batch, seq, n = x.shape
+            I = torch.eye(n, device=x.device).view(1, 1, n, n)  # [1,1,n,n]
+            jacobian = I + alpha * torch.matmul(A.transpose(-2, -1), torch.matmul(D_diag, A))  # [batch, seq, n, n]
+        else:
+            raise ValueError(f"Unsupported x dimension: {x.shape}")
+
+        return jacobian
+
     def handle_jacobian_adjustment(self, out:TensorDict) -> Optional[Tensor]:
         """Handle with Jacobian adjustment of projection methods;
         We only have Jacobian for weighted scaling and linear violation."""
         jacobian_methods = {
             "weighted_scaling": self.jacobian_weighted_scaling,
             "linear_violation": self.jacobian_violation,
+            "inner_convex_violation": self.jacobian_violation,
+            "bound_convex_violation": self.jacobian_violation_bound,
             "weighted_scaling_policy_clipping": self.jacobian_weighted_scaling,
         }
         jacobian_fn = jacobian_methods.get(self.projection_type, None)
@@ -205,9 +257,9 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             out = super().forward(*args, **kwargs)
 
         # Raise error for projection layers without log prob adaptation implementations
-        if self.projection_type not in ["linear_violation", "linear_violation_policy_clipping",
-                                        "weighted_scaling_policy_clipping", "none", "quadratic_program",
-                                        "convex_program", "convex_program_policy_clipping"]:
+        if self.projection_type not in ["linear_violation", "linear_violation_policy_clipping", "inner_convex_violation",
+                                        "bound_convex_violation", "weighted_scaling_policy_clipping", "none",
+                                        "quadratic_program", "convex_program", "convex_program_policy_clipping"]:
             raise ValueError(f"Log prob adaptation for projection type \'{self.projection_type}\' not supported.")
 
         # Get distribution
