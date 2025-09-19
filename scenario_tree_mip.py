@@ -1038,7 +1038,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ports", type=int, default=5)
+    parser.add_argument("--ports", type=int, default=4)
     parser.add_argument("--teu", type=int, default=20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
@@ -1099,14 +1099,19 @@ if __name__ == "__main__":
 
             # Run the main logic and get results and variables
             result, var = main(env, demand_sub_tree, scen, stages, max_paths, seed, perfect_information, deterministic, stochastic_algorithm)
-            breakpoint() # todo: remove later
+            # log result as error (to show in .err file):
+            print(f"Result: TEU{teu}_P{stages+1}_E{x}_S{scen}_PI{perfect_information}_Gen{generalization}: Obj {result.get('obj', None)}, Time {result.get('time', None)}, Gap {result.get('gap', None)}")
+            break
+        break
 
-            # setup folder
-            if not os.path.exists("results/SMIP/scenario_tree/block_mpp/"):
-                os.makedirs("results/SMIP/scenario_tree/block_mpp/")
-
-            # Save results in json
-            with open(f"results/SMIP/scenario_tree/block_mpp/results_scenario_tree_teu{teu}_p{stages}_"
-                      f"e{x}_s{scen}_pi{perfect_information}"
-                      f"_gen{generalization}.json", "w") as json_file:
-                json.dump(result, json_file, indent=4)
+            # breakpoint() # todo: remove later
+            #
+            # # setup folder
+            # if not os.path.exists("results/SMIP/scenario_tree/block_mpp/"):
+            #     os.makedirs("results/SMIP/scenario_tree/block_mpp/")
+            #
+            # # Save results in json
+            # with open(f"results/SMIP/scenario_tree/block_mpp/results_scenario_tree_teu{teu}_p{stages}_"
+            #           f"e{x}_s{scen}_pi{perfect_information}"
+            #           f"_gen{generalization}.json", "w") as json_file:
+            #     json.dump(result, json_file, indent=4)
