@@ -146,12 +146,12 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
     def jacobian_violation(self, out:TensorDict) -> Tensor:
         """Compute the Jacobian of the violation projection:
-            J_g(x) = I + alpha * A^T D A, where D = diag((Ax-b) > 0)"""
+            J_g(x) = I + lr * A^T D A, where D = diag((Ax-b) > 0)"""
         # Input
         x = out["action"]
         A = out["lhs_A"]
         b = out["rhs"]
-        alpha = self.projection_layer.alpha
+        lr = self.projection_layer.lr
 
         # Shapes
         if A.dim() == 2:
@@ -171,9 +171,9 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         D = torch.diag_embed(violation > 0).float()
 
         if A.dim() == 3:
-            jacobian = I + alpha * torch.bmm(A.transpose(-2, -1), D).bmm(A)
+            jacobian = I + lr * torch.bmm(A.transpose(-2, -1), D).bmm(A)
         elif A.dim() > 3:
-            jacobian = I + alpha * torch.matmul(A.transpose(-2, -1), torch.matmul(D, A))
+            jacobian = I + lr * torch.matmul(A.transpose(-2, -1), torch.matmul(D, A))
         else:
             raise ValueError(f"Invalid dimension of A: {A.dim()}")
         return jacobian
@@ -181,7 +181,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
     def jacobian_violation_bound(self, out:TensorDict) -> Tensor:
         """
            Compute the Jacobian of a two-sided violation projection:
-               J_g(x) = I + alpha * A^T D A
+               J_g(x) = I + lr * A^T D A
            where D = diag(g'(r)), with g'(r_i) = 1 if r_i>0, -1 if r_i<-epsilon, else 0.
 
            Supports batch and optional sequence dimensions:
@@ -194,7 +194,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         A = out["lhs_A"]
         b = out["rhs"]
         epsilon = 1e-6
-        alpha = self.projection_layer.alpha
+        lr = self.projection_layer.lr
 
         # Compute residual
         r = torch.matmul(x.unsqueeze(-2), A.transpose(-2, -1)).squeeze(-2) - b  # [batch, n_step, m]
@@ -212,11 +212,11 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         n = x.shape[-1]
         if x.dim() == 2:
             I = torch.eye(n, device=x.device).unsqueeze(0)  # [1, n, n]
-            jacobian = I + alpha * torch.bmm(A.transpose(1, 2), torch.bmm(D_diag, A))  # [batch, n, n]
+            jacobian = I + lr * torch.bmm(A.transpose(1, 2), torch.bmm(D_diag, A))  # [batch, n, n]
         elif x.dim() == 3:
             batch, seq, n = x.shape
             I = torch.eye(n, device=x.device).view(1, 1, n, n)  # [1,1,n,n]
-            jacobian = I + alpha * torch.matmul(A.transpose(-2, -1), torch.matmul(D_diag, A))  # [batch, seq, n, n]
+            jacobian = I + lr * torch.matmul(A.transpose(-2, -1), torch.matmul(D_diag, A))  # [batch, seq, n, n]
         else:
             raise ValueError(f"Unsupported x dimension: {x.shape}")
 
