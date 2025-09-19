@@ -91,6 +91,7 @@ class BoundConvexViolationProjection(nn.Module):
         self.delta = kwargs.get('delta', 0.1)
         self.max_iter = kwargs.get('max_iter', 100)
         self.use_early_stopping = kwargs.get('use_early_stopping', True)
+        self.use_gradient_scaling = kwargs.get('use_gradient_scaling', True)
 
     def forward(
             self,
@@ -154,7 +155,8 @@ class BoundConvexViolationProjection(nn.Module):
                 break
 
             # Update only active variables
-            update = self.alpha * penalty_gradient
+            scale = torch.norm(penalty_gradient, dim=-1, keepdim=True) + 1e-6 if self.use_gradient_scaling else 1.0
+            update = self.alpha * penalty_gradient / scale
             x_ = torch.where(active_mask.unsqueeze(-1), x_ - update, x_)
             x_ = torch.clamp(x_, min=0)  # enforce non-negativity
 
