@@ -7,8 +7,20 @@
 #SBATCH --partition=cores_any                   # Select the cores_any partition
 #SBATCH --mail-type=FAIL,END                    # Send an email when the job finishes or fails
 
-# Print out the hostname of the node the job is running on
+# Usage check
+if [ $# -lt 1 ]; then
+    echo "Usage: sbatch $0 <output_name>"
+    exit 1
+fi
+
+OUTPUT_NAME=$1
+OUTPUT_FILE="output_files/${OUTPUT_NAME}.out"
+
+# Create folder if it doesn't exist
+mkdir -p output_files
+
+# Print node hostname
 hostname
 
-# Run the Python script
-python -u scenario_tree_mip.py > output_files/print_cpu_rh.out
+# Run Python and redirect stdout + stderr
+python -u scenario_tree_mip.py > "$OUTPUT_FILE" 2>&1
