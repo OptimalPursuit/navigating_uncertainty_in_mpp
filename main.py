@@ -266,6 +266,7 @@ def parse_args():
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
+    parser.add_argument('--scale_max', type=float, default=9.459951968688712, help="Maximum value of policy scale.")
     parser.add_argument('--projection_type', type=str, default='bound_convex_violation', help="Projection type.")
     parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.1, 'delta': 0.1, 'max_iter': 300,
                                                                   'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
@@ -326,6 +327,7 @@ if __name__ == "__main__":
     config.model.encoder_type = args.encoder_type
     config.model.decoder_type = args.decoder_type
     config.model.dyn_embed = args.dyn_embed
+    config.model.scale_max = args.scale_max
     config.training.projection_type = args.projection_type
     # Run
     config.testing.path = args.testing_path
