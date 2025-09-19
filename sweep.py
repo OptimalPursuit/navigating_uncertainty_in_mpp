@@ -72,6 +72,7 @@ if __name__ == "__main__":
             n_constraints = config.training.projection_kwargs.n_constraints
 
             if config.env.env_name == "mpp":
+                # todo: remove?
                 config.algorithm.type, almost_projection_type = config.testing.folder.split("-")
                 if almost_projection_type == "vp" or almost_projection_type == "fr+vp":
                     config.training.projection_type = "linear_violation"
@@ -104,6 +105,7 @@ if __name__ == "__main__":
             sweep_config = wandb.config
 
             if config.env.env_name == "mpp":
+                # todo: remove?
                 if almost_projection_type == "pd":
                     config['training']['pd_lr'] = sweep_config.pd_lr
                     config['algorithm']['feasibility_lambda'] = 1.0
