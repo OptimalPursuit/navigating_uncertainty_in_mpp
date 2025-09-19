@@ -611,11 +611,11 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         total_allocated = np.zeros((K, stages, P))
         for (stage, node_id, b, d, bl, k, i, j), value in rolling_horizon_x.items():
             total_allocated[k, stage, j] += value
-        print(f"Objective value: {objective}")
-        print("Total allocated containers per stage:")
-        print(total_allocated.sum(axis=(0,2)))
-        print(total_allocated.sum(axis=(0,)))
-        breakpoint() # todo: remove later
+        # print(f"Objective value: {objective}")
+        # print("Total allocated containers per stage:")
+        # print(total_allocated.sum(axis=(0,2)))
+        # print(total_allocated.sum(axis=(0,)))
+        # breakpoint() # todo: remove later
 
 
         return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective}
@@ -682,11 +682,11 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         total_allocated = np.zeros((K, stages, P))
         for (stage, node_id, b, d, bl, k, i, j), value in rolling_horizon_x.items():
             total_allocated[k, stage, j] += value
-        print("Total allocated containers per stage:")
-        print(total_allocated.sum(axis=(0,2)))
-        print(total_allocated.sum(axis=(0,)))
-        print(objective)
-        breakpoint() # todo: remove later
+        # print("Total allocated containers per stage:")
+        # print(total_allocated.sum(axis=(0,2)))
+        # print(total_allocated.sum(axis=(0,)))
+        # print(objective)
+        # breakpoint() # todo: remove later
 
 
         return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective}
@@ -947,15 +947,15 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                     TW_[stage, node_id] = TW[stage, node_id].solution_value
                 cost_[stage, node_id,] += env.cm_costs * CM_[stage, node_id]
 
-        print("Total allocated containers per stage:")
-        num_nodes_per_stage = np.array(num_nodes_per_stage)
-        mean_load_per_port = np.sum(x_, axis=(1, 2, 3, 4, 5, 6, 7)) / num_nodes_per_stage # Shape (stages,)
-        print(mean_load_per_port)
-        mean_load_per_port2 = np.sum(x_, axis=(1, 2, 3, 4, 5, 7)) / num_nodes_per_stage.reshape(-1, 1,) # Shape (stages,)
-        print(mean_load_per_port2)
-        mean_load_per_port3 = np.sum(x_, axis=(1, 2, 3, 4, 5, 6)) / num_nodes_per_stage.reshape(-1, 1,) # Shape (stages,)
-        print(mean_load_per_port3)
-        breakpoint() # todo: remove later
+        # print("Total allocated containers per stage:")
+        # num_nodes_per_stage = np.array(num_nodes_per_stage)
+        # mean_load_per_port = np.sum(x_, axis=(1, 2, 3, 4, 5, 6, 7)) / num_nodes_per_stage # Shape (stages,)
+        # print(mean_load_per_port)
+        # mean_load_per_port2 = np.sum(x_, axis=(1, 2, 3, 4, 5, 7)) / num_nodes_per_stage.reshape(-1, 1,) # Shape (stages,)
+        # print(mean_load_per_port2)
+        # mean_load_per_port3 = np.sum(x_, axis=(1, 2, 3, 4, 5, 6)) / num_nodes_per_stage.reshape(-1, 1,) # Shape (stages,)
+        # print(mean_load_per_port3)
+        # breakpoint() # todo: remove later
 
         # Get metrics from the solution
         # todo: some computations here are wrong!
@@ -984,11 +984,11 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         mean_revenue = np.sum(revenue_, axis=1) / num_nodes_per_stage # Shape (stages,)
         mean_cost = np.sum(cost_, axis=1) / num_nodes_per_stage # Shape (stages,)
 
-        print(f"Mean load per port: {mean_load_per_port}")
-        print(f"Mean teu load per port: {mean_teu_load_per_port}")
-        print(f"Mean load per demand: {mean_load_per_demand}")
-        print(f"Realized demand: {mean_demand}")
-        breakpoint() # todo: remove later
+        # print(f"Mean load per port: {mean_load_per_port}")
+        # print(f"Mean teu load per port: {mean_teu_load_per_port}")
+        # print(f"Mean load per demand: {mean_load_per_demand}")
+        # print(f"Realized demand: {mean_demand}")
+        # breakpoint() # todo: remove later
 
         results = {
             # Input parameters
