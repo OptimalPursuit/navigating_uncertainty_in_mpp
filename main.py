@@ -214,7 +214,7 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
     path = f"{config.testing.path}/{config.testing.folder}"
     if config.model.phase in {"train", "tuned_training"}:
         # Initialize models and run training
-        wandb.init(config=config)
+        wandb.init(config=config,) #mode="offline")
         policy, critic = initialize_policy_and_critic(config, env, device)
         run_training(policy, critic, **config)
 
@@ -266,7 +266,7 @@ def parse_args():
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
-    parser.add_argument('--projection_type', type=str, default='linear_violation', help="Projection type.")
+    parser.add_argument('--projection_type', type=str, default='bound_convex_violation', help="Projection type.")
     parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.1, 'delta': 0.1, 'max_iter': 300,
                                                                   'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
                         help="Projection parameters.")
@@ -297,16 +297,16 @@ if __name__ == "__main__":
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
 
-    # Check if a config file exists in the folder and load it
-    config_path = os.path.join(folder_path, "config.yaml")
-    if os.path.exists(config_path):
-        config = load_config(config_path)
-        # todo: remove this?
-        # config.env.env_name = "mpp"
-        # config.env.block_stowage_mask = False
-        # config.model.dyn_embed = "ffn"
-        # config.testing.path = "results/trained_models/navigating_uncertainty"
-        # config.training.projection_kwargs.slack_penalty = 1000
+    # # Check if a config file exists in the folder and load it
+    # config_path = os.path.join(folder_path, "config.yaml")
+    # if os.path.exists(config_path):
+    #     config = load_config(config_path)
+    #     # todo: remove this?
+    #     # config.env.env_name = "mpp"
+    #     # config.env.block_stowage_mask = False
+    #     # config.model.dyn_embed = "ffn"
+    #     # config.testing.path = "results/trained_models/navigating_uncertainty"
+    #     # config.training.projection_kwargs.slack_penalty = 1000
 
     # Parse command-line arguments for dynamic configuration
     args = parse_args()
