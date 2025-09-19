@@ -159,6 +159,7 @@ class BoundConvexViolationProjection(nn.Module):
 
             # Update only active variables
             scale = torch.norm(penalty_gradient, dim=-1, keepdim=True) + 1e-6 if self.use_gradient_scaling else 1.0
+            # print("scale:", scale.mean().item())
             update = self.lr * penalty_gradient / scale
             x_ = torch.where(active_mask.unsqueeze(-1), x_ - update, x_)
             x_ = torch.clamp(x_, min=0)  # enforce non-negativity
