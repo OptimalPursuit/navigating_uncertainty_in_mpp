@@ -16,7 +16,7 @@ algorithm:
 env:
   CI_target: 1.25
   LCG_target: 0.95
-  TEU: 1000 # 20000, 1000
+  TEU: 20000 # 20000, 1000
   VCG_target: 1.05
   bays: 10 #10, 20
   blocks: 2
@@ -24,10 +24,10 @@ env:
   - 50 # 50, 500
   cargo_classes: 6
   customer_classes: 2
-  cv_demand: 0.5
+  cv_demand: 1.5 # todo: try different standard deviations of demand with Normal dist - 0.5, 1.0, 1.5 (RH gets closer to NA!)
   decks: 2
   demand_uncertainty: true
-  env_name: mpp #block_mpp #mpp
+  env_name: block_mpp #block_mpp #mpp
   episode_order: standard
   generalization: false
   hatch_overstowage_costs: 0.333333
@@ -61,7 +61,7 @@ model:
   num_encoder_layers: 3
   num_heads: 8
   phase: train
-  scale_max: 1.931286785557626 #9.459951968688712 # 1.931286785557626 # 0.25
+  scale_max: 9.459951968688712 #9.459951968688712 # 1.931286785557626 # 0.25
   tanh_clipping: 0
   tanh_squashing: false
   temperature: 0.11243639449117128
