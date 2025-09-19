@@ -18,11 +18,13 @@ class InnerConvexViolationProjection(nn.Module):
 
     def __init__(self, **kwargs):
         super(InnerConvexViolationProjection, self).__init__()
-        self.alpha = kwargs.get('alpha', 0.005)
+        self.lr = kwargs.get('alpha', 0.005)
         self.scale = kwargs.get('scale', 0.001)
         self.delta = kwargs.get('delta', 0.1)
         self.max_iter = kwargs.get('max_iter', 100)
         self.use_early_stopping = kwargs.get('use_early_stopping', True)
+        self.use_gradient_scaling = kwargs.get('use_gradient_scaling', True)
+
 
     def forward(self, x:Tensor, A:Tensor, b:Tensor, **kwargs) -> Tensor:
         # Raise error is dimensions are invalid
@@ -64,11 +66,12 @@ class InnerConvexViolationProjection(nn.Module):
 
             # Calculate penalty gradient for adjustment
             penalty_gradient = torch.matmul(violation_new.unsqueeze(2), A).squeeze(2)  # Shape: [32, 1, 20]
+            scale = torch.norm(penalty_gradient, dim=-1, keepdim=True) + 1e-6 if self.use_gradient_scaling else 1.0
 
             # Apply penalty gradient update only for active batches/steps
             # scale = 1 / (torch.std(penalty_gradient, dim=0, keepdim=True) + 1e-6)
-            lr = self.alpha #/ (1 + self.scale * penalty_gradient)
-            x_ = torch.where(active_mask.unsqueeze(2), x_ - lr * penalty_gradient, x_)
+            update = self.lr * penalty_gradient / scale
+            x_ = torch.where(active_mask.unsqueeze(2), x_ - update, x_)
             x_ = torch.clamp(x_, min=0) # Ensure non-negativity
 
             count += 1
@@ -86,7 +89,7 @@ class BoundConvexViolationProjection(nn.Module):
 
     def __init__(self, **kwargs):
         super(BoundConvexViolationProjection, self).__init__()
-        self.alpha = kwargs.get('alpha', 0.005)
+        self.lr = kwargs.get('alpha', 0.005)
         self.scale = kwargs.get('scale', 0.001)
         self.delta = kwargs.get('delta', 0.1)
         self.max_iter = kwargs.get('max_iter', 100)
@@ -156,7 +159,7 @@ class BoundConvexViolationProjection(nn.Module):
 
             # Update only active variables
             scale = torch.norm(penalty_gradient, dim=-1, keepdim=True) + 1e-6 if self.use_gradient_scaling else 1.0
-            update = self.alpha * penalty_gradient / scale
+            update = self.lr * penalty_gradient / scale
             x_ = torch.where(active_mask.unsqueeze(-1), x_ - update, x_)
             x_ = torch.clamp(x_, min=0)  # enforce non-negativity
 
