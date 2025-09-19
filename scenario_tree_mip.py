@@ -1046,7 +1046,7 @@ if __name__ == "__main__":
     parser.add_argument("--scenarios", type=int, default=16) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=30)
-    parser.add_argument("--stochastic_algorithm", type=str, default="myopic")  # multi_stage, rolling_horizon, myopic
+    parser.add_argument("--stochastic_algorithm", type=str, default="rolling_horizon")  # multi_stage, rolling_horizon, myopic
     # todo: add warm solution
     parser = parser.parse_args()
 
