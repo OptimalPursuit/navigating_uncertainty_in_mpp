@@ -1046,6 +1046,7 @@ if __name__ == "__main__":
     parser.add_argument("--scenarios", type=int, default=16) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=30)
+    parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--stochastic_algorithm", type=str, default="rolling_horizon")  # multi_stage, rolling_horizon, myopic
     # todo: add warm solution
     parser = parser.parse_args()
@@ -1060,6 +1061,7 @@ if __name__ == "__main__":
     config.env.perfect_information = parser.perfect_information
     config.env.deterministic = parser.deterministic
     config.env.generalization = parser.generalization
+    config.env.utilization_rate_initial_demand = parser.utilization_rate_initial_demand
     config.testing.num_episodes = parser.num_episodes
 
     # Set parameters
