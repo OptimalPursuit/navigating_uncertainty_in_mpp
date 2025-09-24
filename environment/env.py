@@ -725,7 +725,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # Kwargs and super
         self.BL = kwargs.get("blocks", 2)  # Number of paired blocks: 2 (wings + center), 3 (wings + center1 + center2)
         super().__init__(device=device, batch_size=batch_size, **kwargs)
-        # self.generator = UniformMPP_Generator(device=device, **kwargs)
+        self.generator = UniformMPP_Generator(device=device, **kwargs)
 
         # Shapes
         self._compact_form_block_shapes()
