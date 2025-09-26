@@ -2,7 +2,12 @@ import numpy as np
 import random
 
 
+
 def random_integer_partition(v, b):
+    """
+    Randomly partition integer v into b nonnegative integers, according to Ding & Chou (2015).
+    (https://www.sciencedirect.com/science/article/pii/S0377221715002660#sec0014a)
+    """
     if b == 1:
         return [v]
     y = list(range(1, v + b))
@@ -42,7 +47,8 @@ def dirichlet_partition(v, b, alpha=1.0, weights=None):
 def generate_authentic_matrix(P, C, target_utils,middle_leg=None,  loading_only=False,
                               sparsity=0.3, perturb=0.2,  dirichlet=False, alpha=1.0):
     """
-    Generate an authentic OD matrix.
+    Generate an authentic OD matrix, similar to to Ding & Chou (2015).
+    (https://www.sciencedirect.com/science/article/pii/S0377221715002660#sec0014a)
 
     Parameters:
     - P: total number of ports
@@ -106,57 +112,6 @@ def generate_authentic_matrix(P, C, target_utils,middle_leg=None,  loading_only=
     return T
 
 
-# ===== Example usage =====
-P = 6
-C = 20000
-sparsity = 0.3
-perturb = 0.2
-loading_only = False
-middle_leg = P // 2
-dirichlet = True
-alpha = 0.2
-
-if loading_only:
-    target_utils = [0.6, 0.8, 1.0]
-else:
-    target_utils = [0.6, 0.8, 1.0, 0.8, 0.6]  # Adjusted for middle_leg = 3
-
-# Add random perturbation to target utils
-target_utils *= np.random.uniform(0.9, 1.1, size=len(target_utils))
-print("----------------")
-print("Target utilizations:", target_utils)
-
-# Loading-only authentic matrix
-T_auth = generate_authentic_matrix(P, C, target_utils, middle_leg=middle_leg, loading_only=loading_only,
-                                   sparsity=sparsity, perturb=perturb, dirichlet=dirichlet, alpha=alpha)
-print("Authentic loading OD matrix:\n", T_auth)
-
-# Track onboard containers per leg
-onboard = np.zeros((P, P), dtype=int)
-total_onboard_per_leg = []
-for leg in range(P - 1):
-    onboard[:, leg] = 0
-    onboard[leg, leg + 1:] = T_auth[leg, leg + 1:]
-    total_onboard_per_leg.append(np.sum(onboard))
-
-print("Total containers on board per leg:", total_onboard_per_leg)
-print("Utilization rate per leg:", [total / C for total in total_onboard_per_leg])
-
-# # Run this multiple times to count sparsity effect
-# sparsity_counts = []
-# relevant_elements = (P * (P - 1)) // 2 if not loading_only else middle_leg * (P - middle_leg)
-# for _ in range(100):
-#     T_test = generate_authentic_matrix(P, C, target_utils, middle_leg=middle_leg, loading_only=loading_only,
-#                                    sparsity=sparsity, perturb=perturb, dirichlet=dirichlet, alpha=alpha)
-#     non_zero_count = np.count_nonzero(T_test)
-#     sparse_count = relevant_elements  - non_zero_count
-#     sparsity_counts.append(sparse_count)
-#
-# print("Average sparse OD pairs over 100 runs:", np.mean(sparsity_counts) )
-# print("Average (%) sparsity over 100 runs:", np.mean(sparsity_counts) / relevant_elements )
-
-import numpy as np
-
 def generate_multicargo_matrix(P, C, target_utils,
                                middle_leg=None, loading_only=False,
                                sparsity=0.3, perturb=0.2,
@@ -219,17 +174,6 @@ def generate_multicargo_matrix(P, C, target_utils,
 
     return T_multi, cargo_types
 
-T_multi, cargo_types = generate_multicargo_matrix(
-    P, C, target_utils, middle_leg=P//2,
-    loading_only=False, sparsity=0.2, perturb=0.15,
-    dirichlet=True, alpha=0.3, include_reefer=True
-)
-
-print("----------------")
-print("Generated cargo types:", cargo_types)
-print("OD matrix for (40ft, medium, spot):")
-print(T_multi[("40ft", "medium", "spot")])
-
 def randomize_demand_matrix(T_multi, dist="poisson", n_scenarios=10,
                             dispersion=1.0, sigma=0.3, seed=None):
     """
@@ -261,6 +205,7 @@ def randomize_demand_matrix(T_multi, dist="poisson", n_scenarios=10,
                     if mu <= 0:
                         continue
 
+                    # todo: check all distributions and add CV option to adjust variance
                     if dist == "poisson":
                         val = np.random.poisson(mu)
                     elif dist == "neg_binomial":
@@ -281,10 +226,72 @@ def randomize_demand_matrix(T_multi, dist="poisson", n_scenarios=10,
                         raise ValueError(f"Unknown distribution: {dist}")
 
                     T_rand[i, j] = val
+
             scenario[ctype] = T_rand
         scenarios.append(scenario)
 
     return scenarios
+
+
+# ===== Example usage =====
+P = 6
+C = 20000
+sparsity = 0.3
+perturb = 0.2
+loading_only = False
+middle_leg = P // 2
+dirichlet = True
+alpha = 0.2
+
+if loading_only:
+    target_utils = [0.6, 0.8, 1.0]
+else:
+    target_utils = [0.6, 0.8, 1.0, 0.8, 0.6]  # Adjusted for middle_leg = 3
+
+# Add random perturbation to target utils
+target_utils *= np.random.uniform(0.9, 1.1, size=len(target_utils))
+print("----------------")
+print("Target utilizations:", target_utils)
+
+# Loading-only authentic matrix
+T_auth = generate_authentic_matrix(P, C, target_utils, middle_leg=middle_leg, loading_only=loading_only,
+                                   sparsity=sparsity, perturb=perturb, dirichlet=dirichlet, alpha=alpha)
+print("Authentic loading OD matrix:\n", T_auth)
+
+# Track onboard containers per leg
+onboard = np.zeros((P, P), dtype=int)
+total_onboard_per_leg = []
+for leg in range(P - 1):
+    onboard[:, leg] = 0
+    onboard[leg, leg + 1:] = T_auth[leg, leg + 1:]
+    total_onboard_per_leg.append(np.sum(onboard))
+
+print("Total containers on board per leg:", total_onboard_per_leg)
+print("Utilization rate per leg:", [total / C for total in total_onboard_per_leg])
+
+# # Run this multiple times to count sparsity effect
+# sparsity_counts = []
+# relevant_elements = (P * (P - 1)) // 2 if not loading_only else middle_leg * (P - middle_leg)
+# for _ in range(100):
+#     T_test = generate_authentic_matrix(P, C, target_utils, middle_leg=middle_leg, loading_only=loading_only,
+#                                    sparsity=sparsity, perturb=perturb, dirichlet=dirichlet, alpha=alpha)
+#     non_zero_count = np.count_nonzero(T_test)
+#     sparse_count = relevant_elements  - non_zero_count
+#     sparsity_counts.append(sparse_count)
+#
+# print("Average sparse OD pairs over 100 runs:", np.mean(sparsity_counts) )
+# print("Average (%) sparsity over 100 runs:", np.mean(sparsity_counts) / relevant_elements )
+
+T_multi, cargo_types = generate_multicargo_matrix(
+    P, C, target_utils, middle_leg=P//2,
+    loading_only=False, sparsity=0.2, perturb=0.15,
+    dirichlet=True, alpha=0.3, include_reefer=True
+)
+
+print("----------------")
+print("Generated cargo types:", cargo_types)
+print("OD matrix for (40ft, medium, spot):")
+print(T_multi[("40ft", "medium", "spot")])
 
 # Assume T_multi from generate_multicargo_matrix
 scenarios = randomize_demand_matrix(T_multi, dist="neg_binomial", n_scenarios=5, sigma=0.4)
