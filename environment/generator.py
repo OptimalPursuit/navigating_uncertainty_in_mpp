@@ -1,9 +1,13 @@
 # Imports
 import torch as th
+from torch.distributions import Dirichlet, Multinomial, NegativeBinomial, Normal, Uniform
+import random
 from typing import Tuple, Optional
 from tensordict import TensorDict
+
+
 from rl4co.envs.common.utils import Generator
-from environment.utils import get_transport_idx, get_load_transport
+from environment.utils import get_transport_idx, get_load_transport, get_on_board_transport
 import matplotlib.pyplot as plt
 
 # Classes
@@ -28,7 +32,7 @@ class MPP_Generator(Generator):
                 - customer_classes (int): Number of customer contract classes.
                 - cargo_classes (int): Number of cargo types per customer.
                 - weight_classes (int): Number of weight classes.
-                - capacity (list[int] or torch.Tensor): Per-bay/deck capacity.
+                - capacity (list[int] or th.Tensor): Per-bay/deck capacity.
                 - utilization_rate_initial_demand (float): Capacity utilization target.
                 - spot_percentage (float): Ratio of spot contract cargo.
                 - iid_demand (bool): Use IID sampling if True, otherwise GBM.
@@ -69,13 +73,14 @@ class MPP_Generator(Generator):
         self.iid_demand = kwargs.get("iid_demand", True)
         self.cv_demand = kwargs.get("cv_demand", 0.5)
         self.demand_uncertainty = kwargs.get("demand_uncertainty", False)
+        self.demand_sparsity = kwargs.get("demand_sparsity", False)
         self.generalization = kwargs.get("generalization", False)
         self.perturbation = kwargs.get("perturbation", 0.1)
 
         # Demand variability
         self.cv = th.empty((self.K,), device=self.device, dtype=th.float16)
-        self.cv[:self.K // 2] = 0.5
-        self.cv[self.K // 2:] = 0.3
+        self.cv[:self.K // 2] = self.cv_demand
+        self.cv[self.K // 2:] = self.cv_demand * 2/3
 
         # Precomputations
         self.train_max_demand = 0
@@ -172,7 +177,7 @@ class MPP_Generator(Generator):
             dist = self._generalization_uniform_distribution(e_x, std_x)
 
         # Sample demand
-        demand = th.clamp(dist.sample(), min=1)
+        demand = th.clamp(dist.sample(), min=0)
 
         # Return demand matrix
         return TensorDict({"observation":
@@ -223,10 +228,31 @@ class MPP_Generator(Generator):
         if len(bound.shape) == 2:
             bound = bound.unsqueeze(0)
 
-        # Sample uniformly from 0 to bound (inclusive) using torch.rand
+        # Sample uniformly from 0 to bound (inclusive) using th.rand
         expected = th.rand(*batch_size, self.T, self.K, dtype=bound.dtype, device=self.device,
                            generator=self.rng) * bound
         variance = (expected * cv.view(1, 1, self.K,)) ** 2
+
+        if self.demand_sparsity:
+            mask = (th.rand(*batch_size, self.T, self.K, device=self.device, generator=self.rng) > 0.5).float()
+            masked_out = expected * (1 - mask)  # Amount to redistribute
+            expected = expected * mask
+
+            # Count unmasked entries per batch & timestep
+            num_unmasked = mask.sum(dim=-1, keepdim=True)  # [batch, T, 1]
+
+            # Avoid division by zero if all entries are masked
+            num_unmasked_safe = th.where(num_unmasked == 0, th.ones_like(num_unmasked), num_unmasked)
+
+            # Total masked-out per batch & timestep
+            total_masked_out = masked_out.sum(dim=-1, keepdim=True)
+
+            # Amount to add to each unmasked entry
+            redistribution = total_masked_out / num_unmasked_safe
+
+            # Add only to unmasked entries
+            expected += redistribution * mask
+            variance = (expected * cv.view(1, 1, self.K)) ** 2
         return th.where(expected < eps, eps, expected), variance
 
     # Support functions
@@ -263,6 +289,8 @@ class MPP_Generator(Generator):
 
 class UniformMPP_Generator(MPP_Generator):
     """Subclass for generating demand for stowage plans using uniform distribution."""
+    def __init__(self, device="cuda", **kwargs):
+        super().__init__(device=device, **kwargs)
 
     def __call__(self, batch_size:Tuple[int, ...], td: Optional[TensorDict] = None, rng:Optional=None) -> TensorDict:
         batch_size = [batch_size] if isinstance(batch_size, int) else batch_size
@@ -303,6 +331,206 @@ class UniformMPP_Generator(MPP_Generator):
                                 "init_expected_demand": init_e_x.view(*batch_size, self.T * self.K),
                                 "batch_updates": batch_updates.clone(),
                                 }}, batch_size=batch_size, device=self.device, )
+
+class AuthenticDemandGenerator(MPP_Generator):
+    """
+    RL-ready OD demand generator with multi-cargo support.
+
+    Features:
+        - Vectorized OD matrix generation
+        - Multi-cargo splits with customizable shares
+        - Scenario randomization: Poisson, Normal, LogNormal, Uniform
+        - Batched stochastic realizations for RL
+    """
+
+    def __init__(
+        self,
+        loading_only: bool = False,
+        target_utils: list = None,
+        sparsity: float = 0.3,
+        perturb: float = 0.2,
+        dirichlet: bool = True,
+        alpha: float = 1.0,
+        cargo_shares: dict = None,
+        include_reefer: bool = True,
+        device="cpu",
+        cv_demand: float = 0.3,
+        **kwargs
+    ):
+        super().__init__(device=device, **kwargs)
+        self.C = self.total_capacity.item()
+        self.middle_leg = self.P // 2
+        self.loading_only = loading_only
+        self.load_ports = self.middle_leg if loading_only else (self.P - 1)
+
+        self.target_utils = target_utils if target_utils is not None else [
+            0.5 + 0.5 * i / (self.load_ports - 1) for i in range(self.load_ports)
+        ]
+
+        self.sparsity = sparsity
+        self.perturb = perturb
+        self.dirichlet = dirichlet
+        self.alpha = alpha
+        self.cargo_share = cargo_shares
+        self.include_reefer = include_reefer
+        self.cv_demand = cv_demand
+        self.device = th.device(device)
+
+    # -----------------------
+    # Partition methods
+    # -----------------------
+    def random_integer_partition(self, v: int, b: int):
+        """Partition integer v into b nonnegative integers (randomized)."""
+        if b == 1:
+            return th.tensor([v], dtype=th.long, device=self.device)
+        n = v + b - 1
+        perm = th.randperm(n, device=self.device)
+        first_idx = perm[: (b - 1)].sort().values
+        parts = [first_idx[0].item()]
+        for i in range(1, b - 1):
+            parts.append(first_idx[i].item() - first_idx[i - 1].item())
+        parts.append(n - first_idx[-1].item())
+        return th.tensor(parts, dtype=th.long, device=self.device)
+
+    def dirichlet_partition(self, v: int, b: int, alpha: float = 1.0, weights=None):
+        """Partition integer v into b parts using Dirichlet-Multinomial."""
+        if b == 1:
+            return th.tensor([v], dtype=th.long, device=self.device)
+        alphas = th.full((b,), alpha, dtype=th.float32, device=self.device) if weights is None else th.tensor(weights, dtype=th.float32, device=self.device) * alpha
+        probs = th.distributions.Dirichlet(alphas).sample()
+        return th.distributions.Multinomial(total_count=v, probs=probs).sample().to(th.long)
+
+    # -----------------------
+    # Vectorized matrix generation
+    # -----------------------
+    def generate_matrix(self, target_utils, C=None):
+        """
+        Generate a single OD matrix for a cargo type.
+        """
+        C = self.C if C is None else C
+        n_loading = self.load_ports
+        T = th.zeros((self.P, self.P), dtype=th.long, device=self.device)
+
+        # Pre-generate randomness for sparsity and perturb
+        sparsity_mask = (th.rand((n_loading, self.P), device=self.device) >= self.sparsity).long() if self.sparsity > 0 else None
+        perturb_noise = (th.rand((n_loading, self.P), device=self.device) * 2 - 1) if self.perturb > 0 else None
+
+        for i in range(n_loading):
+            dest_start = self.middle_leg if self.loading_only else (i + 1)
+            b = self.P - dest_start
+            if b <= 0:
+                continue
+            already_assigned = int(T[:i, dest_start:].sum().item()) if i > 0 else 0
+            v_target = int(round(target_utils[i] * C))
+            v = max(v_target - already_assigned, 0)
+            if v == 0:
+                continue
+            # Partition
+            part = self.dirichlet_partition(v, b, self.alpha) if self.dirichlet else self.random_integer_partition(v, b)
+            # Sparsity
+            if self.sparsity > 0:
+                mask = sparsity_mask[i, dest_start: dest_start + b]
+                part = part * mask
+                if part.sum() == 0:
+                    part[th.randint(0, b, (1,))] = v
+            # Perturb
+            if self.perturb > 0:
+                noise = perturb_noise[i, dest_start: dest_start + b]
+                mask = part > 0
+                deltas = (part.float() * noise * self.perturb).round().long() * mask
+                part = th.clamp(part + deltas, min=0)
+            # Rescale to sum v
+            s = part.sum().item()
+            if s == 0:
+                final = th.zeros(b, dtype=th.long, device=self.device)
+                final[th.randint(0, b, (1,))] = v
+            else:
+                scaled = part.float() * v / s
+                final = th.floor(scaled).long()
+                diff = v - final.sum().item()
+                if diff != 0:
+                    frac = scaled - scaled.floor()
+                    if diff > 0:
+                        idxs = th.topk(frac, diff).indices
+                        final[idxs] += 1
+                    else:
+                        mask_final = final > 0
+                        frac_masked = th.where(mask_final, frac, th.full_like(frac, float("inf")))
+                        idxs = th.topk(-frac_masked, -diff).indices
+                        final[idxs] -= 1
+            T[i, dest_start: dest_start + b] = final
+        return T
+
+    # -----------------------
+    # Multi-cargo moments
+    # -----------------------
+    def _generate_moments(self, target_utils, batch_size=(1,), cargo_shares=None, include_reefer=True):
+        """
+        Generate e_x and sigma_x for all cargo types.
+        """
+
+        # Shares of cargo types
+        shares = th.ones(self.K, device=self.device) / self.K if cargo_shares is None else th.tensor(cargo_shares,
+                                                                                           dtype=th.float32,
+                                                                                           device=self.device)
+        shares = shares / shares.sum()
+
+        # Generate fixed expected demand per cargo type
+        e_x = th.zeros((*batch_size,self.P, self.P,  self.K, ), dtype=th.long, device=self.device)
+        for k in range(self.K):
+            Ck = int(round(self.C * shares[k].item()))
+            e_matrix = self.generate_matrix(target_utils, C=Ck)
+            e_x[..., k] = e_matrix.expand((*batch_size, self.P, self.P))
+
+        # Get indices of upper-triangular elements
+        triu_idx = th.triu_indices(e_x.shape[1], e_x.shape[2], offset=1)
+        # Select and reshape
+        e_x = e_x[:, triu_idx[0], triu_idx[1], :].view(*batch_size, self.T, self.K)
+        sigma_x = self.cv_demand * e_x.float()
+        return e_x, sigma_x
+
+    # -----------------------
+    # Batched stochastic samples
+    # -----------------------
+    def _generate(self, e_x, dist="poisson", sigma=None, seed=None, eps = 1e-6) -> th.Tensor:
+        """
+        Generate batch of stochastic demands.
+        """
+        if seed is not None:
+            th.manual_seed(seed)
+        e_x = e_x.float()
+        sigma = sigma if sigma is not None else self.cv_demand * e_x
+        if dist == "poisson":
+            x = th.poisson(e_x)
+        elif dist == "normal":
+            x = Normal(e_x, sigma).sample().clamp(min=0).round()
+        elif dist == "lognormal":
+            logmean = th.log(e_x + eps) - 0.5 * sigma ** 2
+            x = th.exp(Normal(logmean, sigma).sample()).round()
+        elif dist == "uniform":
+            low = e_x * (1 - sigma)
+            high = e_x * (1 + sigma)
+            x = Uniform(low, high).sample().round().clamp(min=0)
+        else:
+            raise ValueError(f"Unknown dist {dist}")
+
+        return x.long()
+
+    # -----------------------
+    # RL-callable
+    # -----------------------
+    def __call__(self, batch_size:Tuple[int, ...], td: Optional[TensorDict] = None, rng:Optional=None) -> TensorDict:
+        batch_size = [batch_size] if isinstance(batch_size, int) else batch_size
+        e_x, sigma_x = self._generate_moments(self.target_utils, batch_size=batch_size,
+                                              cargo_shares=self.cargo_share, include_reefer=self.include_reefer)
+        x = self._generate(e_x, dist="poisson")  # stochastic batch
+        out = TensorDict({}, batch_size=batch_size, device=self.device)
+        out["observation", "expected_demand"] = e_x
+        out["observation", "std_demand"] = sigma_x
+        out["observation", "realized_demand"] = x
+        return out
+
+
 
 def plot_demand_history(demand_history:th.Tensor, updates:int,
                         y_label:str="Containers", title:str="Container Demand History", summarize:bool=False):
@@ -363,7 +591,7 @@ if __name__ == "__main__":
     demand_dict = {}
     for i in range(env.T):
         for j in range(env.K):
-            demand_dict[f"transport_{i}_type_{j}"] = demand[:, i, j]
+            demand_dict[f"transport_{i}_type_{j}"] = demand[:, i, j].float()
     summary_stats = compute_summary_stats(demand_dict)
     # print(summary_stats)
 
@@ -419,3 +647,24 @@ if __name__ == "__main__":
     plt.title("Revenue at Each Port")
     plt.show()
     ds_fn(revenue_port, "revenue demand")
+
+    # Plot leg utilization (on board demand)
+    from scenario_tree_mip import onboard_groups
+    print(demand.shape)
+    demand_np = demand.detach().cpu().numpy()
+    ob_demand = []
+    ob_teus = []
+    transport_indices = [(i, j) for i in range(env.P) for j in range(env.P) if i < j]
+    for p in range(env.P - 1):
+        ob = 0
+        ob_teu = 0
+        for (i, j) in onboard_groups(env.P, p, transport_indices)[0]:
+            tr = th.where((env.transport_idx[:, 0] == i) & (env.transport_idx[:, 1] == j))[0].item()
+            for k in range(env.K):
+                ob += demand_np[:, 0][tr, k]
+                ob_teu += demand_np[:, 0][tr, k] * env.teus[k].item()
+        ob_demand.append(ob)
+        ob_teus.append(ob_teu)
+
+    print(f"Onboard demand per port: {ob_demand}")
+    print(f"Onboard TEU per port: {ob_teus}")
