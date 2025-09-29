@@ -1,6 +1,6 @@
 # Imports
 import torch as th
-from torch.distributions import Dirichlet, Multinomial, NegativeBinomial, Normal, Uniform
+from torch.distributions import Dirichlet, Multinomial, NegativeBinomial, Normal, Uniform, LogNormal
 import random
 from typing import Tuple, Optional
 from tensordict import TensorDict
@@ -149,8 +149,8 @@ class MPP_Generator(Generator):
         - b = mu + sqrt(12 sigma**2)/2
 
         Now, we get uniform distribution bounds [a,b] for generalization."""
-        a = mu - th.sqrt(12 * sigma ** 2)/2
-        b = mu + th.sqrt(12 * sigma ** 2)/2
+        a = mu - th.sqrt(12 * sigma ** 2) / 2
+        b = mu + th.sqrt(12 * sigma ** 2) / 2
         dist = th.distributions.Uniform(a, b)
         return dist
 
@@ -347,10 +347,10 @@ class AuthenticDemandGenerator(MPP_Generator):
         self,
         loading_only: bool = False,
         target_utils: list = None,
-        sparsity: float = 0.3,
-        perturb: float = 0.2,
+        sparsity: float = 0.2,
+        perturb: float = 0.15,
         dirichlet: bool = True,
-        alpha: float = 1.0,
+        alpha: float = 0.3,
         cargo_shares: dict = None,
         include_reefer: bool = True,
         device="cpu",
@@ -376,9 +376,24 @@ class AuthenticDemandGenerator(MPP_Generator):
         self.cv_demand = cv_demand
         self.device = th.device(device)
 
-    # -----------------------
-    # Partition methods
-    # -----------------------
+        # Mean TEU per container (based on cargo_share)
+        if cargo_shares is None:
+            self.mean_teu = 1.5
+        else:
+            self.mean_teu = sum([k * v for k, v in cargo_shares.items()]) / sum(cargo_shares.values())
+
+
+    def __call__(self, batch_size:Tuple[int, ...], td: Optional[TensorDict] = None, rng:Optional=None) -> TensorDict:
+        batch_size = [batch_size] if isinstance(batch_size, int) else batch_size
+        e_x, sigma_x = self._generate_moments(self.target_utils, batch_size=batch_size,
+                                              cargo_shares=self.cargo_share, include_reefer=self.include_reefer)
+        x = self._generate(e_x, dist="poisson")
+        out = TensorDict({}, batch_size=batch_size, device=self.device)
+        out["observation", "expected_demand"] = e_x
+        out["observation", "std_demand"] = sigma_x
+        out["observation", "realized_demand"] = x
+        return out
+
     def random_integer_partition(self, v: int, b: int):
         """Partition integer v into b nonnegative integers (randomized)."""
         if b == 1:
@@ -400,14 +415,11 @@ class AuthenticDemandGenerator(MPP_Generator):
         probs = th.distributions.Dirichlet(alphas).sample()
         return th.distributions.Multinomial(total_count=v, probs=probs).sample().to(th.long)
 
-    # -----------------------
-    # Vectorized matrix generation
-    # -----------------------
     def generate_matrix(self, target_utils, C=None):
         """
         Generate a single OD matrix for a cargo type.
         """
-        C = self.C if C is None else C
+        if C == None: C = self.C
         n_loading = self.load_ports
         T = th.zeros((self.P, self.P), dtype=th.long, device=self.device)
 
@@ -478,58 +490,46 @@ class AuthenticDemandGenerator(MPP_Generator):
         # Generate fixed expected demand per cargo type
         e_x = th.zeros((*batch_size,self.P, self.P,  self.K, ), dtype=th.long, device=self.device)
         for k in range(self.K):
-            Ck = int(round(self.C * shares[k].item()))
+            # Divide capacity C by mean TEU per container to get number of containers
+            Ck = int(round(self.C * shares[k].item() / self.mean_teu))
             e_matrix = self.generate_matrix(target_utils, C=Ck)
             e_x[..., k] = e_matrix.expand((*batch_size, self.P, self.P))
 
-        # Get indices of upper-triangular elements
         triu_idx = th.triu_indices(e_x.shape[1], e_x.shape[2], offset=1)
         # Select and reshape
         e_x = e_x[:, triu_idx[0], triu_idx[1], :].view(*batch_size, self.T, self.K)
         sigma_x = self.cv_demand * e_x.float()
         return e_x, sigma_x
 
-    # -----------------------
-    # Batched stochastic samples
-    # -----------------------
-    def _generate(self, e_x, dist="poisson", sigma=None, seed=None, eps = 1e-6) -> th.Tensor:
+    def _generate(self, mu, dist="poisson", sigma=None, seed=None, eps = 1e-6) -> th.Tensor:
         """
         Generate batch of stochastic demands.
         """
+        print("Distribution:", dist)
+        print("Expected demand (mean over batch):", mu.float().mean(dim=0).sum())
+
         if seed is not None:
             th.manual_seed(seed)
-        e_x = e_x.float()
-        sigma = sigma if sigma is not None else self.cv_demand * e_x
+        mu = mu.float()
+        sigma = sigma if sigma is not None else self.cv_demand * mu
         if dist == "poisson":
-            x = th.poisson(e_x)
+            x = th.poisson(mu)
         elif dist == "normal":
-            x = Normal(e_x, sigma).sample().clamp(min=0).round()
+            # todo: clamping at min=0 for normal needs bias correction. Use truncated normal or other methods.
+            NotImplementedError("Normal distribution not implemented correctly yet.  Use truncated normal or other methods.")
+            x = Normal(mu, sigma).sample().clamp(min=0).round()
         elif dist == "lognormal":
-            logmean = th.log(e_x + eps) - 0.5 * sigma ** 2
-            x = th.exp(Normal(logmean, sigma).sample()).round()
+            sigma_log = th.sqrt(th.log(1 + (sigma / (mu + eps)) ** 2)).clamp(min=0.0)
+            mu_log = th.log(mu + eps) - 0.5 * sigma_log ** 2
+            x = th.distributions.LogNormal(mu_log, sigma_log).sample().round()
         elif dist == "uniform":
-            low = e_x * (1 - sigma)
-            high = e_x * (1 + sigma)
-            x = Uniform(low, high).sample().round().clamp(min=0)
+            a = th.clamp(mu - sigma, min=0)
+            b = mu + sigma
+            x = Uniform(a, b).sample().round()
         else:
             raise ValueError(f"Unknown dist {dist}")
 
         return x.long()
-
-    # -----------------------
-    # RL-callable
-    # -----------------------
-    def __call__(self, batch_size:Tuple[int, ...], td: Optional[TensorDict] = None, rng:Optional=None) -> TensorDict:
-        batch_size = [batch_size] if isinstance(batch_size, int) else batch_size
-        e_x, sigma_x = self._generate_moments(self.target_utils, batch_size=batch_size,
-                                              cargo_shares=self.cargo_share, include_reefer=self.include_reefer)
-        x = self._generate(e_x, dist="poisson")  # stochastic batch
-        out = TensorDict({}, batch_size=batch_size, device=self.device)
-        out["observation", "expected_demand"] = e_x
-        out["observation", "std_demand"] = sigma_x
-        out["observation", "realized_demand"] = x
-        return out
-
 
 
 def plot_demand_history(demand_history:th.Tensor, updates:int,
@@ -574,7 +574,7 @@ if __name__ == "__main__":
     file_path = "/mnt/c/Users/jaiv/PycharmProjects/DRL_master_planning_problem"
     config = load_config(f'{file_path}/config.yaml')
     env = make_env(config.env, device='cpu')
-    batch_size = 30
+    batch_size = 1000
 
     # Create generator
     generator = env.generator
@@ -586,6 +586,38 @@ if __name__ == "__main__":
     # demand_history = th.empty((batch_size, env.T, env.K), device="cpu")
     td = generator(batch_size, td)
     demand = td["observation", "realized_demand"].view(batch_size, env.T, env.K)
+    e_x = td["observation", "expected_demand"].view(batch_size, env.T, env.K)
+
+    # compute onboard per leg properly for loading_only block
+    # onboard vector: positions correspond to destinations (ports). We'll track containers currently onboard after each leg.
+    onboard_x = th.zeros(env.P, dtype=th.long)
+    total_onboard_x_per_leg = []
+    onboard_ex = th.zeros(env.P, dtype=th.long)
+    total_onboard_ex_per_leg = []
+    for leg in range(env.P - 1):
+        # discharge containers destined to current port (leg)
+        # containers destined to port 'leg' should be removed (they left when we arrived at that port)
+        # ensure indices: onboard[pos] corresponds to containers with destination pos
+        onboard_x[leg] = 0
+        onboard_ex[leg] = 0
+
+        transport_idx = get_transport_idx(env.P, device="cpu")
+        ob = get_on_board_transport(transport_idx, leg)
+
+        # if this is a loading port, load new containers from that origin (row leg)
+        onboard_x[leg + 1] = (demand[:, ob, :].float().mean(dim=0) * env.teus.view(-1)).sum().item()
+        total_onboard_x_per_leg.append(int(onboard_x.sum().item()))
+        onboard_ex[leg + 1] = (e_x[:, ob, :].float().mean(dim=0) * env.teus.view(-1)).sum().item()
+        total_onboard_ex_per_leg.append(int(onboard_ex.sum().item()))
+
+    # TODO:
+    #  - This works for containers volumes, not TEU! We need to adapt for TEU.
+    #  - Also, not sure if this works for different distributions
+    print("Sampled ontainers on board per leg:", total_onboard_x_per_leg)
+    print("TEU Utilization rate per leg:", [x / generator.C for x in total_onboard_x_per_leg])
+    print("Expected containers on board per leg:", total_onboard_ex_per_leg)
+    print("Expected TEU Utilization rate per leg:", [x / generator.C for x in total_onboard_ex_per_leg])
+    breakpoint()
 
     # EDA of all types
     demand_dict = {}
@@ -650,7 +682,6 @@ if __name__ == "__main__":
 
     # Plot leg utilization (on board demand)
     from scenario_tree_mip import onboard_groups
-    print(demand.shape)
     demand_np = demand.detach().cpu().numpy()
     ob_demand = []
     ob_teus = []
