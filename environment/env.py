@@ -13,7 +13,7 @@ from torchrl.data import (
 )
 
 # Modules
-from environment.generator import MPP_Generator, UniformMPP_Generator
+from environment.generator import MPP_Generator, UniformMPP_Generator, AuthenticDemandGenerator
 from environment.utils import *
 
 class MasterPlanningEnv(EnvBase):
@@ -565,7 +565,7 @@ class MasterPlanningEnv(EnvBase):
         moves_idx = self.moves_idx[pol]
         return load_idx, disc_idx, moves_idx
 
-    def _precompute_revenues(self, reduce_long_revenue:float=0.3) -> Tensor:
+    def _precompute_revenues(self, reduce_long_revenue:float=0.3, duration_variable_revenue:bool=True) -> Tensor:
         """Precompute matrix of revenues with shape [K, T]"""
         # Initialize revenues and pod_grid
         revenues = th.zeros((self.K, self.P, self.P), device=self.device, dtype=self.float_type) # Shape: [K, P, P]
@@ -577,8 +577,12 @@ class MasterPlanningEnv(EnvBase):
         revenues[~mask] = duration_grid # Spot market contracts
         revenues[mask] = (duration_grid * (1 - reduce_long_revenue)) # Long-term contracts
         i, j = th.triu_indices(self.P, self.P, offset=1) # Get above-diagonal indices of revenues
-        # Add 0.1 for variable revenue per container, regardless of (k,tau)
-        return revenues[..., i, j] + 0.1 # Shape: [K, T], where T = P*(P-1)/2
+        if duration_variable_revenue:
+            # Add extra revenue per container, which is proportionally higher for shorter trips
+            extra_revenue = (self.P - duration_grid) * 0.1  # Shorter trips get more
+            return revenues[..., i, j] + extra_revenue[..., i, j] # Shape: [K, T], where T = P*(P-1)/2
+        else:
+            return revenues[..., i, j] + 0.1 # Shape: [K, T], where T = P*(P-1)/2
 
     def _precompute_transport_sets(self) -> None:
         """Precompute transport sets based on POL with shape(s): [P, T]"""
@@ -725,7 +729,21 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # Kwargs and super
         self.BL = kwargs.get("blocks", 2)  # Number of paired blocks: 2 (wings + center), 3 (wings + center1 + center2)
         super().__init__(device=device, batch_size=batch_size, **kwargs)
-        self.generator = UniformMPP_Generator(device=device, **kwargs)
+        # self.generator = UniformMPP_Generator(device=device, **kwargs)
+        kwargs["target_utils"] = [0.6, 0.8, 0.95, 0.85, 0.5]  # Target utilization levels for demand generator
+
+        # Cargo types
+        # todo: improve this part, make weights, revenues, sizes configurable/optional
+        include_reefer = kwargs.get("include_reefer", False)
+        sizes = ["20ft", "40ft"]
+        weights = ["light", "medium", "heavy"]
+        revenues = ["long", "spot"]
+        cargo_types = [(s, w, r) for s in sizes for w in weights for r in revenues]
+        if include_reefer:
+            cargo_types += [("40ft", "medium", "long", "reefer"),
+                            ("40ft", "medium", "spot", "reefer")]
+        kwargs["cargo_classes"] = len(cargo_types) // self.CC
+        self.generator = AuthenticDemandGenerator(device=device, **kwargs)
 
         # Shapes
         self._compact_form_block_shapes()
