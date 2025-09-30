@@ -15,6 +15,8 @@ class DemandGenerator:
 
     Generates "authentic" expected OD matrices that meet target utilization per loading port,
     supports multiple cargo types with shares, and can produce randomized scenario realizations.
+
+    Authentic instances of Ding & Chou (2015): https://www.sciencedirect.com/science/article/pii/S0377221715002660.
     """
 
     def __init__(self,
@@ -123,7 +125,7 @@ class DemandGenerator:
     # ---------- Partition helper ----------
     def _random_integer_partition(self, v: int, b: int):
         """
-        Randomly partition integer v into b nonnegative integers (Ding & Chou, 2015); https://www.sciencedirect.com/science/article/pii/S0377221715002660.
+        Randomly partition integer v into b nonnegative integers (Ding & Chou, 2015).
         Returns a list of length b summing to v.
         """
         v = int(max(0, v))
