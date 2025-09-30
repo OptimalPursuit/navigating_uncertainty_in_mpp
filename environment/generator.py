@@ -356,11 +356,14 @@ class AuthenticDemandGenerator(MPP_Generator):
         self.middle_leg = self.P // 2
         self.loading_discharge_region = kwargs.get("loading_discharge_region", False)
         self.load_ports = self.middle_leg if self.loading_discharge_region else (self.P - 1)
+
+        # todo: this is not created correctly yet!
         self.target_utils = target_utils if target_utils is not None else [
-            0.5 + 0.5 * i / (self.load_ports - 1) for i in range(self.load_ports)
+            0.2 + 0.8 * i / (self.load_ports - 1) for i in range(self.load_ports)
         ]
 
         # Demand generation
+        self.distribution = kwargs.get("distribution", "poisson")
         self.cv_demand = kwargs.get("cv_demand", 1.0)
         self.demand_sparsity = kwargs.get("demand_sparsity", 0.0)
         self.demand_perturbation = kwargs.get("demand_perturbation", 0.15)
@@ -381,7 +384,7 @@ class AuthenticDemandGenerator(MPP_Generator):
         batch_size = [batch_size] if isinstance(batch_size, int) else batch_size
         e_x, sigma_x = self._generate_moments(self.target_utils, batch_size=batch_size,
                                               cargo_shares=self.cargo_share, include_reefer=self.include_reefer)
-        x = self._generate(e_x, dist="poisson")
+        x = self._generate(e_x)
         out = TensorDict({}, batch_size=batch_size, device=self.device)
         out["observation", "expected_demand"] = e_x
         out["observation", "std_demand"] = sigma_x
@@ -495,7 +498,7 @@ class AuthenticDemandGenerator(MPP_Generator):
         sigma_x = self.cv_demand * e_x.float()
         return e_x, sigma_x
 
-    def _generate(self, mu, dist="poisson", sigma=None, seed=None, eps = 1e-6) -> th.Tensor:
+    def _generate(self, mu, sigma=None, seed=None, eps = 1e-6) -> th.Tensor:
         """
         Generate batch of stochastic demands.
         """
@@ -503,22 +506,22 @@ class AuthenticDemandGenerator(MPP_Generator):
             th.manual_seed(seed)
         mu = mu.float()
         sigma = sigma if sigma is not None else self.cv_demand * mu
-        if dist == "poisson":
+        if self.distribution == "poisson":
             x = th.poisson(mu)
-        elif dist == "normal":
+        elif self.distribution == "normal":
             # todo: clamping at min=0 for normal needs bias correction. Use truncated normal or other methods.
             NotImplementedError("Normal distribution not implemented correctly yet.  Use truncated normal or other methods.")
             x = Normal(mu, sigma).sample().clamp(min=0).round()
-        elif dist == "lognormal":
+        elif self.distribution == "lognormal":
             sigma_log = th.sqrt(th.log(1 + (sigma / (mu + eps)) ** 2)).clamp(min=0.0)
             mu_log = th.log(mu + eps) - 0.5 * sigma_log ** 2
             x = th.distributions.LogNormal(mu_log, sigma_log).sample().round()
-        elif dist == "uniform":
+        elif self.distribution == "uniform":
             a = th.clamp(mu - sigma, min=0)
             b = mu + sigma
             x = Uniform(a, b).sample().round()
         else:
-            raise ValueError(f"Unknown dist {dist}")
+            raise ValueError(f"Unknown dist {self.distribution}")
 
         return x
 
