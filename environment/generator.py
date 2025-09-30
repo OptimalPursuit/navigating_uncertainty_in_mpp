@@ -520,7 +520,7 @@ class AuthenticDemandGenerator(MPP_Generator):
         else:
             raise ValueError(f"Unknown dist {dist}")
 
-        return x.long()
+        return x
 
 
 def plot_demand_history(demand_history:th.Tensor, updates:int,
