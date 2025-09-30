@@ -372,18 +372,24 @@ class AuthenticDemandGenerator(MPP_Generator):
         self.device = th.device(device)
 
         # Cargo shares and mean TEU
-        self.cargo_share = cargo_shares
         self.include_reefer = kwargs.get("include_reefer", False)
+        self.cargo_share = cargo_shares
+
+        # Shares of cargo types
+        self.cargo_types = sorted(self.cargo_share.keys())  # sorted by tuple
+        self.shares = th.tensor([self.cargo_share[k] for k in self.cargo_types], dtype=th.float32, device=self.device)
+        self.shares = self.shares / self.shares.sum()
+        self.K = len(self.cargo_types)
         if cargo_shares is None:
             self.mean_teu = 1.5
         else:
-            self.mean_teu = sum([k * v for k, v in cargo_shares.items()]) / sum(cargo_shares.values())
+            size_to_teu = {"20ft": 1.0, "40ft": 2.0}
+            self.mean_teu = sum(size_to_teu[k[0]] * v for k, v in cargo_shares.items()) / sum(cargo_shares.values())
 
 
     def __call__(self, batch_size:Tuple[int, ...], td: Optional[TensorDict] = None, rng:Optional=None) -> TensorDict:
         batch_size = [batch_size] if isinstance(batch_size, int) else batch_size
-        e_x, sigma_x = self._generate_moments(self.target_utils, batch_size=batch_size,
-                                              cargo_shares=self.cargo_share, include_reefer=self.include_reefer)
+        e_x, sigma_x = self._generate_moments(self.target_utils, batch_size=batch_size)
         x = self._generate(e_x)
         out = TensorDict({}, batch_size=batch_size, device=self.device)
         out["observation", "expected_demand"] = e_x
@@ -473,22 +479,17 @@ class AuthenticDemandGenerator(MPP_Generator):
     # -----------------------
     # Multi-cargo moments
     # -----------------------
-    def _generate_moments(self, target_utils, batch_size=(1,), cargo_shares=None, include_reefer=True):
+    def _generate_moments(self, target_utils, batch_size=(1,), cargo_shares=None):
         """
         Generate e_x and sigma_x for all cargo types.
         """
 
-        # Shares of cargo types
-        shares = th.ones(self.K, device=self.device) / self.K if cargo_shares is None else th.tensor(cargo_shares,
-                                                                                           dtype=th.float32,
-                                                                                           device=self.device)
-        shares = shares / shares.sum()
 
         # Generate fixed expected demand per cargo type
         e_x = th.zeros((*batch_size,self.P, self.P,  self.K, ), dtype=th.long, device=self.device)
         for k in range(self.K):
             # Divide capacity C by mean TEU per container to get number of containers
-            Ck = int(round(self.C * shares[k].item() / self.mean_teu))
+            Ck = int(round(self.C * self.shares[k].item() / self.mean_teu))
             e_matrix = self.generate_matrix(target_utils, C=Ck)
             e_x[..., k] = e_matrix.expand((*batch_size, self.P, self.P))
 
