@@ -1,301 +1,360 @@
+"""
+Author: Jaike van Twiller
+Year: 2025
+Paper: https://arxiv.org/abs/2504.04469 (Note: code may be part of a revised version.)
+"""
+
 import numpy as np
 import random
 
 
-
-def random_integer_partition(v, b):
+class DemandGenerator:
     """
-    Randomly partition integer v into b nonnegative integers, according to Ding & Chou (2015).
-    (https://www.sciencedirect.com/science/article/pii/S0377221715002660#sec0014a)
+    Class to generate transport matrices (OD matrices) for container vessel stowage planning.
+
+    Generates "authentic" expected OD matrices that meet target utilization per loading port,
+    supports multiple cargo types with shares, and can produce randomized scenario realizations.
     """
-    if b == 1:
-        return [v]
-    y = list(range(1, v + b))
-    for i in range(b - 1):
-        j = random.randint(i, v + b - 2)
-        y[i], y[j] = y[j], y[i]
-    y[:b - 1] = sorted(y[:b - 1])
-    x = [y[0] - 1]
-    for i in range(1, b - 1):
-        x.append(y[i] - y[i - 1] - 1)
-    x.append(v + b - 1 - y[b - 2])
-    return x
 
-def dirichlet_partition(v, b, alpha=1.0, weights=None):
-    """
-    Partition integer v into b nonnegative integers using a Dirichlet distribution.
+    def __init__(self,
+                 P: int,
+                 C: int,
+                 target_utils: list,
+                 middle_leg: int = None,
+                 loading_only: bool = False,
+                 sparsity: float = 0.3,
+                 perturb: float = 0.2,
+                 cargo_shares: list = None,
+                 include_reefer: bool = True,
+                 distribution: str = "poisson",
+                 cv_demand: float = 1.0,
+                 seed: int = None):
+        """
+        Initializes the demand generator with vessel and cargo parameters.
 
-    Parameters:
-    - v: total integer to partition
-    - b: number of bins
-    - alpha: concentration parameter (small -> skewed, large -> uniform)
-    - weights: optional prior weights per bin (length b)
+        Parameters
+        ----------
+        P : int
+            Total number of ports.
+        C : int
+            Total vessel capacity (number of containers that can be carried).
+        target_utils : list of float
+            Target utilization fractions per loading port.
+        middle_leg : int, optional
+            Index separating loading and discharging ports. Defaults to P // 2 if None.
+        loading_only : bool, optional
+            If True, loading ports only ship to discharging ports. Defaults to False.
+        sparsity : float, optional
+            Probability of zeroing an OD pair in the matrix, in [0, 1]. Defaults to 0.3.
+        perturb : float, optional
+            Fractional perturbation applied to matrix entries, in [0, 1]. Defaults to 0.2.
+        cargo_shares : list, optional
+            Shares for each cargo type (will be normalized). If None, uniform shares used.
+        include_reefer : bool, optional
+            Whether to include reefer cargo types. Defaults to True.
+        distribution : str, optional
+            Distribution used for randomization ("poisson", "neg_binomial", "lognormal",
+            "normal", "uniform"). Defaults to "poisson".
+        cv_demand : float, optional
+            Coefficient of variation of distribution. Common values are {0.5,1.0,1.5}, but in (0, \inf). Defaults to 1.0.
+        seed : int, optional
+            Random seed for reproducibility. Defaults to None.
+        """
+        self.P = int(P)
+        self.C = int(C)
+        self.target_utils = np.array(target_utils, dtype=float)
+        self.middle_leg = (middle_leg if middle_leg is not None else (self.P // 2))
+        self.loading_only = bool(loading_only)
+        self.sparsity = float(sparsity)
+        self.perturb = float(perturb)
+        self.distribution = distribution
+        self.cv_demand = cv_demand
+        self.seed = seed
+        if seed is not None:
+            np.random.seed(seed)
+            random.seed(seed)
 
-    Returns:
-    - list of length b with integer partition summing to v
-    """
-    if weights is None:
-        alphas = np.full(b, alpha)
-    else:
-        alphas = np.array(weights) * alpha
+        # --- Define cargo categories ---
+        sizes = ["20ft", "40ft"]
+        weights = ["light", "medium", "heavy"]
+        revenues = ["long", "spot"]
 
-    probs = np.random.dirichlet(alphas)
-    partition = np.random.multinomial(v, probs)
-    return partition.tolist()
+        # Base cargo types (always dry)
+        cargo_types = [(s, w, r, "dry") for s in sizes for w in weights for r in revenues]
 
+        # Add reefer variants if enabled
+        self.include_reefer = bool(include_reefer)
+        if self.include_reefer:
+            reefer_variants = [
+                ("40ft", "medium", "long", "reefer"),
+                ("40ft", "medium", "spot", "reefer"),
+            ]
+            cargo_types.extend(reefer_variants)
 
-def generate_authentic_matrix(P, C, target_utils,middle_leg=None,  loading_only=False,
-                              sparsity=0.3, perturb=0.2,  dirichlet=False, alpha=1.0):
-    """
-    Generate an authentic OD matrix, similar to to Ding & Chou (2015).
-    (https://www.sciencedirect.com/science/article/pii/S0377221715002660#sec0014a)
+        self.cargo_types = cargo_types
+        K = len(cargo_types)
 
-    Parameters:
-    - P: total number of ports
-    - C: bay capacity
-    - target_utils: list of target utilization fractions
-    - loading_only: if True, loading ports only ship to discharging ports
-    - middle_leg: index separating loading/discharging ports
-    - sparsity: probability of zeroing an OD pair
-    - perturb: fraction for random perturbation
-
-    Returns:
-    - T: P x P numpy array
-    """
-    T = np.zeros((P, P), dtype=int)
-    if middle_leg is None:
-        middle_leg = P // 2
-
-    n_loading = middle_leg if loading_only else P - 1
-
-    if len(target_utils) != n_loading:
-        raise ValueError(f"target_utils must have length equal to middle_leg ({middle_leg})")
-
-    for i in range(n_loading):
-        # Determine start of destinations
-        dest_start = middle_leg if loading_only else i + 1
-        b = P - dest_start
-        if b <= 0:
-            continue
-
-        # Target containers for this row, subtract already assigned
-        v = int(target_utils[i] * C) - np.sum(T[:i, dest_start:])
-        v = max(v, 0)
-
-        # Partition containers
-        if dirichlet:
-            partition = dirichlet_partition(v, b, alpha=alpha)
+        # --- Process shares ---
+        if cargo_shares is None:
+            shares = np.full(K, 1.0 / K, dtype=float)  # uniform
+        elif isinstance(cargo_shares, dict):
+            shares = np.array([cargo_shares.get(ct, 0.0) for ct in cargo_types], dtype=float)
         else:
-            partition = random_integer_partition(v, b)
+            shares = np.array(cargo_shares, dtype=float)
+            if shares.shape[0] != K:  # stricter check
+                raise ValueError(f"cargo_shares must have length {K}, got {shares.shape[0]}")
 
-        # Apply sparsity
-        for idx in range(b):
-            if random.random() < sparsity:
-                partition[idx] = 0
+        # Clamp negatives, normalize, fallback uniform if needed
+        shares = np.maximum(shares, 0.0)
+        ssum = shares.sum()
+        self.shares = shares / ssum if ssum > 0 else np.full(K, 1.0 / K, dtype=float)
 
-        # Re-normalize to match target
-        s = sum(partition)
-        if s > 0:
-            partition = [int(round(x * v / s)) for x in partition]
-        else:
-            partition[random.randint(0, b - 1)] = v
+        # --- TEU mapping ---
+        self.teu = np.array([1 if size == "20ft" else 2 for size, *_ in cargo_types], dtype=int)
+        self.mean_teu = float(np.sum(self.shares * self.teu))
+
+    def __call__(self, *args, **kwargs):
+        expected_demand, std_demand = self._generate_moments()
+        random_demand = self._generate(expected_demand, std_demand, n_scenarios=5)
+        return {"expected_demand": expected_demand,
+                "random_demand": random_demand}
+
+    # ---------- Partition helper ----------
+    def _random_integer_partition(self, v: int, b: int):
+        """
+        Randomly partition integer v into b nonnegative integers (Ding & Chou, 2015); https://www.sciencedirect.com/science/article/pii/S0377221715002660.
+        Returns a list of length b summing to v.
+        """
+        v = int(max(0, v))
+        b = int(max(1, b))
+        if b == 1:
+            return [v]
+        # Use combinatorial random composition via random cut points
+        y = list(range(1, v + b))
+        for i in range(b - 1):
+            j = random.randint(i, v + b - 2)
+            y[i], y[j] = y[j], y[i]
+        y[:b - 1] = sorted(y[:b - 1])
+        x = [y[0] - 1]
+        for i in range(1, b - 1):
+            x.append(y[i] - y[i - 1] - 1)
+        x.append(v + b - 1 - y[b - 2])
+        # ensure integer type
+        return [int(xx) for xx in x]
+
+    # ---------- Matrix generation ----------
+    def _generate_authentic_matrix(self, P=None, C=None, target_utils=None):
+        """
+        Generate an authentic transport matrix that attempts to meet target utilization per loading port (Ding & Chou, 2015).
+
+        Returns a P x P integer numpy array.
+        """
+        P = int(self.P if P is None else P)
+        C = int(self.C if C is None else C)
+        tutils = (self.target_utils if target_utils is None else np.array(target_utils, dtype=float))
+
+        T = np.zeros((P, P), dtype=int)
+
+        middle_leg = self.middle_leg
+        # determine number of loading rows to process
+        n_loading = (middle_leg if self.loading_only else P - 1)
+
+        if len(tutils) != n_loading:
+            raise ValueError(f"target_utils length ({len(tutils)}) must equal expected loading rows ({n_loading}).")
+
+        for i in range(n_loading):
+            dest_start = (middle_leg if self.loading_only else i + 1)
+            b = P - dest_start
+            if b <= 0:
+                continue
+
+            # compute target containers for this row i (subtract already assigned to later dest cols)
+            assigned_so_far = np.sum(T[:i, dest_start:]) if i > 0 else 0
+            v = int(round(tutils[i] * C)) - int(assigned_so_far)
+            v = max(v, 0)
+
+            # partition
+            partition = self._random_integer_partition(v, b)
+
+            # apply sparsity: zero out some OD pairs
+            for idx in range(b):
+                if random.random() < self.sparsity:
+                    partition[idx] = 0
+
+            # renormalize to match v (if possible)
+            s = int(sum(partition))
+            if s > 0:
+                scaled = np.array([int(round(x * v / s)) for x in partition])
+                diff = v - scaled.sum()
+
+                if diff > 0:
+                    # add 1 to the first `diff` largest fractional parts
+                    frac = np.array(partition) * v / s - scaled
+                    idx = np.argsort(-frac)[:diff]
+                    scaled[idx] += 1
+                elif diff < 0:
+                    # subtract 1 from the first `-diff` largest (non-zero) cells
+                    frac = scaled - np.array(partition) * v / s
+                    idx = np.argsort(-frac)[: -diff]
+                    for i in idx:
+                        if scaled[i] > 0:
+                            scaled[i] -= 1
+            else:
+                # all zeros due to sparsity or v==0; if v>0 force a random dest to hold v
+                if v > 0:
+                    idx0 = random.randint(0, b - 1)
+                    partition[idx0] = v
+
+            # apply perturbation (fractional +/-): otherwise it is a deterministic fit to target utils
+            for idx in range(b):
+                if partition[idx] > 0 and self.perturb > 0:
+                    delta = int(round(partition[idx] * random.uniform(-self.perturb, self.perturb)))
+                    partition[idx] = max(partition[idx] + delta, 0)
+
+            T[i, dest_start:] = np.array(partition, dtype=int)
+
+        return T
+
+    def _generate_moments(self):
+        """
+        Generate OD matrices for multiple cargo types.
+
+        Returns:
+            T_multi: dict mapping cargo_type tuple -> OD matrix (numpy array)
+            cargo_types: list of cargo_type tuples
+        """
+        expected_demand = {}
+        for k, ctype in enumerate(self.cargo_types):
+            # allocate capacity (at least 0)
+            C_k = max(0, int(round(self.C * self.shares[k]))) / self.mean_teu
+            # generate matrix (use same target_utils for all types here)
+            expected_demand[ctype] = self._generate_authentic_matrix(P=self.P, C=C_k, target_utils=self.target_utils)
+
+        # Std_demand = self.cv_demand * expected_demand
+        std_demand = { ctype: self.cv_demand * expected_demand[ctype] for ctype in self.cargo_types}
+        return expected_demand, std_demand
+
+    # ---------- Randomization / scenario generation ----------
+    def _generate(self, expected_val: dict, std_val: dict, n_scenarios: int = 10,  seed: int = None):
+        """
+        Take expected OD matrices (per cargo type) and randomize into scenarios.
+
+        Parameters
+        ----------
+        expected_val : dict
+            Mapping cargo_type -> expected OD numpy array
+        std_val : dict
+            Mapping cargo_type -> stddev OD numpy array
+        n_scenarios : int
+            Number of scenarios to generate
+        seed : int
+            Optional seed for random draws (overrides instance seed for this call)
+
+        Returns
+        -------
+        scenarios : list of dicts
+            Each element is a dict mapping cargo_type -> randomized OD numpy array
+        """
+        if seed is not None:
+            np.random.seed(seed)
+            random.seed(seed)
+        elif self.seed is not None:
+            np.random.seed(self.seed)
+            random.seed(self.seed)
+
+        scenarios = []
+        for s in range(int(n_scenarios)):
+            scenario = {}
+            for ctype, T_exp in expected_val.items():
+                if self.distribution == "poisson":
+                    T_rand = np.random.poisson(T_exp)
+
+                elif self.distribution == "normal":
+                    T_rand = np.random.normal(T_exp, std_val[ctype]).clip(min=0).astype(int)
+
+                elif self.distribution == "uniform":
+                    # Example: uniform around mean ± sqrt(3) * std, which gives the same variance
+                    # variance of uniform(a,b) = (b-a)^2 / 12 => (b-a) = sqrt(12) * std
+                    delta = np.sqrt(12) * std_val[ctype]  # std_val is per-cell
+                    low = np.clip(T_exp - delta / 2, 0, None)
+                    high = T_exp + delta / 2
+                    T_rand = np.random.uniform(low=low, high=high, size=T_exp.shape)
+
+                else:
+                    raise ValueError(f"Unknown distribution: {self.distribution}")
+                scenario[ctype] = np.round(T_rand).astype(int)
+            scenarios.append(scenario)
+
+        return scenarios
 
 
-        # Apply perturbation
-        for idx in range(b):
-            if partition[idx] > 0:
-                delta = int(round(partition[idx] * random.uniform(-perturb, perturb)))
-                partition[idx] = max(partition[idx] + delta, 0)
+# ---------------- Example usage ----------------
+if __name__ == "__main__":
+    P = 6
+    C = 20000
+    loading_only = False
+    middle_leg = P // 2
 
-        T[i, dest_start:] = partition
-
-    return T
-
-
-def generate_multicargo_matrix(P, C, target_utils,
-                               middle_leg=None, loading_only=False,
-                               sparsity=0.3, perturb=0.2,
-                               dirichlet=True, alpha=0.5,
-                               cargo_shares=None,
-                               include_reefer=True):
-    """
-    Generate OD matrices for multiple cargo types.
-
-    Parameters:
-    - P: number of ports
-    - C: bay capacity
-    - target_utils: target utilization list
-    - cargo_shares: dict or array defining shares across cargo types
-                    If None, uniform over all types
-    - include_reefer: whether to add reefer types
-
-    Returns:
-    - T: dict {cargo_type: OD matrix}
-    - cargo_types: list of cargo type labels
-    """
-    # Define cargo categories
-    sizes = ["20ft", "40ft"]
-    weights = ["light", "medium", "heavy"]
-    revenues = ["long", "spot"]
-
-    cargo_types = [(s, w, r) for s in sizes for w in weights for r in revenues]
-
-    if include_reefer:
-        # Add reefer cargo in most common type (assume 40ft, medium)
-        cargo_types += [("40ft", "medium", "long", "reefer"),
-                        ("40ft", "medium", "spot", "reefer")]
-
-    K = len(cargo_types)
-
-    # If no cargo_shares given, assume uniform
-    if cargo_shares is None:
-        cargo_shares = np.ones(K) / K
+    # Make sure the lengths match the voyage length P
+    if loading_only:
+        target_utils = [0.6, 0.8, 1.0] # length = P//2
     else:
-        cargo_shares = np.array(cargo_shares)
-        cargo_shares = cargo_shares / cargo_shares.sum()
+        target_utils = [0.6, 0.8, 1.0, 0.8, 0.6]  # length = P-1
 
-    # Allocate matrices
-    T_multi = {}
+    # slight random perturbation to target utils (example)
+    target_utils = np.array(target_utils) * np.random.uniform(0.9, 1.1, size=len(target_utils))
 
-    for k, ctype in enumerate(cargo_types):
-        # Scale capacity for this type
-        C_k = int(C * cargo_shares[k])
+    dg = DemandGenerator(
+        P=P,
+        C=C,
+        target_utils=target_utils,
+        middle_leg=middle_leg,
+        loading_only=loading_only,
+        sparsity=0.25,
+        perturb=0.15,
+        include_reefer=True,
+        distribution="uniform",
+        seed=42
+    )
 
-        # Generate OD matrix for this cargo type
-        T_multi[ctype] = generate_authentic_matrix(
-            P, C_k, target_utils,
-            middle_leg=middle_leg,
-            loading_only=loading_only,
-            sparsity=sparsity,
-            perturb=perturb,
-            dirichlet=dirichlet,
-            alpha=alpha
-        )
+    expected_demand, std_demand = dg._generate_moments()
+    key_example = ("40ft", "medium", "spot", "dry")
+    if key_example in expected_demand:
+        print("OD matrix for", key_example, ":\n", expected_demand[key_example])
+    else:
+        # if not present (depending on cargo list), pick a sample
+        k0 = list(expected_demand.keys())[0]
+        print("Sample OD matrix for", k0, ":\n", expected_demand[k0])
 
-    return T_multi, cargo_types
+    demand = dg._generate(expected_demand, std_demand)
+    print("Scenario 0 sample for same cargo type:")
+    print(demand[0][list(expected_demand.keys())[0]])
 
-def randomize_demand_matrix(T_multi, dist="poisson", n_scenarios=10,
-                            dispersion=1.0, sigma=0.3, seed=None):
-    """
-    Take expected OD matrices (per cargo type) and randomize into scenarios.
+    # Analyze target vs actual utilizations
+    def onboard_transports(ports: int, pol: int) -> np.array:
+        """List of cargo groups that are onboard after port `pol`"""
+        on_board = [(i, j) for i in range(ports) for j in range(ports) if i <= pol and j > pol]
+        return np.array(on_board)
 
-    Parameters:
-    - T_multi: dict {cargo_type: expected OD matrix}
-    - dist: distribution type: "poisson", "neg_binomial", "lognormal", "normal", "uniform"
-    - n_scenarios: number of random scenarios to generate
-    - dispersion: for neg_binomial (larger -> closer to Poisson)
-    - sigma: stdev factor for lognormal/normal/uniform
-    - seed: random seed
+    ob_demand = []
+    ob_teus = []
+    transport_indices = [(i, j) for i in range(P) for j in range(P) if i < j]
+    for pol in range(P - 1):
+        ob = 0
+        ob_teu = 0
+        for (i, j) in onboard_transports(P, pol):
+            k = 0
+            for key in dg.cargo_types:
+                ob += demand[0][key][i, j]
+                ob_teu += demand[0][key][i, j] * dg.teu[k]
+                k += 1
+        ob_demand.append(ob)
+        ob_teus.append(ob_teu)
 
-    Returns:
-    - scenarios: list of dicts {cargo_type: randomized OD matrix}
-    """
-    if seed is not None:
-        np.random.seed(seed)
-
-    scenarios = []
-
-    for s in range(n_scenarios):
-        scenario = {}
-        for ctype, T_exp in T_multi.items():
-            T_rand = np.zeros_like(T_exp)
-            for i in range(T_exp.shape[0]):
-                for j in range(T_exp.shape[1]):
-                    mu = T_exp[i, j]
-                    if mu <= 0:
-                        continue
-
-                    # todo: check all distributions and add CV option to adjust variance
-                    if dist == "poisson":
-                        val = np.random.poisson(mu)
-                    elif dist == "neg_binomial":
-                        # mean = mu, var = mu + mu^2/dispersion
-                        p = dispersion / (dispersion + mu)
-                        r = dispersion
-                        val = np.random.negative_binomial(r, p)
-                    elif dist == "lognormal":
-                        # lognormal with mean ≈ mu
-                        val = int(np.random.lognormal(np.log(mu + 1e-6), sigma))
-                    elif dist == "normal":
-                        val = int(max(0, np.random.normal(mu, sigma * mu)))
-                    elif dist == "uniform":
-                        low = mu * (1 - sigma)
-                        high = mu * (1 + sigma)
-                        val = int(np.random.uniform(low, high))
-                    else:
-                        raise ValueError(f"Unknown distribution: {dist}")
-
-                    T_rand[i, j] = val
-
-            scenario[ctype] = T_rand
-        scenarios.append(scenario)
-
-    return scenarios
+    print(f"Onboard demand per port: {ob_demand}")
+    print(f"Onboard TEU per port: {ob_teus}")
+    actual_utils = np.array(ob_teus) / C
+    print("Target utilizations:", target_utils)
+    print(f"Actual utilizations: {actual_utils}")
 
 
-# ===== Example usage =====
-P = 6
-C = 20000
-sparsity = 0.3
-perturb = 0.2
-loading_only = False
-middle_leg = P // 2
-dirichlet = True
-alpha = 0.2
-
-if loading_only:
-    target_utils = [0.6, 0.8, 1.0]
-else:
-    target_utils = [0.6, 0.8, 1.0, 0.8, 0.6]  # Adjusted for middle_leg = 3
-
-# Add random perturbation to target utils
-target_utils *= np.random.uniform(0.9, 1.1, size=len(target_utils))
-print("----------------")
-print("Target utilizations:", target_utils)
-
-# Loading-only authentic matrix
-T_auth = generate_authentic_matrix(P, C, target_utils, middle_leg=middle_leg, loading_only=loading_only,
-                                   sparsity=sparsity, perturb=perturb, dirichlet=dirichlet, alpha=alpha)
-print("Authentic loading OD matrix:\n", T_auth)
-
-# Track onboard containers per leg
-onboard = np.zeros((P, P), dtype=int)
-total_onboard_per_leg = []
-for leg in range(P - 1):
-    onboard[:, leg] = 0
-    onboard[leg, leg + 1:] = T_auth[leg, leg + 1:]
-    total_onboard_per_leg.append(np.sum(onboard))
-
-print("Total containers on board per leg:", total_onboard_per_leg)
-print("Utilization rate per leg:", [total / C for total in total_onboard_per_leg])
-
-# # Run this multiple times to count sparsity effect
-# sparsity_counts = []
-# relevant_elements = (P * (P - 1)) // 2 if not loading_only else middle_leg * (P - middle_leg)
-# for _ in range(100):
-#     T_test = generate_authentic_matrix(P, C, target_utils, middle_leg=middle_leg, loading_only=loading_only,
-#                                    sparsity=sparsity, perturb=perturb, dirichlet=dirichlet, alpha=alpha)
-#     non_zero_count = np.count_nonzero(T_test)
-#     sparse_count = relevant_elements  - non_zero_count
-#     sparsity_counts.append(sparse_count)
-#
-# print("Average sparse OD pairs over 100 runs:", np.mean(sparsity_counts) )
-# print("Average (%) sparsity over 100 runs:", np.mean(sparsity_counts) / relevant_elements )
-
-T_multi, cargo_types = generate_multicargo_matrix(
-    P, C, target_utils, middle_leg=P//2,
-    loading_only=False, sparsity=0.2, perturb=0.15,
-    dirichlet=True, alpha=0.3, include_reefer=True
-)
-
-print("----------------")
-print("Generated cargo types:", cargo_types)
-print("OD matrix for (40ft, medium, spot):")
-print(T_multi[("40ft", "medium", "spot")])
-
-# Assume T_multi from generate_multicargo_matrix
-scenarios = randomize_demand_matrix(T_multi, dist="neg_binomial", n_scenarios=5, sigma=0.4)
-
-print("----------------")
-print("Scenario 1, cargo type (40ft, medium, spot):")
-print(scenarios[0][("40ft", "medium", "spot")])
