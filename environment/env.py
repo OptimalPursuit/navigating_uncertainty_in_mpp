@@ -1,5 +1,6 @@
 import time
 from typing import Optional, Iterable, List, Tuple, Dict, Union
+from collections import defaultdict
 
 import torch
 import torch as th
@@ -63,7 +64,7 @@ class MasterPlanningEnv(EnvBase):
         # Seed and generator
         self._set_seed(kwargs.get("seed"))
         self.demand_uncertainty = kwargs.get("demand_uncertainty", False)
-        self.generator = MPP_Generator(device=device,**kwargs)
+        self.generator = MPP_Generator(device=device, **kwargs)
         if td_gen == None:
             self.td_gen = self.generator(batch_size=batch_size,)
         # Data type and shapes
@@ -730,19 +731,12 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         self.BL = kwargs.get("blocks", 2)  # Number of paired blocks: 2 (wings + center), 3 (wings + center1 + center2)
         super().__init__(device=device, batch_size=batch_size, **kwargs)
         # self.generator = UniformMPP_Generator(device=device, **kwargs)
-        kwargs["target_utils"] = [0.6, 0.8, 0.95, 0.85, 0.5]  # Target utilization levels for demand generator
-
-        # Cargo types
-        # todo: improve this part, make weights, revenues, sizes configurable/optional
-        include_reefer = kwargs.get("include_reefer", False)
-        sizes = ["20ft", "40ft"]
-        weights = ["light", "medium", "heavy"]
-        revenues = ["long", "spot"]
-        cargo_types = [(s, w, r) for s in sizes for w in weights for r in revenues]
-        if include_reefer:
-            cargo_types += [("40ft", "medium", "long", "reefer"),
-                            ("40ft", "medium", "spot", "reefer")]
-        kwargs["cargo_classes"] = len(cargo_types) // self.CC
+        kwargs["target_utils"] = [0.6, 0.75, 0.99, 0.99, 0.8]
+        #[0.6, 0.8, 0.95, 0.85, 0.5]  # Target utilization levels for demand generator
+        kwargs = self._generate_cargo_shares(kwargs)
+        # print("By size:", self.summarize_shares(kwargs["cargo_shares"], dimension=0))
+        # print("By weight:", self.summarize_shares(kwargs["cargo_shares"], dimension=1))
+        # print("By revenue:", self.summarize_shares(kwargs["cargo_shares"], dimension=2))
         self.generator = AuthenticDemandGenerator(device=device, **kwargs)
 
         # Shapes
@@ -1056,3 +1050,83 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
                              device=self.device, dtype=self.float_type).view(-1,1,1,1,1)
         output = p_weight - self.weights.view(1,1,1,1,self.K) * (target + delta)
         return output.view(-1, self.n_block_locations, self.K,)
+
+    # Helpers for generator
+    def _generate_cargo_shares(self, kwargs,
+                              size_shares=None,
+                              weight_shares=None,
+                              revenue_shares=None,
+                              reefer_shares=None):
+        """
+        Generates cargo_shares dict including optional reefer cargo, treating reefer as just another weighting factor.
+
+        kwargs:
+            include_reefers (bool): whether to include reefer cargo
+            CC (int): cargo class divisor (optional)
+
+        size_shares, weight_shares, revenue_shares, reefer_shares: dict of multipliers
+            size_shares: dict {"20ft": float, "40ft": float}
+            weight_shares: dict {"light": float, "medium": float, "heavy": float}
+            revenue_shares: dict {"spot": float, "long": float}
+            reefer_shares: dict {"non-reefer": float, "reefer": float}
+        Returns:
+            cargo_shares: dict {cargo_type_tuple: normalized share}
+        """
+        include_reefer = kwargs.get("include_reefers", False)
+
+        # Default shares
+        size_shares = size_shares or {"20ft": 1.0, "40ft": 1.33}
+        weight_shares = weight_shares or {"light": 1.0, "medium": 1.0, "heavy": 0.75}
+        revenue_shares = revenue_shares or {"spot": 0.66, "long": 1.0}
+        reefer_shares = reefer_shares or {"non-reefer": 1.0, "reefer": 1.33}
+        sizes = list(size_shares.keys())
+        weights = list(weight_shares.keys())
+        revenues = list(revenue_shares.keys())
+
+        # Base cargo types
+        cargo_types = [(s, w, r) for s in sizes for w in weights for r in revenues]
+
+        # Optional reefer cargo
+        if include_reefer:
+            cargo_types += [("40ft", "medium", "long", "reefer"),
+                            ("40ft", "medium", "spot", "reefer")]
+
+        # Compute unnormalized shares using all factors consistently
+        cargo_shares = {}
+        for ct in cargo_types:
+            size, weight, revenue = ct[:3]
+            share = size_shares[size] * weight_shares[weight] * revenue_shares[revenue] * reefer_shares["reefer"]
+
+            # Apply reefer weight if this cargo is reefer, else non-reefer weight
+            if len(ct) == 4 and ct[3] == "reefer":
+                share *= reefer_shares["reefer"]
+            else:
+                share *= reefer_shares["non-reefer"]
+
+            cargo_shares[ct] = share
+
+        # Normalize to sum to 1
+        total = sum(cargo_shares.values())
+        cargo_shares = {k: v / total for k, v in cargo_shares.items()}
+
+        # Assign back to kwargs
+        kwargs["cargo_classes"] = len(cargo_types) // kwargs.get("CC", 1)
+        kwargs["cargo_shares"] = cargo_shares
+
+        return kwargs
+
+    def summarize_shares(self, cargo_shares, dimension=0):
+        """
+        Summarize cargo shares along a given dimension.
+
+        Args:
+            cargo_shares: dict {(size, weight, revenue[, reefer]): share}
+            dimension: int, 0=size, 1=weight, 2=revenue
+
+        Returns:
+            dict {dimension_value: total_share}
+        """
+        summary = defaultdict(float)
+        for key, share in cargo_shares.items():
+            summary[key[dimension]] += share
+        return dict(summary)
