@@ -572,7 +572,6 @@ if __name__ == "__main__":
     batch_size = 1000
 
     # Create generator
-    # todo: pass generator parameters from config file!
     generator = env.generator
     dist = "Gaussian" if not generator.generalization else "Uniform"
     print("Distribution is ", dist)
