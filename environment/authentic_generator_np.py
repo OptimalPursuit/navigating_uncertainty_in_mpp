@@ -273,7 +273,7 @@ class DemandGenerator:
                     T_rand = np.random.poisson(T_exp)
 
                 elif self.distribution == "normal":
-                    # Normal is biased to clipping => 0, hence samples have higher sample mean than its expected value
+                    # todo: normal is biased to clipping => 0, hence samples have higher sample mean than its expected value
                     T_rand = np.random.normal(T_exp, std_val[ctype]).clip(min=0).astype(int)
 
                 elif self.distribution == "uniform":
