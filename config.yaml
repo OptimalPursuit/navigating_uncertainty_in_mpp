@@ -24,9 +24,13 @@ env:
   - 50 # 50, 500
   cargo_classes: 6
   customer_classes: 2
-  cv_demand: 1.5 # todo: try different standard deviations of demand with Normal dist - 0.5, 1.0, 1.5 (RH gets closer to NA!)
+  cv_demand: 1.0 # todo: try different standard deviations of demand with Normal dist - 0.5, 1.0, 1.5 (RH gets closer to NA!)
   decks: 2
   demand_uncertainty: true
+  demand_sparsity: 0.3
+  demand_perturbation: 0.15
+  use_dirichlet_partition: true
+  dirichlet_alpha: 0.3
   env_name: block_mpp #block_mpp #mpp
   episode_order: standard
   generalization: false
@@ -35,10 +39,10 @@ env:
   block_stowage_mask: false
   iid_demand: true
   limit_revenue: true
+  loading_discharge_region: false
   long_crane_costs: 0.5
   normalize_obs: true
-  perturbation: 0.2
-  ports: 4
+  ports: 6
   seed: 42
   spot_percentage: 0.3
   stability_difference: 0.1

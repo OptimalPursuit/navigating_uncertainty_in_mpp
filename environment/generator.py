@@ -71,11 +71,11 @@ class MPP_Generator(Generator):
             th.full((self.K // 2,), 2 * self.spot_percentage, device=self.device)
         ])
         self.iid_demand = kwargs.get("iid_demand", True)
-        self.cv_demand = kwargs.get("cv_demand", 0.5)
-        self.demand_uncertainty = kwargs.get("demand_uncertainty", False)
-        self.demand_sparsity = kwargs.get("demand_sparsity", False)
         self.generalization = kwargs.get("generalization", False)
-        self.perturbation = kwargs.get("perturbation", 0.1)
+        self.demand_uncertainty = kwargs.get("demand_uncertainty", False)
+        self.cv_demand = kwargs.get("cv_demand", 0.5)
+        self.demand_sparsity = kwargs.get("demand_sparsity", 0.5)
+        self.demand_perturbation = kwargs.get("demand_perturbation", 0.1)
 
         # Demand variability
         self.cv = th.empty((self.K,), device=self.device, dtype=th.float16)
@@ -233,8 +233,8 @@ class MPP_Generator(Generator):
                            generator=self.rng) * bound
         variance = (expected * cv.view(1, 1, self.K,)) ** 2
 
-        if self.demand_sparsity:
-            mask = (th.rand(*batch_size, self.T, self.K, device=self.device, generator=self.rng) > 0.5).float()
+        if self.demand_sparsity > 0:
+            mask = (th.rand(*batch_size, self.T, self.K, device=self.device, generator=self.rng) > self.demand_sparsity).float()
             masked_out = expected * (1 - mask)  # Amount to redistribute
             expected = expected * mask
 
@@ -306,7 +306,7 @@ class UniformMPP_Generator(MPP_Generator):
             if batch_size != []: bound = bound.unsqueeze(0).expand(*batch_size, -1, -1) # Expand to batch size
 
             # Get initial demand based on random perturbed bound
-            bound = self._random_perturbation(bound, self.perturbation)
+            bound = self._random_perturbation(bound, self.demand_perturbation)
             demand, _ = self._generate_initial_moments(batch_size, bound, self.cv)
             # Get moments from uniform distribution
             e_x = (bound * 0.5).expand_as(demand)
@@ -345,38 +345,32 @@ class AuthenticDemandGenerator(MPP_Generator):
 
     def __init__(
         self,
-        loading_only: bool = False,
         target_utils: list = None,
-        sparsity: float = 0.2,
-        perturb: float = 0.15,
-        dirichlet: bool = True,
-        alpha: float = 0.3,
         cargo_shares: dict = None,
-        include_reefer: bool = True,
         device="cpu",
-        cv_demand: float = 0.3,
         **kwargs
     ):
         super().__init__(device=device, **kwargs)
+        # Capacity and voyage
         self.C = self.total_capacity.item()
         self.middle_leg = self.P // 2
-        self.loading_only = loading_only
-        self.load_ports = self.middle_leg if loading_only else (self.P - 1)
-
+        self.loading_discharge_region = kwargs.get("loading_discharge_region", False)
+        self.load_ports = self.middle_leg if self.loading_discharge_region else (self.P - 1)
         self.target_utils = target_utils if target_utils is not None else [
             0.5 + 0.5 * i / (self.load_ports - 1) for i in range(self.load_ports)
         ]
 
-        self.sparsity = sparsity
-        self.perturb = perturb
-        self.dirichlet = dirichlet
-        self.alpha = alpha
-        self.cargo_share = cargo_shares
-        self.include_reefer = include_reefer
-        self.cv_demand = cv_demand
+        # Demand generation
+        self.cv_demand = kwargs.get("cv_demand", 1.0)
+        self.demand_sparsity = kwargs.get("demand_sparsity", 0.0)
+        self.demand_perturbation = kwargs.get("demand_perturbation", 0.15)
+        self.use_dirichlet_partition = kwargs.get("use_dirichlet_partition", True)
+        self.dirichlet_alpha = kwargs.get("dirichlet_alpha", 0.3)
         self.device = th.device(device)
 
-        # Mean TEU per container (based on cargo_share)
+        # Cargo shares and mean TEU
+        self.cargo_share = cargo_shares
+        self.include_reefer = kwargs.get("include_reefer", False)
         if cargo_shares is None:
             self.mean_teu = 1.5
         else:
@@ -424,11 +418,11 @@ class AuthenticDemandGenerator(MPP_Generator):
         T = th.zeros((self.P, self.P), dtype=th.long, device=self.device)
 
         # Pre-generate randomness for sparsity and perturb
-        sparsity_mask = (th.rand((n_loading, self.P), device=self.device) >= self.sparsity).long() if self.sparsity > 0 else None
-        perturb_noise = (th.rand((n_loading, self.P), device=self.device) * 2 - 1) if self.perturb > 0 else None
+        sparsity_mask = (th.rand((n_loading, self.P), device=self.device) >= self.demand_sparsity).long() if self.demand_sparsity > 0 else None
+        perturb_noise = (th.rand((n_loading, self.P), device=self.device) * 2 - 1) if self.demand_perturbation > 0 else None
 
         for i in range(n_loading):
-            dest_start = self.middle_leg if self.loading_only else (i + 1)
+            dest_start = self.middle_leg if self.loading_discharge_region else (i + 1)
             b = self.P - dest_start
             if b <= 0:
                 continue
@@ -438,18 +432,18 @@ class AuthenticDemandGenerator(MPP_Generator):
             if v == 0:
                 continue
             # Partition
-            part = self.dirichlet_partition(v, b, self.alpha) if self.dirichlet else self.random_integer_partition(v, b)
+            part = self.dirichlet_partition(v, b, self.dirichlet_alpha) if self.use_dirichlet_partition else self.random_integer_partition(v, b)
             # Sparsity
-            if self.sparsity > 0:
+            if self.demand_sparsity > 0:
                 mask = sparsity_mask[i, dest_start: dest_start + b]
                 part = part * mask
                 if part.sum() == 0:
                     part[th.randint(0, b, (1,))] = v
             # Perturb
-            if self.perturb > 0:
+            if self.demand_perturbation > 0:
                 noise = perturb_noise[i, dest_start: dest_start + b]
                 mask = part > 0
-                deltas = (part.float() * noise * self.perturb).round().long() * mask
+                deltas = (part.float() * noise * self.demand_perturbation).round().long() * mask
                 part = th.clamp(part + deltas, min=0)
             # Rescale to sum v
             s = part.sum().item()
@@ -505,9 +499,6 @@ class AuthenticDemandGenerator(MPP_Generator):
         """
         Generate batch of stochastic demands.
         """
-        print("Distribution:", dist)
-        print("Expected demand (mean over batch):", mu.float().mean(dim=0).sum())
-
         if seed is not None:
             th.manual_seed(seed)
         mu = mu.float()
@@ -577,6 +568,7 @@ if __name__ == "__main__":
     batch_size = 1000
 
     # Create generator
+    # todo: pass generator parameters from config file!
     generator = env.generator
     dist = "Gaussian" if not generator.generalization else "Uniform"
     print("Distribution is ", dist)
@@ -588,7 +580,7 @@ if __name__ == "__main__":
     demand = td["observation", "realized_demand"].view(batch_size, env.T, env.K)
     e_x = td["observation", "expected_demand"].view(batch_size, env.T, env.K)
 
-    # compute onboard per leg properly for loading_only block
+    # compute onboard per leg properly for loading_discharge_region block
     # onboard vector: positions correspond to destinations (ports). We'll track containers currently onboard after each leg.
     onboard_x = th.zeros(env.P, dtype=th.long)
     total_onboard_x_per_leg = []
@@ -610,14 +602,10 @@ if __name__ == "__main__":
         onboard_ex[leg + 1] = (e_x[:, ob, :].float().mean(dim=0) * env.teus.view(-1)).sum().item()
         total_onboard_ex_per_leg.append(int(onboard_ex.sum().item()))
 
-    # TODO:
-    #  - This works for containers volumes, not TEU! We need to adapt for TEU.
-    #  - Also, not sure if this works for different distributions
-    print("Sampled ontainers on board per leg:", total_onboard_x_per_leg)
+    print("Sampled containers on board per leg:", total_onboard_x_per_leg)
     print("TEU Utilization rate per leg:", [x / generator.C for x in total_onboard_x_per_leg])
     print("Expected containers on board per leg:", total_onboard_ex_per_leg)
     print("Expected TEU Utilization rate per leg:", [x / generator.C for x in total_onboard_ex_per_leg])
-    breakpoint()
 
     # EDA of all types
     demand_dict = {}
