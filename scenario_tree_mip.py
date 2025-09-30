@@ -913,7 +913,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                             for cargo_class in range(K):
                                 for pol in range(stage + 1):
                                     for pod in range(pol + 1, P):
-                                        if stochastic_algorithm == "rolling_horizon":
+                                        if stochastic_algorithm in ["rolling_horizon", "myopic"]:
                                             x_[stage, node_id, bay, deck, block, cargo_class, pol, pod] = solution["x"].get((stage, node_id, bay, deck, block, cargo_class, pol, pod), 0)
                                         else:
                                             x_[stage, node_id, bay, deck, block, cargo_class, pol, pod] = x[stage, node_id, bay, deck, block, cargo_class, pol, pod].solution_value
@@ -922,8 +922,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
                         for pod in range(stage + 1, P):
                             PD_[stage, node_id, bay, block, pod] = PD[stage, node_id, bay, block, pod].solution_value
-                            for k in range(K):
-                               ob_demand[stage, node_id, k, pod] = demand[stage, node_id][k, pod]
                         mixing_[stage, node_id, bay, block,] = mixing[stage, node_id, bay, block,].solution_value
 
                         if stochastic_algorithm == "rolling_horizon":
@@ -1004,6 +1002,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             "mean_teu_load_per_port":mean_teu_load_per_port.tolist(),
             "mean_load_per_location":mean_load_per_location.tolist(),
             "mean_hatch_overstowage":mean_hatch_overstowage.tolist(),
+            "demand": demand_.tolist(),
             # "mean_ci":mean_ci.tolist(),
             "mean_demand":mean_demand.tolist(),
             "mean_revenue":mean_revenue.tolist(),
@@ -1038,16 +1037,17 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ports", type=int, default=5)
+    parser.add_argument("--ports", type=int, default=6)
     parser.add_argument("--teu", type=int, default=20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--scenarios", type=int, default=16) # 20
+    parser.add_argument("--scenarios", type=int, default=4) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--num_episodes", type=int, default=30)
+    parser.add_argument("--num_episodes", type=int, default=5)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
-    parser.add_argument("--stochastic_algorithm", type=str, default="rolling_horizon")  # multi_stage, rolling_horizon, myopic
+    parser.add_argument("--cv_demand", type=float, default=1.0)
+    parser.add_argument("--stochastic_algorithm", type=str, default="myopic")  # rolling_horizon, myopic
     # todo: add warm solution
     parser = parser.parse_args()
 
@@ -1062,6 +1062,7 @@ if __name__ == "__main__":
     config.env.deterministic = parser.deterministic
     config.env.generalization = parser.generalization
     config.env.utilization_rate_initial_demand = parser.utilization_rate_initial_demand
+    config.env.cv_demand = parser.cv_demand
     config.testing.num_episodes = parser.num_episodes
 
     # Set parameters
@@ -1081,10 +1082,15 @@ if __name__ == "__main__":
     # Precompute largest scenario tree
     stages = config.env.ports - 1  # Number of load ports (P-1)
     teu = config.env.teu
-    max_scenarios_per_stage = max(num_scenarios) if max(num_scenarios) >= 28 else 28
+    max_scenarios_per_stage = max(num_scenarios) if max(num_scenarios) <= 28 else 28
+    if stochastic_algorithm == "rolling_horizon":
+        max_scenarios_per_stage += 1
     # Number of scenarios per stage
     max_paths = max_scenarios_per_stage ** (stages-1) + 1 if not deterministic else 1
     node_list = precompute_node_list(stages, max_scenarios_per_stage, deterministic)
+    obj_list = []
+    tot_demand_list = []
+    max_ob_demand_list = []
 
     for x in range(num_episodes):  # Iterate over episodes
         # Create the environment on cpu
@@ -1102,9 +1108,35 @@ if __name__ == "__main__":
             # Run the main logic and get results and variables
             result, var = main(env, demand_sub_tree, scen, stages, max_paths, seed, perfect_information, deterministic, stochastic_algorithm)
             # log result as error (to show in .err file):
+
+            # print total teu on board per port
+            print("--------------------------------------------------")
             print(f"Result: TEU{teu}_P{stages+1}_E{x}_S{scen}_PI{perfect_information}_Gen{generalization}: Obj {result.get('obj', None)}, Time {result.get('time', None)}, Gap {result.get('gap', None)}")
-            break
-        break
+            print(f"Total TEU load per port: {np.array(result.get('mean_teu_load_per_port', []), dtype=int)}")
+
+            # todo: check
+            demand = np.array(result.get('demand', []), dtype=int)
+            ob_demand = []
+            ob_teus = []
+            transport_indices = [(i, j) for i in range(env.P) for j in range(env.P) if i < j]
+            for p in range(env.P - 1):
+                ob = 0
+                ob_teu = 0
+                for (i,j) in onboard_groups(env.P, p, transport_indices)[0]:
+                    for k in range(env.K):
+                        ob += demand[:,0][i, k, j]
+                        ob_teu += demand[:,0][i, k, j] * env.teus[k]
+                ob_demand.append(ob)
+                ob_teus.append(ob_teu.item())
+
+            print(f"Load demand: {demand[:,0].sum(axis=(-2,-1))}")
+            print(f"Onboard demand per port: {ob_demand}")
+            print(f"Onboard TEU per port: {ob_teus}")
+            tot_demand_list.append(demand[:,0].sum())
+            max_ob_demand_list.append(max(x for x in ob_teus))
+
+            # get onboard set and compute onboard demand
+            obj_list.append(result.get('obj', None))
 
             # breakpoint() # todo: remove later
             #
@@ -1117,3 +1149,9 @@ if __name__ == "__main__":
             #           f"e{x}_s{scen}_pi{perfect_information}"
             #           f"_gen{generalization}.json", "w") as json_file:
             #     json.dump(result, json_file, indent=4)
+
+    print("==================================================")
+    print("Type of algorithm:", stochastic_algorithm)
+    print(f"Avg obj over {num_episodes} episodes: {np.mean(obj_list)}")
+    print(f"Avg total demand over {num_episodes} episodes: {np.mean(tot_demand_list)}")
+    print(f"Avg max onboard demand over {num_episodes} episodes: {np.mean(max_ob_demand_list)}")
