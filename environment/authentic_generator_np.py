@@ -303,7 +303,7 @@ if __name__ == "__main__":
     else:
         target_utils = [0.6, 0.8, 1.0, 0.8, 0.6]  # length = P-1
 
-    # slight random perturbation to target utils (example)
+    # slight randomization to target utils (example)
     target_utils = np.array(target_utils) * np.random.uniform(0.9, 1.1, size=len(target_utils))
 
     dg = DemandGenerator(
