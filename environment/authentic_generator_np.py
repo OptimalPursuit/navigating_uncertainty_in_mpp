@@ -6,6 +6,7 @@ Paper: https://arxiv.org/abs/2504.04469 (Note: code may be part of a revised ver
 
 import numpy as np
 import random
+from scipy.stats import truncnorm
 
 
 class DemandGenerator:
@@ -270,14 +271,13 @@ class DemandGenerator:
                     T_rand = np.random.poisson(T_exp)
 
                 elif self.distribution == "normal":
+                    # todo: normal is biased to clipping => 0, hence samples have higher sample mean than its expected value
                     T_rand = np.random.normal(T_exp, std_val[ctype]).clip(min=0).astype(int)
 
                 elif self.distribution == "uniform":
-                    # Example: uniform around mean ± sqrt(3) * std, which gives the same variance
-                    # variance of uniform(a,b) = (b-a)^2 / 12 => (b-a) = sqrt(12) * std
-                    delta = np.sqrt(12) * std_val[ctype]  # std_val is per-cell
-                    low = np.clip(T_exp - delta / 2, 0, None)
-                    high = T_exp + delta / 2
+                    # Uniform in [0, 2*mean]
+                    low = 0
+                    high = 2*T_exp
                     T_rand = np.random.uniform(low=low, high=high, size=T_exp.shape)
 
                 else:
@@ -292,7 +292,7 @@ class DemandGenerator:
 if __name__ == "__main__":
     P = 6
     C = 20000
-    loading_only = False
+    loading_only = True
     middle_leg = P // 2
 
     # Make sure the lengths match the voyage length P
@@ -313,22 +313,18 @@ if __name__ == "__main__":
         sparsity=0.25,
         perturb=0.15,
         include_reefer=True,
-        distribution="uniform",
+        distribution="poisson",
         seed=42
     )
 
     expected_demand, std_demand = dg._generate_moments()
-    key_example = ("40ft", "medium", "spot", "dry")
-    if key_example in expected_demand:
-        print("OD matrix for", key_example, ":\n", expected_demand[key_example])
-    else:
-        # if not present (depending on cargo list), pick a sample
-        k0 = list(expected_demand.keys())[0]
-        print("Sample OD matrix for", k0, ":\n", expected_demand[k0])
-
     demand = dg._generate(expected_demand, std_demand)
-    print("Scenario 0 sample for same cargo type:")
-    print(demand[0][list(expected_demand.keys())[0]])
+    cargo_sample = list(expected_demand.keys())[0]
+    print("--------------------")
+    print(f"Scenario 0 – Cargo type: {cargo_sample}")
+    print(f"OD matrix shape: {demand[0][cargo_sample].shape}")
+    print("OD matrix:\n", demand[0][cargo_sample])
+    print(f"Total containers for this cargo type: {demand[0][cargo_sample].sum()}")
 
     # Analyze target vs actual utilizations
     def onboard_transports(ports: int, pol: int) -> np.array:
@@ -351,10 +347,9 @@ if __name__ == "__main__":
         ob_demand.append(ob)
         ob_teus.append(ob_teu)
 
+    print("--------------------")
     print(f"Onboard demand per port: {ob_demand}")
     print(f"Onboard TEU per port: {ob_teus}")
     actual_utils = np.array(ob_teus) / C
     print("Target utilizations:", target_utils)
     print(f"Actual utilizations: {actual_utils}")
-
-
