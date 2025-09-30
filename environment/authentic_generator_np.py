@@ -1,7 +1,7 @@
 """
 Author: Jaike van Twiller
 Year: 2025
-Paper: https://arxiv.org/abs/2504.04469 (Note: code may be part of a revised version.)
+Paper: https://arxiv.org/abs/2504.04469 (Note: code will be part of a revised version, not in paper yet)
 """
 
 import numpy as np
