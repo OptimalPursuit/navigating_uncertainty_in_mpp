@@ -605,10 +605,11 @@ if __name__ == "__main__":
         onboard_ex[leg + 1] = (e_x[:, ob, :].float().mean(dim=0) * env.teus.view(-1)).sum().item()
         total_onboard_ex_per_leg.append(int(onboard_ex.sum().item()))
 
+    C = generator.C if hasattr(generator, 'C') else generator.total_capacity.item()
     print("Sampled containers on board per leg:", total_onboard_x_per_leg)
-    print("TEU Utilization rate per leg:", [x / generator.C for x in total_onboard_x_per_leg])
+    print("TEU Utilization rate per leg:", [x / C for x in total_onboard_x_per_leg])
     print("Expected containers on board per leg:", total_onboard_ex_per_leg)
-    print("Expected TEU Utilization rate per leg:", [x / generator.C for x in total_onboard_ex_per_leg])
+    print("Expected TEU Utilization rate per leg:", [x / C for x in total_onboard_ex_per_leg])
 
     # EDA of all types
     demand_dict = {}
