@@ -84,6 +84,8 @@ class AttentionDecoderWithCache(nn.Module):
         self.output_norm = add_normalization_layer(normalization, embed_dim * 2)
         self.mean_head = nn.Linear(embed_dim * 2, action_dim) # Mean head
         self.std_head = nn.Linear(embed_dim * 2, action_dim) # Standard deviation head
+        # do not remove, part of model weights
+        self.multiplier_head = nn.Linear(embed_dim * 2, 1) # Multiplier head
 
         # Temperature for the policy
         self.temperature = temperature
