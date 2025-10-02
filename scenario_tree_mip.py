@@ -606,19 +606,17 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 rolling_horizon_x[t, 0, b, d, bl, k, t, j] = x[(t, 0, b, d, bl, k, t, j)].solution_value
 
         # Compute objective over all current stage decisions
-        objective = objective_function(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_,)
+        objective_value = objective_function(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_,)
 
-        total_allocated = np.zeros((K, stages, P))
-        for (stage, node_id, b, d, bl, k, i, j), value in rolling_horizon_x.items():
-            total_allocated[k, stage, j] += value
+        # total_allocated = np.zeros((K, stages, P))
+        # for (stage, node_id, b, d, bl, k, i, j), value in rolling_horizon_x.items():
+        #     total_allocated[k, stage, j] += value
         # print(f"Objective value: {objective}")
         # print("Total allocated containers per stage:")
         # print(total_allocated.sum(axis=(0,2)))
         # print(total_allocated.sum(axis=(0,)))
         # breakpoint() # todo: remove later
-
-
-        return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective}
+        return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective_value}
 
     def build_myopic_block_mpp(stages: int,
                                 demand: np.array,
@@ -630,9 +628,9 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             - Solve and apply stage-0 decisions
             - Move forward
         """
-        rolling_horizon_x = {}
-        rolling_horizon_HO = {}
-        rolling_horizon_CM = {}
+        myopic_x = {}
+        myopic_HO = {}
+        myopic_CM = {}
 
         for t in range(stages):
             print(f"\n--- Rolling horizon solve at stage {t} ---")
@@ -650,9 +648,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 # only fix x_{t-1} to x_t
                                 for i in range(prev_stage, prev_stage + 1):
                                     for j in range(i + 1, P):
-                                        x[t, 0, b, d, bl, k, i, j].set_lb(rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
-                                        x[t, 0, b, d, bl, k, i, j].set_ub(rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
-
+                                        x[t, 0, b, d, bl, k, i, j].set_lb(myopic_x[prev_stage, 0, b, d, bl, k, i, j])
+                                        x[t, 0, b, d, bl, k, i, j].set_ub(myopic_x[prev_stage, 0, b, d, bl, k, i, j])
 
             # Last port → deterministic one-stage
             last_stage_demand = {(t, 0): demand[(t, 0)]}
@@ -667,174 +664,141 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                 raise RuntimeError(f"No solution found at stage {t}")
 
             # Extract current stage decisions
-            rolling_horizon_CM[t, 0] = CM[(t, 0)].solution_value
+            myopic_CM[t, 0] = CM[(t, 0)].solution_value
             for b in range(B):
                 for bl in range(BL):
-                    rolling_horizon_HO[t, 0, b, bl] = HO[(t, 0, b, bl)].solution_value
+                    myopic_HO[t, 0, b, bl] = HO[(t, 0, b, bl)].solution_value
                     for d in range(D):
                         for k in range(K):
                             for j in range(t + 1, P):
-                                rolling_horizon_x[t, 0, b, d, bl, k, t, j] = x[(t, 0, b, d, bl, k, t, j)].solution_value
+                                myopic_x[t, 0, b, d, bl, k, t, j] = x[(t, 0, b, d, bl, k, t, j)].solution_value
 
         # Compute objective over all current stage decisions
-        objective = objective_function(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_,)
+        objective_value = objective_function(myopic_x, myopic_HO, myopic_CM, revenues_,)
+        return {"x": myopic_x, "HO": myopic_HO, "CM": myopic_CM, "objective_value": objective_value}
 
-        total_allocated = np.zeros((K, stages, P))
-        for (stage, node_id, b, d, bl, k, i, j), value in rolling_horizon_x.items():
-            total_allocated[k, stage, j] += value
-        # print("Total allocated containers per stage:")
-        # print(total_allocated.sum(axis=(0,2)))
-        # print(total_allocated.sum(axis=(0,)))
-        # print(objective)
-        # breakpoint() # todo: remove later
+    def objective_function(x: Any, HO: Any, CM: Any, revenues: Any, start_stage: int = None) -> Any:
+        """Define the optimization objective function."""
 
+        def revenue_term(stage, node_id, with_blocks: bool):
+            """Total revenue from x decisions."""
+            if with_blocks:
+                return mdl.sum(
+                    revenues[stage, k, j] * x[stage, node_id, b, d, bl, k, stage, j]
+                    for j in range(stage + 1, P)
+                    for b in range(B)
+                    for d in range(D)
+                    for k in range(K)
+                    for bl in range(BL)
+                )
+            else:
+                return mdl.sum(
+                    revenues[stage, k, j] * x[stage, node_id, b, d, k, stage, j]
+                    for j in range(stage + 1, P)
+                    for b in range(B)
+                    for d in range(D)
+                    for k in range(K)
+                )
 
-        return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective}
+        def ho_cost_term(stage, node_id, with_blocks: bool):
+            """Handling/holding cost."""
+            if with_blocks:
+                return mdl.sum(env.ho_costs * HO[stage, node_id, b, bl] for b in range(B) for bl in range(BL))
+            else:
+                return mdl.sum(env.ho_costs * HO[stage, node_id, b] for b in range(B))
 
-    def objective_function(x:Any, HO:Any, CM:Any, revenues:Any, start_stage:int=None) -> Any:
-        """Define the objective function"""
-        # todo: simplify this function
+        def cm_cost_term(stage, node_id):
+            """Conversion/maintenance cost."""
+            return env.cm_costs * CM[stage, node_id]
 
-        # Objective: Maximize the total expected revenue over all scenarios
+        # ------------------------------------------------------------
+        # MAIN LOGIC
+        # ------------------------------------------------------------
         probabilities = {}
+
         if stochastic_algorithm == "multi_stage":
             for (stage, node_id) in node_list:
                 probabilities[stage, node_id] = 1 / num_nodes_per_stage[stage]
 
-            if config.env.env_name == "mpp":
-                objective = mdl.sum(
-                    probabilities[stage, node_id] * (
-                            mdl.sum(
-                                revenues[stage, k, j] * x[stage, node_id, b, d, k, stage, j]
-                                for j in range(stage + 1, P)  # Loop over discharge ports
-                                for b in range(B)  # Loop over bays
-                                for d in range(D)  # Loop over decks
-                                for k in range(K)  # Loop over cargo classes
-                            )
-                            - mdl.sum(env.ho_costs * HO[stage, node_id, b] for b in range(B))
-                            - env.cm_costs * CM[stage, node_id]
-                    )
-                    for stage in range(stages)  # Iterate over all stages
-                    for node_id in range(num_nodes_per_stage[stage])  # Iterate over nodes at each stage
+            with_blocks = config.env.env_name == "block_mpp"
+
+            objective = mdl.sum(
+                probabilities[stage, node_id] * (
+                        revenue_term(stage, node_id, with_blocks)
+                        - ho_cost_term(stage, node_id, with_blocks)
+                        - cm_cost_term(stage, node_id)
                 )
-            elif config.env.env_name == "block_mpp":
-                objective = mdl.sum(
-                    probabilities[stage, node_id] * (
-                            mdl.sum(
-                                revenues[stage, k, j] * x[stage, node_id, b, d, bl, k, stage, j]
-                                for j in range(stage + 1, P)  # Loop over discharge ports
-                                for b in range(B)  # Loop over bays
-                                for d in range(D)  # Loop over decks
-                                for k in range(K)  # Loop over cargo classes
-                                for bl in range(BL)  # Loop over blocks
-                            )
-                            - mdl.sum(env.ho_costs * HO[stage, node_id, b, bl] for b in range(B) for bl in range(BL))
-                            - env.cm_costs * CM[stage, node_id]
-                    )
-                    for stage in range(stages)  # Iterate over all stages
-                    for node_id in range(num_nodes_per_stage[stage])  # Iterate over nodes at each stage
-                )
-            else:
-                raise ValueError("Invalid environment name")
+                for stage in range(stages)
+                for node_id in range(num_nodes_per_stage[stage])
+            )
 
         elif stochastic_algorithm == "rolling_horizon":
             if start_stage is None:
+                # Case 1: No specific start stage given.
+                # -------------------------------------
+                # Rolling horizon here just reduces to a deterministic path:
+                # - We only take node_id = 0 for every stage
+                # - No probabilities, because there's no branching
+                # - Equivalent to solving a deterministic lookahead plan across all stages.
                 objective = mdl.sum(
-                    (
-                            mdl.sum(
-                                revenues[stage, k, j] * x[stage, 0, b, d, bl, k, stage, j]
-                                for j in range(stage + 1, P)  # Loop over discharge ports
-                                for b in range(B)  # Loop over bays
-                                for d in range(D)  # Loop over decks
-                                for k in range(K)  # Loop over cargo classes
-                                for bl in range(BL)  # Loop over blocks
-                            )
-                            - mdl.sum(env.ho_costs * HO[stage, 0, b, bl] for b in range(B) for bl in range(BL))
-                            - env.cm_costs * CM[stage, 0]
-                    )
-                    for stage in range(stages)  # Iterate over all stages
-                    )
+                    revenue_term(stage, 0, True)  # revenue from decisions at (stage, node_id=0)
+                    - ho_cost_term(stage, 0, True)  # subtract handling/holding cost
+                    - cm_cost_term(stage, 0)  # subtract conversion/maintenance cost
+                    for stage in range(stages)  # loop over all stages
+                )
 
-            elif start_stage is not None:
-                # Probabilities for two stages
+            else:
+                # Case 2: Rolling horizon with a specified start_stage.
+                # -----------------------------------------------------
+                # Here we consider a small 2-stage stochastic program starting at start_stage.
+                # That means: we look at nodes in [start_stage, start_stage+1],
+                # and optimize expected value over their possible scenarios.
+
                 scenarios_per_stage = num_nodes_per_stage[:2]
-                for stage in range(start_stage, start_stage+2):
-                    for node_id in range(scenarios_per_stage[stage-start_stage]):
-                        probabilities[stage, node_id] = 1 / scenarios_per_stage[stage-start_stage]
+                # number of nodes (scenarios) to consider at each of the two stages
 
-                # Objective
+                # Assign equal probabilities to each node at start_stage and start_stage+1
+                for stage in range(start_stage, start_stage + 2):
+                    for node_id in range(scenarios_per_stage[stage - start_stage]):
+                        probabilities[stage, node_id] = 1 / scenarios_per_stage[stage - start_stage]
+
                 if start_stage < stages - 1:
+                    # Subcase 2a: We're not at the very last stage
+                    # --------------------------------------------
+                    # Objective = expected revenue - expected costs
+                    # Weighted by probabilities of each node at stage and stage+1.
                     objective = mdl.sum(
                         probabilities[stage, node_id] * (
-                                mdl.sum(
-                                    revenues_[stage, k, j] * x[stage, node_id, b, d, bl, k, stage, j]
-                                    for j in range(stage + 1, P)  # Loop over discharge ports
-                                    for b in range(B)  # Loop over bays
-                                    for d in range(D)  # Loop over decks
-                                    for k in range(K)  # Loop over cargo classes
-                                    for bl in range(BL)  # Loop over blocks
-                                )
-                                - mdl.sum(env.ho_costs * HO[stage, node_id, b, bl] for b in range(B) for bl in range(BL))
-                                - env.cm_costs * CM[stage, node_id]
+                                revenue_term(stage, node_id, True)
+                                - ho_cost_term(stage, node_id, True)
+                                - cm_cost_term(stage, node_id)
                         )
-                        for stage in range(start_stage, start_stage+2)  # Iterate over all stages
-                        for node_id in range(scenarios_per_stage[stage-start_stage])  # Iterate over nodes at each stage
+                        for stage in range(start_stage, start_stage + 2)
+                        for node_id in range(scenarios_per_stage[stage - start_stage])
                     )
                 else:
+                    # Subcase 2b: We're at the last stage
+                    # -----------------------------------
+                    # Only one stage of scenarios left (no stage+1).
+                    # Still take expectation over the possible nodes at start_stage.
                     objective = mdl.sum(
                         probabilities[start_stage, node_id] * (
-                                mdl.sum(
-                                    revenues_[start_stage, k, j] * x[start_stage, node_id, b, d, bl, k, start_stage, j]
-                                    for j in range(start_stage + 1, P)  # Loop over discharge ports
-                                    for b in range(B)  # Loop over bays
-                                    for d in range(D)  # Loop over decks
-                                    for k in range(K)  # Loop over cargo classes
-                                    for bl in range(BL)  # Loop over blocks
-                                )
-                                - mdl.sum(env.ho_costs * HO[start_stage, node_id, b, bl] for b in range(B) for bl in range(BL))
-                                - env.cm_costs * CM[start_stage, node_id]
+                                revenue_term(start_stage, node_id, True)
+                                - ho_cost_term(start_stage, node_id, True)
+                                - cm_cost_term(start_stage, node_id)
                         )
-                        for node_id in range(scenarios_per_stage[0])  # Iterate over nodes at the last stage
+                        for node_id in range(scenarios_per_stage[0])
                     )
-            else:
-                raise ValueError("Invalid start_stage value")
+
+
         elif stochastic_algorithm == "myopic":
-            if start_stage is None:
-                objective = mdl.sum(
-                    (
-                            mdl.sum(
-                                revenues[stage, k, j] * x[stage, 0, b, d, bl, k, stage, j]
-                                for j in range(stage + 1, P)  # Loop over discharge ports
-                                for b in range(B)  # Loop over bays
-                                for d in range(D)  # Loop over decks
-                                for k in range(K)  # Loop over cargo classes
-                                for bl in range(BL)  # Loop over blocks
-                            )
-                            - mdl.sum(env.ho_costs * HO[stage, 0, b, bl] for b in range(B) for bl in range(BL))
-                            - env.cm_costs * CM[stage, 0]
-                    )
-                    for stage in range(stages)  # Iterate over all stages
-                )
-            elif start_stage is not None:
-                objective = mdl.sum(
-                    (
-                            mdl.sum(
-                                revenues[stage, k, j] * x[stage, 0, b, d, bl, k, stage, j]
-                                for j in range(stage + 1, P)  # Loop over discharge ports
-                                for b in range(B)  # Loop over bays
-                                for d in range(D)  # Loop over decks
-                                for k in range(K)  # Loop over cargo classes
-                                for bl in range(BL)  # Loop over blocks
-                            )
-                            - mdl.sum(env.ho_costs * HO[stage, 0, b, bl] for b in range(B) for bl in range(BL))
-                            - env.cm_costs * CM[stage, 0]
-                    )
-                    for stage in range(start_stage,start_stage+1)  # Iterate over all stages
-                )
-            else:
-                raise ValueError("Invalid start_stage value")
+            stages_to_iter = range(stages) if start_stage is None else range(start_stage, start_stage + 1)
+            objective = mdl.sum(revenue_term(stage, 0, True) - ho_cost_term(stage, 0, True)
+                - cm_cost_term(stage, 0) for stage in stages_to_iter
+            )
+
         else:
-            raise ValueError("Invalid stochastic algorithm")
+            raise ValueError(f"Invalid stochastic algorithm: {stochastic_algorithm}")
 
         return objective
 
@@ -1037,7 +1001,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ports", type=int, default=6)
+    parser.add_argument("--ports", type=int, default=4)
     parser.add_argument("--teu", type=int, default=20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
@@ -1083,8 +1047,7 @@ if __name__ == "__main__":
     stages = config.env.ports - 1  # Number of load ports (P-1)
     teu = config.env.teu
     max_scenarios_per_stage = max(num_scenarios) if max(num_scenarios) <= 28 else 28
-    if stochastic_algorithm == "rolling_horizon":
-        max_scenarios_per_stage += 1
+    max_scenarios_per_stage += 1
     # Number of scenarios per stage
     max_paths = max_scenarios_per_stage ** (stages-1) + 1 if not deterministic else 1
     node_list = precompute_node_list(stages, max_scenarios_per_stage, deterministic)
