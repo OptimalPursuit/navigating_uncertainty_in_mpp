@@ -48,7 +48,7 @@ class CargoEmbedding(nn.Module):
 
     def forward(self, td: TensorDict,) -> Tensor:
         cargo_parameters = self._combine_cargo_parameters(batch_size=td.shape)
-        max_demand = td["realized_demand"].max() if self.train_max_demand == None else self.train_max_demand
+        max_demand = td["realized_demand"].max() if self.train_max_demand in [None,0.0]  else self.env.generator.train_max_demand
         if td["expected_demand"].dim() == 2:
             expected_demand = td["expected_demand"].unsqueeze(-1) / max_demand
             std_demand = td["std_demand"].unsqueeze(-1) / max_demand
@@ -59,8 +59,8 @@ class CargoEmbedding(nn.Module):
         combined_emb = self.fc(combined_input)
 
         # Positional encoding
-        initial_embedding = self.positional_encoding(combined_emb)
-        return initial_embedding
+        output = self.positional_encoding(combined_emb)
+        return output
 
 class CriticEmbedding(nn.Module):
     """Embedding for critic of the MPP"""
@@ -202,7 +202,7 @@ class DynamicSelfAttentionEmbedding(nn.Module):
 
     def forward(self, latent_state: Optional[Tensor], td: TensorDict) -> Tuple[Tensor, Tensor, Tensor]:
         """Embed the dynamic demand for MPP using self-attention"""
-        max_demand = td["realized_demand"].max() if self.train_max_demand is None else self.train_max_demand
+        max_demand = td["realized_demand"].max() if self.train_max_demand in [None, 0.0] else self.train_max_demand
         if td["observed_demand"].dim() == 2:
             observed_demand = td["observed_demand"].unsqueeze(-1) / max_demand
         else:
@@ -229,7 +229,7 @@ class DynamicEmbedding(nn.Module):
     def forward(self, latent_state: Optional[Tensor], td: TensorDict) -> Tuple[Tensor, Tensor, Tensor]:
         """Embed the dynamic demand for the MPP"""
         # Get relevant demand embeddings
-        max_demand = td["realized_demand"].max() if self.train_max_demand == None else self.train_max_demand
+        max_demand = td["realized_demand"].max() if self.train_max_demand in [None, 0.0] else self.train_max_demand
         if td["observed_demand"].dim() == 2:
             observed_demand = td["observed_demand"].unsqueeze(-1) / max_demand
         else:
