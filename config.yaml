@@ -38,6 +38,7 @@ env:
   hatch_overstowage_mask: false
   block_stowage_mask: false
   iid_demand: true
+  include_reefers: false
   limit_revenue: true
   loading_discharge_region: false
   long_crane_costs: 0.5
