@@ -88,6 +88,35 @@ class EarlyStopping:
             self.div_counter = 0  # Reset if loss is stable
         return False
 
+class TopKPerSampler(SamplerWithoutReplacement):
+    def __init__(self, top_k: int, alpha: float = 0.6):
+        super().__init__()
+        self.top_k = top_k
+        self.alpha = alpha
+
+    def sample(self, storage: "LazyTensorStorage", batch_size):
+        # Get the underlying TensorDict and device
+        td = storage._storage
+        device = storage.device
+
+        # Compute total return per trajectory, get top-K indices
+        traj_returns = td["next", "profit"].sum(dim=(-2, -1)).clamp(min=0.0)
+        k = min(self.top_k, traj_returns.size(0))
+        topk_indices = traj_returns.topk(k=k, largest=True).indices
+
+        # Assign scores: top-K get their return, rest are zero
+        scores = torch.zeros(traj_returns.size(0), device=device)
+        scores[topk_indices] = torch.clamp(traj_returns[topk_indices], min=1e-6)
+
+        # Compute probabilities safely
+        probs = scores.pow(self.alpha).clamp(min=1e-6)
+        probs /= probs.sum()
+
+        # Sample batch indices
+        sampled_indices = torch.multinomial(probs, batch_size, replacement=True).long()
+        return sampled_indices, {}
+
+
 # Functions
 def convert_to_dict(obj:object) -> Union[Dict, List]:
     """Recursively convert DotMap or other custom objects to standard Python dictionaries."""
@@ -100,41 +129,47 @@ def convert_to_dict(obj:object) -> Union[Dict, List]:
     return obj  # Return primitive data types as-is
 
 
-def sample_topk_per_trajectories(replay_buffer: ReplayBuffer, k: int, mini_batch_size: int, alpha: float = 0.6,
-                                 device: str = "cuda") -> TensorDict:
+def sample_topk_per_trajectories(
+    replay_buffer: ReplayBuffer,
+    k: int,
+    mini_batch_size: int,
+    alpha: float = 0.6,
+    eps: float = 1e-6,
+    device: str = "cuda"
+) -> TensorDict:
     """
-    Sample trajectories using top-K + PER approach.
+    Sample trajectories using Top-K + PER approach (CUDA-safe).
 
     Args:
         replay_buffer (ReplayBuffer): Replay buffer containing trajectories.
         k (int): Number of top trajectories to prioritize.
         mini_batch_size (int): Number of trajectories to sample.
         alpha (float): Exponent for prioritization (0 = uniform, 1 = fully prioritized).
+        uniform_mix (float): Fraction of uniform sampling to mix in (to avoid zeros).
         device (str): Device to move sampled trajectories to.
 
     Returns:
         TensorDict: Sampled mini-batch of trajectories.
     """
-    # Get all trajectories and compute total return
-    all_data = replay_buffer.get_all()
-    traj_returns = all_data["next", "reward"].sum(dim=(-2, -1))
+    # Extract all trajectories and compute profits (returns)
+    all_data = replay_buffer.storage._storage.to(device)
+    traj_returns = all_data["next", "profit"].sum(dim=(-2, -1)).clamp(min=0.0)
 
     # Get top-K indices
-    topk_indices = traj_returns.topk(k=min(k, len(traj_returns)))[1]
+    k = min(k, len(traj_returns))
+    topk_indices = traj_returns.topk(k=k)[1]
 
-    # Assign sampling scores
-    scores = torch.zeros(len(traj_returns), device=device)
+    # Assign scores: top-K get their returns, rest are zeros
+    scores = torch.zeros_like(traj_returns, device=device) + eps
     scores[topk_indices] = traj_returns[topk_indices]
 
-    # PER-style probabilities
+    # PER probabilities
     probabilities = scores.pow(alpha)
-    probabilities /= probabilities.sum() + 1e-8  # normalize
+    probabilities /= probabilities.sum()
 
-    # Sample mini-batch indices according to probabilities
+    # Sample mini-batch indices
     sampled_indices = torch.multinomial(probabilities, mini_batch_size, replacement=True)
-
     return all_data[sampled_indices].to(device)
-
 
 def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwargs) -> None:
     """Train the policy using the specified algorithm."""
@@ -221,7 +256,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     collector.set_seed(train_env.seed)
     replay_buffer = ReplayBuffer(
         storage=LazyTensorStorage(max_size=batch_size),
-        sampler=SamplerWithoutReplacement(),
+        sampler=TopKPerSampler(top_k=int(top_k * batch_size), alpha=priority_alpha)
     )
 
     # Optimizer and scheduler
@@ -261,14 +296,8 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
         replay_buffer.extend(td)
         for _ in range(batch_size // mini_batch_size):
             # Sample mini-batch (including actions, n-step returns, old log likelihoods, target_values)
-            # subdata = replay_buffer.sample(mini_batch_size).to(device)
-            subdata = sample_topk_per_trajectories(
-                replay_buffer,
-                k=int(top_k * len(replay_buffer)),
-                mini_batch_size=mini_batch_size,
-                alpha=priority_alpha,  # 0 = uniform, 1 = fully prioritized
-                device=device
-            )
+            all_data = replay_buffer.storage._storage.to(device)
+            subdata = replay_buffer.sample(mini_batch_size).to(device)
 
             # Loss computation and backpropagation
             if kwargs["algorithm"]["type"] == "sac":
