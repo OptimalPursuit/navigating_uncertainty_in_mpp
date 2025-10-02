@@ -99,6 +99,43 @@ def convert_to_dict(obj:object) -> Union[Dict, List]:
         return [convert_to_dict(item) for item in obj]
     return obj  # Return primitive data types as-is
 
+
+def sample_topk_per_trajectories(replay_buffer: ReplayBuffer, k: int, mini_batch_size: int, alpha: float = 0.6,
+                                 device: str = "cuda") -> TensorDict:
+    """
+    Sample trajectories using top-K + PER approach.
+
+    Args:
+        replay_buffer (ReplayBuffer): Replay buffer containing trajectories.
+        k (int): Number of top trajectories to prioritize.
+        mini_batch_size (int): Number of trajectories to sample.
+        alpha (float): Exponent for prioritization (0 = uniform, 1 = fully prioritized).
+        device (str): Device to move sampled trajectories to.
+
+    Returns:
+        TensorDict: Sampled mini-batch of trajectories.
+    """
+    # Get all trajectories and compute total return
+    all_data = replay_buffer.get_all()
+    traj_returns = all_data["next", "reward"].sum(dim=(-2, -1))
+
+    # Get top-K indices
+    topk_indices = traj_returns.topk(k=min(k, len(traj_returns)))[1]
+
+    # Assign sampling scores
+    scores = torch.zeros(len(traj_returns), device=device)
+    scores[topk_indices] = traj_returns[topk_indices]
+
+    # PER-style probabilities
+    probabilities = scores.pow(alpha)
+    probabilities /= probabilities.sum() + 1e-8  # normalize
+
+    # Sample mini-batch indices according to probabilities
+    sampled_indices = torch.multinomial(probabilities, mini_batch_size, replacement=True)
+
+    return all_data[sampled_indices].to(device)
+
+
 def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwargs) -> None:
     """Train the policy using the specified algorithm."""
     # Algorithm hyperparameters
@@ -121,6 +158,8 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     train_data_size = kwargs["training"]["train_data_size"]
     validation_freq = kwargs["training"]["validation_freq"]
     validation_patience = kwargs["training"]["validation_patience"]
+    priority_alpha = kwargs["training"].get("priority_alpha", 0.5)  # 0 = uniform, 1 = fully prioritized
+    top_k = kwargs["training"].get("top_k", 0.2)  # choose number % of top trajectories in buffer
 
     # Environment
     train_env = make_env(env_kwargs=kwargs["env"], batch_size=[batch_size], device=device)
@@ -222,7 +261,15 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
         replay_buffer.extend(td)
         for _ in range(batch_size // mini_batch_size):
             # Sample mini-batch (including actions, n-step returns, old log likelihoods, target_values)
-            subdata = replay_buffer.sample(mini_batch_size).to(device)
+            # subdata = replay_buffer.sample(mini_batch_size).to(device)
+            subdata = sample_topk_per_trajectories(
+                replay_buffer,
+                k=int(top_k * len(replay_buffer)),
+                mini_batch_size=mini_batch_size,
+                alpha=priority_alpha,  # 0 = uniform, 1 = fully prioritized
+                device=device
+            )
+
             # Loss computation and backpropagation
             if kwargs["algorithm"]["type"] == "sac":
                 # Loss computation
