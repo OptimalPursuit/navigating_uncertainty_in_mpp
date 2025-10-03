@@ -381,7 +381,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             all_port_moves.append(port_moves)
             all_load_moves.append(load_moves)
 
-            if stochastic_algorithm == 'rolling_horizon' and stage == start_stage and stage < stages - 1:
+            if stochastic_algorithm in ['rolling_horizon', 'myopic'] and stage == start_stage and stage < stages - 1:
                 realized_demand = demand[stage + 1, 0] # Store realized demand from t+1
                 demand[stage + 1, 0] = demand[stage + 1, scen] # Overwrite root node with simulated scenario in t+1
 
@@ -440,6 +440,10 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                         for k in range(K) if j > stage) - M * (1 - HM[stage, node_id, b, bl] )
                                 <= HO[stage, node_id, b, bl], ctname=f'hatch_overstow_{stage}_{node_id}_{b}_{bl}'
                             )
+                            # # Add HO == 0
+                            # mdl.add_constraint(
+                            #     HO[stage, node_id, b, bl] == 0, ctname=f'hatch_overstow_zero_{stage}_{node_id}_{b}_{bl}'
+                            # )
 
                 # Stability
                 mdl.add_constraint(
@@ -509,13 +513,12 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                 # BLock stowage patterns: Binary j in each b,d
                 for b in range(B):
                     for bl in range(BL):
-                        for d in range(D):
-                            for j in range(stage+1, P):
-                                # Get POD indicator
-                                mdl.add_constraint(
-                                    mdl.sum(x[stage, node_id, b, d, bl, k, stage, j] for k in range(K)) <= M * PD[stage, node_id, b, bl, j],
-                                    ctname=f'pod_indicator_{stage}_{node_id}_{b}_{d}_{bl}_{j}'
-                                )
+                        for j in range(stage+1, P):
+                            # Get POD indicator
+                            mdl.add_constraint(
+                                mdl.sum(x[stage, node_id, b, d, bl, k, stage, j] for k in range(K) for d in range(D))
+                                <= M * PD[stage, node_id, b, bl, j], ctname=f'pod_indicator_{stage}_{node_id}_{b}_{d}_{bl}_{j}'
+                            )
                         # Max PODs per bay/block
                         mdl.add_constraint(
                             mdl.sum(PD[stage, node_id, b, bl, j] for j in range(P)) <= 1, ctname=f'max_pod_{stage}_{node_id}_{b}_{bl}'
@@ -606,16 +609,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 rolling_horizon_x[t, 0, b, d, bl, k, t, j] = x[(t, 0, b, d, bl, k, t, j)].solution_value
 
         # Compute objective over all current stage decisions
-        objective_value = objective_function(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_,)
-
-        # total_allocated = np.zeros((K, stages, P))
-        # for (stage, node_id, b, d, bl, k, i, j), value in rolling_horizon_x.items():
-        #     total_allocated[k, stage, j] += value
-        # print(f"Objective value: {objective}")
-        # print("Total allocated containers per stage:")
-        # print(total_allocated.sum(axis=(0,2)))
-        # print(total_allocated.sum(axis=(0,)))
-        # breakpoint() # todo: remove later
+        objective_value = final_objective(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_, stages)
         return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective_value}
 
     def build_myopic_block_mpp(stages: int,
@@ -631,6 +625,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         myopic_x = {}
         myopic_HO = {}
         myopic_CM = {}
+        max_revenue = 0
 
         for t in range(stages):
             print(f"\n--- Rolling horizon solve at stage {t} ---")
@@ -653,6 +648,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
             # Last port → deterministic one-stage
             last_stage_demand = {(t, 0): demand[(t, 0)]}
+            max_revenue += sum(revenues_[t, k, j] * last_stage_demand[(t, 0)][k, j] for j in range(t + 1, P) for k in range(K))
+            print(f"Max revenue at stage {t}: {max_revenue}")
             build_tree_block_mpp(stages=1,
                                  demand=last_stage_demand,
                                  warm_solution=warm_solution,
@@ -674,8 +671,29 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 myopic_x[t, 0, b, d, bl, k, t, j] = x[(t, 0, b, d, bl, k, t, j)].solution_value
 
         # Compute objective over all current stage decisions
-        objective_value = objective_function(myopic_x, myopic_HO, myopic_CM, revenues_,)
-        return {"x": myopic_x, "HO": myopic_HO, "CM": myopic_CM, "objective_value": objective_value}
+        objective_value = final_objective(myopic_x, myopic_HO, myopic_CM, revenues_, stages)
+        return {"x": myopic_x, "HO": myopic_HO, "CM": myopic_CM, "objective_value": objective_value, "max_revenue": max_revenue}
+
+    def final_objective(x: Dict, HO: Dict, CM: Dict, revenues: Any, stages: int) -> Any:
+        """Compute total objective over all stored stage-0 decisions."""
+        print("--------------------------------")
+        print("Final objective computation based on:")
+        print("Sum(x)", sum(x.values()))
+        print("Sum(HO)", sum(HO.values()))
+        print("Sum(CM)", sum(CM.values()))
+        print("--------------------------------")
+        return mdl.sum((mdl.sum(revenues[stage, k, j] * x[stage, 0, b, d, bl, k, stage, j]
+                                for j in range(stage + 1, P) # Loop over discharge ports
+                                for b in range(B) # Loop over bays
+                                for d in range(D) # Loop over decks
+                                for k in range(K) # Loop over cargo classes
+                                for bl in range(BL) # Loop over blocks
+        )
+                        - mdl.sum(env.ho_costs * HO[stage, 0, b, bl] for b in range(B) for bl in range(BL))
+                        - env.cm_costs * CM[stage, 0]
+        )
+                       for stage in range(stages) # Iterate over all stages
+        )
 
     def objective_function(x: Any, HO: Any, CM: Any, revenues: Any, start_stage: int = None) -> Any:
         """Define the optimization objective function."""
@@ -808,7 +826,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         mdl.parameters.mip.strategy.file = 3
         mdl.parameters.emphasis.memory = 1  # Prioritize memory savings over speed
         mdl.parameters.threads = 1  # Use only 1 thread to reduce memory usage
-        mdl.parameters.mip.tolerances.mipgap = 0.001  # 0.1%
+        mdl.parameters.mip.tolerances.mipgap = 0.001  # 1% or 0.1%
         mdl.set_time_limit(3600)  # 1 hour
         solution = mdl.solve(log_output=True)
         return solution
@@ -851,7 +869,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             print(f"Objective value: {solution.objective_value}")
 
         # Analyze the solution
-        x_ = np.zeros((stages, max_paths, B, D, BL, K, P, P))
+        x_ = np.zeros((stages, max_paths, B, D, BL, K, P, P), dtype=float)
         ob_demand = np.zeros((stages, max_paths, K, P))
         PD_ = np.zeros((stages, max_paths, B, BL, P,))
         mixing_ = np.zeros((stages, max_paths, B, BL,))
@@ -973,6 +991,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             "mean_cost":mean_cost.tolist(),
             "mean_pd":mean_pd.tolist(),
             "mean_mixing":mean_mixing.tolist(),
+            # Max revenue (only for myopic)
+            "max_revenue": solution.get("max_revenue", None) if isinstance(solution, dict) else None,
         }
         vars = {
             "seed": seed,
@@ -1006,12 +1026,12 @@ if __name__ == "__main__":
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--scenarios", type=int, default=4) # 20
+    parser.add_argument("--scenarios", type=int, default=16) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=5)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
-    parser.add_argument("--cv_demand", type=float, default=1.0)
-    parser.add_argument("--stochastic_algorithm", type=str, default="myopic")  # rolling_horizon, myopic
+    parser.add_argument("--cv_demand", type=float, default=0.5)
+    parser.add_argument("--stochastic_algorithm", type=str, default="myopic")  # rolling_horizon, myopic, multi_stage
     # todo: add warm solution
     parser = parser.parse_args()
 
@@ -1054,6 +1074,8 @@ if __name__ == "__main__":
     obj_list = []
     tot_demand_list = []
     max_ob_demand_list = []
+    total_x_list = []
+    max_revenue_list = []
 
     for x in range(num_episodes):  # Iterate over episodes
         # Create the environment on cpu
@@ -1075,7 +1097,9 @@ if __name__ == "__main__":
             # print total teu on board per port
             print("--------------------------------------------------")
             print(f"Result: TEU{teu}_P{stages+1}_E{x}_S{scen}_PI{perfect_information}_Gen{generalization}: Obj {result.get('obj', None)}, Time {result.get('time', None)}, Gap {result.get('gap', None)}")
-            print(f"Total TEU load per port: {np.array(result.get('mean_teu_load_per_port', []), dtype=int)}")
+            total_x_list.append(np.sum(np.array(var.get('x', []), dtype=float)))
+            print("Total sum of X:", np.sum(np.array(var.get('x', []), dtype=float)))
+            print(f"Total TEU load per port: {np.array(result.get('mean_teu_load_per_port', []), dtype=float)}")
 
             # todo: check
             demand = np.array(result.get('demand', []), dtype=int)
@@ -1097,6 +1121,7 @@ if __name__ == "__main__":
             print(f"Onboard TEU per port: {ob_teus}")
             tot_demand_list.append(demand[:,0].sum())
             max_ob_demand_list.append(max(x for x in ob_teus))
+            max_revenue_list.append(result["max_revenue"])
 
             # get onboard set and compute onboard demand
             obj_list.append(result.get('obj', None))
@@ -1115,6 +1140,8 @@ if __name__ == "__main__":
 
     print("==================================================")
     print("Type of algorithm:", stochastic_algorithm)
+    print(f"Avg sum x over {num_episodes} episodes: {np.mean(total_x_list)}")
     print(f"Avg obj over {num_episodes} episodes: {np.mean(obj_list)}")
     print(f"Avg total demand over {num_episodes} episodes: {np.mean(tot_demand_list)}")
     print(f"Avg max onboard demand over {num_episodes} episodes: {np.mean(max_ob_demand_list)}")
+    print(f"Avg max revenue over {num_episodes} episodes: {np.mean(max_revenue_list)}")
