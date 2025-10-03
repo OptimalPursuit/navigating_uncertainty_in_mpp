@@ -18,13 +18,13 @@ env:
   LCG_target: 0.95
   TEU: 20000 # 20000, 1000
   VCG_target: 1.05
-  bays: 10 #10, 20
+  bays: 20 #10, 20
   blocks: 2
   capacity:
-  - 50 # 50, 500
+  - 500 # 50, 500
   cargo_classes: 6
   customer_classes: 2
-  cv_demand: 1.0 # todo: try different standard deviations of demand with Normal dist - 0.5, 1.0, 1.5 (RH gets closer to NA!)
+  cv_demand: 0.5 #1.0 # todo: try different standard deviations of demand with Normal dist - 0.5, 1.0, 1.5 (RH gets closer to NA!)
   decks: 2
   demand_uncertainty: true
   demand_sparsity: 0.3
@@ -71,6 +71,7 @@ model:
   tanh_clipping: 0
   tanh_squashing: false
   temperature: 0.11243639449117128
+  use_mask_head: false
 testing:
   feasibility_recovery: false
   folder: 'sac-pd' #'sac-ws+pc' #'SA_AM'   # todo: has dependency on main.py (make sure arguments have this role); set to SA_AM for AI2STOW
@@ -83,6 +84,8 @@ training:
   lr: 0.00014690714579803494
   pd_lr: 0.000034690714579803494
   optimizer: Adam
+  priority_alpha: 0.5
+  top_k: 0.2
   projection_kwargs:
     alpha: 0.01 #0.050 #0.01 #0.00987804770039214
     delta: 0.01 #0.050 #0.01 #0.023908679032053855
