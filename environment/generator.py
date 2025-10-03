@@ -389,13 +389,15 @@ class AuthenticDemandGenerator(MPP_Generator):
 
     def __call__(self, batch_size:Tuple[int, ...], td: Optional[TensorDict] = None, rng:Optional=None) -> TensorDict:
         batch_size = [batch_size] if isinstance(batch_size, int) else batch_size
-        e_x, sigma_x = self._generate_moments(self.target_utils, batch_size=batch_size)
+        e_x, std_x = self._generate_moments(self.target_utils, batch_size=batch_size)
         x = self._generate(e_x)
-        out = TensorDict({}, batch_size=batch_size, device=self.device)
-        out["observation", "expected_demand"] = e_x
-        out["observation", "std_demand"] = sigma_x
-        out["observation", "realized_demand"] = x
-        return out
+        return TensorDict({"observation":
+                               {"realized_demand": x.view(*batch_size, self.T*self.K),
+                                "expected_demand": e_x.view(*batch_size, self.T*self.K),
+                                "std_demand":std_x.view(*batch_size, self.T*self.K),
+                                "init_expected_demand": e_x.view(*batch_size, self.T*self.K),
+                                "batch_updates": th.zeros(batch_size, device=self.device).view(*batch_size, 1),
+                                }}, batch_size=batch_size, device=self.device,)
 
     def random_integer_partition(self, v: int, b: int):
         """Partition integer v into b nonnegative integers (randomized)."""
@@ -486,7 +488,7 @@ class AuthenticDemandGenerator(MPP_Generator):
 
 
         # Generate fixed expected demand per cargo type
-        e_x = th.zeros((*batch_size,self.P, self.P,  self.K, ), dtype=th.long, device=self.device)
+        e_x = th.zeros((*batch_size,self.P, self.P,  self.K, ), dtype=th.float32, device=self.device)
         for k in range(self.K):
             # Divide capacity C by mean TEU per container to get number of containers
             Ck = int(round(self.C * self.shares[k].item() / self.mean_teu))
