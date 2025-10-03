@@ -493,9 +493,9 @@ class AuthenticDemandGenerator(MPP_Generator):
             e_matrix = self.generate_matrix(target_utils, C=Ck)
             e_x[..., k] = e_matrix.expand((*batch_size, self.P, self.P))
 
-        triu_idx = th.triu_indices(e_x.shape[1], e_x.shape[2], offset=1)
-        # Select and reshape
-        e_x = e_x[:, triu_idx[0], triu_idx[1], :].view(*batch_size, self.T, self.K)
+        triu_idx = th.triu_indices(e_x.shape[-3], e_x.shape[-2], offset=1)
+        # Select and reshape upper-triangular
+        e_x = e_x[..., triu_idx[0], triu_idx[1], :].view(*batch_size, self.T, self.K)
         sigma_x = self.cv_demand * e_x.float()
         return e_x, sigma_x
 
