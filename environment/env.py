@@ -578,10 +578,18 @@ class MasterPlanningEnv(EnvBase):
         revenues[~mask] = duration_grid # Spot market contracts
         revenues[mask] = (duration_grid * (1 - reduce_long_revenue)) # Long-term contracts
         i, j = th.triu_indices(self.P, self.P, offset=1) # Get above-diagonal indices of revenues
+
+        # Normalize to make revenues closer
         if duration_variable_revenue:
             # Add extra revenue per container, which is proportionally higher for shorter trips
             extra_revenue = (self.P - duration_grid) * 0.1  # Shorter trips get more
-            return revenues[..., i, j] + extra_revenue[..., i, j] # Shape: [K, T], where T = P*(P-1)/2
+            out = revenues[..., i, j] + extra_revenue[..., i, j] # Shape: [K, T], where T = P*(P-1)/2
+
+            # Normalize:
+            rev_min = out.min()
+            rev_max = out.max()
+            out = 1.0 + 0.5 * (out - rev_min) / (rev_max - rev_min)  # maps to [1.0, 1.5]
+            return out
         else:
             return revenues[..., i, j] + 0.1 # Shape: [K, T], where T = P*(P-1)/2
 
@@ -731,7 +739,13 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         self.BL = kwargs.get("blocks", 2)  # Number of paired blocks: 2 (wings + center), 3 (wings + center1 + center2)
         super().__init__(device=device, batch_size=batch_size, **kwargs)
         # self.generator = UniformMPP_Generator(device=device, **kwargs)
-        kwargs["target_utils"] = [0.6, 0.75, 0.99, 0.99, 0.8]
+        kwargs["target_utils"] = [0.75, 0.99, 0.8]
+        # print("Revenues matrix:\n", self.revenues_matrix.view(self.K, self.T))
+        # print("TUEs", self.teus)
+        # print("Revenue/TEU:", self.revenues_matrix.view(self.K, self.T)/self.teus.unsqueeze(1))
+        # breakpoint()
+
+        # [0.6, 0.75, 0.99, 0.99, 0.8]
         #[0.6, 0.8, 0.95, 0.85, 0.5]  # Target utilization levels for demand generator
         kwargs = self._generate_cargo_shares(kwargs)
         # print("By size:", self.summarize_shares(kwargs["cargo_shares"], dimension=0))
@@ -810,6 +824,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
                 "total_profit": td["observation", "total_profit"] + profit,
                 "max_total_profit":td["observation", "max_total_profit"] + self.revenues.max() * demand_state["current_demand"],
                 "timestep": time,
+                "pod":self.pod[time],
             },
             **action_state,
 
@@ -883,6 +898,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             **demand_state,
             **flatten_values_td(vessel_state, batch_size=batch_size),
             "timestep": time,
+            "pod": self.pod[time],
             "action_mask": action_mask,
             "total_profit":th.zeros_like(time, dtype=self.float_type).view(*batch_size, 1),
             "max_total_profit":th.zeros_like(time, dtype=self.float_type).view(*batch_size, 1),
@@ -921,7 +937,9 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             residual_lc_capacity=Unbounded(shape=(*batch_size, self.B - 1), dtype=self.float_type),
             agg_pol_location=Unbounded(shape=(*batch_size, self.n_block_locations), dtype=self.float_type),
             agg_pod_location=Unbounded(shape=(*batch_size, self.n_block_locations), dtype=self.float_type),
+            # Misc
             timestep=Unbounded(shape=(*batch_size, 1), dtype=th.int64),
+            pod=Unbounded(shape=(*batch_size, 1), dtype=th.int64),
             action_mask=Bounded(shape=(*batch_size, self.n_block_locations), low=0, high=1, dtype=th.bool),
             excess_pod_locations=Unbounded(shape=(*batch_size, self.B * self.BL), dtype=self.float_type),
             total_profit=Unbounded(shape=(*batch_size, 1), dtype=torch.float32),
