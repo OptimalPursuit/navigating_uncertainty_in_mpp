@@ -776,6 +776,11 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # Check done
         done = self._check_done(time)
 
+        # Available locations based on pre-loading utilization
+        empty_locations = self._empty_locations(vessel_state["utilization"], batch_size)
+        POD_available_locations = self._available_locations_PODs_preload_utilization(vessel_state["utilization"], pod)
+        preload_mask = empty_locations & POD_available_locations
+
         # Update utilization
         vessel_state["utilization"] = update_state_loading(action_state["action"], vessel_state["utilization"], tau, k, )
 
@@ -825,6 +830,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
                 "max_total_profit":td["observation", "max_total_profit"] + self.revenues.max() * demand_state["current_demand"],
                 "timestep": time,
                 "pod":self.pod[time],
+                "preload_mask": preload_mask.view(*batch_size, self.n_block_locations),
             },
             **action_state,
 
@@ -876,6 +882,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         vessel_state["vcg"] = th.ones_like(time, dtype=self.float_type)
         vessel_state["excess_pod_locations"] = th.zeros(*batch_size, self.B * self.BL, dtype=self.float_type)
         pod_locations = th.zeros((*batch_size, self.B, self.D, self.BL, self.P), dtype=self.float_type, device=device)
+        empty_locations = th.ones((*batch_size, self.B, self.D, self.BL), dtype=self.float_type, device=device)
 
         # Action state
         action_state = TensorDict({}, batch_size=batch_size, device=device)
@@ -1026,6 +1033,16 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         A *= self.block_constraint_signs.view(-1, 1, 1, 1)
         A[self.n_block_locations + self.n_demand:self.n_block_locations + self.n_demand + self.n_stability] *= self.block_stability_params_lhs.view(self.n_stability, self.n_block_locations, 1, self.K,)
         return A.view(self.n_constraints, self.n_block_locations, -1)
+
+    def _available_locations_PODs_preload_utilization(self, preload_utilization:Tensor, pod:Tensor) -> Tensor:
+        """Compute the available locations for each POD based on pre-loading utilization: di(u'_p)."""
+        _, pod_locations = compute_pol_pod_locations(preload_utilization, self.transform_tau_to_pol, self.transform_tau_to_pod)
+        used_pod_locations = pod_locations[..., pod] > 0
+        return used_pod_locations
+
+    def _empty_locations(self, preload_utilization:Tensor, batch_size) -> Tensor:
+        """Compute the available empty locations without utilization: eu(u'_p)."""
+        return (preload_utilization.sum(dim=(-2,-1)) == 0).all(dim=-2).view(*batch_size, self.B, 1, self.BL) # Shape: [B, 1, BL]
 
     # Initialize
     def _initialize_block_capacity(self, capacity:Tensor) -> None:
