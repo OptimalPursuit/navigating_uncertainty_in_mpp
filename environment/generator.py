@@ -345,8 +345,6 @@ class AuthenticDemandGenerator(MPP_Generator):
 
     def __init__(
         self,
-        target_utils: list = None,
-        cargo_shares: dict = None,
         device="cpu",
         **kwargs
     ):
@@ -358,6 +356,7 @@ class AuthenticDemandGenerator(MPP_Generator):
         self.load_ports = self.middle_leg if self.loading_discharge_region else (self.P - 1)
 
         # todo: this is not created correctly yet!
+        target_utils = kwargs.get("target_utils", None)
         self.target_utils = target_utils if target_utils is not None else [
             0.2 + 0.8 * i / (self.load_ports - 1) for i in range(self.load_ports)
         ]
@@ -373,24 +372,29 @@ class AuthenticDemandGenerator(MPP_Generator):
 
         # Cargo shares and mean TEU
         self.include_reefer = kwargs.get("include_reefer", False)
-        self.cargo_share = cargo_shares
+        self.cargo_share = kwargs.get("cargo_shares", None)
 
         # Shares of cargo types
         self.cargo_types = sorted(self.cargo_share.keys())  # sorted by tuple
         self.shares = th.tensor([self.cargo_share[k] for k in self.cargo_types], dtype=th.float32, device=self.device)
         self.shares = self.shares / self.shares.sum()
         self.K = len(self.cargo_types)
-        if cargo_shares is None:
+        if self.cargo_share is None:
             self.mean_teu = 1.5
         else:
             size_to_teu = {"20ft": 1.0, "40ft": 2.0}
-            self.mean_teu = sum(size_to_teu[k[0]] * v for k, v in cargo_shares.items()) / sum(cargo_shares.values())
-
+            self.mean_teu = sum(size_to_teu[k[0]] * v for k, v in self.cargo_share.items()) / sum(self.cargo_share.values())
 
     def __call__(self, batch_size:Tuple[int, ...], td: Optional[TensorDict] = None, rng:Optional=None) -> TensorDict:
+        """Generate demand for the MPP."""
+        print("Batch size in call:", batch_size)
         batch_size = [batch_size] if isinstance(batch_size, int) else batch_size
+        print("Batch size in call:", batch_size)
         e_x, std_x = self._generate_moments(self.target_utils, batch_size=batch_size)
+        print("Generated e_x and std_x with shapes:", e_x.shape, std_x.shape)
         x = self._generate(e_x)
+        print("Generated demand x with shape:", x.shape)
+        breakpoint()
         return TensorDict({"observation":
                                {"realized_demand": x.view(*batch_size, self.T*self.K),
                                 "expected_demand": e_x.view(*batch_size, self.T*self.K),
