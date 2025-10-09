@@ -387,14 +387,9 @@ class AuthenticDemandGenerator(MPP_Generator):
 
     def __call__(self, batch_size:Tuple[int, ...], td: Optional[TensorDict] = None, rng:Optional=None) -> TensorDict:
         """Generate demand for the MPP."""
-        print("Batch size in call:", batch_size)
         batch_size = [batch_size] if isinstance(batch_size, int) else batch_size
-        print("Batch size in call:", batch_size)
         e_x, std_x = self._generate_moments(self.target_utils, batch_size=batch_size)
-        print("Generated e_x and std_x with shapes:", e_x.shape, std_x.shape)
         x = self._generate(e_x)
-        print("Generated demand x with shape:", x.shape)
-        breakpoint()
         return TensorDict({"observation":
                                {"realized_demand": x.view(*batch_size, self.T*self.K),
                                 "expected_demand": e_x.view(*batch_size, self.T*self.K),
