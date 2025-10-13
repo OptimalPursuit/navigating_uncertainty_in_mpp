@@ -11,6 +11,7 @@ import os
 import json
 import argparse
 from typing import List, Dict, Tuple, Optional, Any
+from tqdm.auto import tqdm
 
 path = 'add path to cplex here'
 sys.path.append(path)
@@ -120,7 +121,7 @@ def onboard_groups(ports:int, pol:int, transport_indices:list) -> np.array:
 # Main function
 def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=3, max_paths:int=784, seed:int=42,
          perfect_information:bool=False, deterministic:bool=False, algorithm:str='multi_stage', warm_solution:bool=False,
-         look_ahead:int=2) -> Tuple[Dict, Dict]:
+         look_ahead:int=2, print_results:bool=False) -> Tuple[Dict, Dict]:
     # Scenario tree parameters
     M = 10 ** 3 # Big M
     num_nodes_per_stage = [1*scenarios_per_stage**stage for stage in range(stages)]
@@ -336,7 +337,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
     def initialize_vars_tree_block_mpp(stages:int, start_stage:int=0) -> None:
         # Build variables for full scenario tree
-        print("Initializing variables for full scenario tree")
         for stage in range(start_stage, start_stage + stages):
             for node_id in range(num_nodes_per_stage[stage - start_stage] + 1):
                 # Crane intensity:
@@ -375,7 +375,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
     def build_tree_block_mpp(stages:int, input_demand:np.array, warm_solution:Optional[Dict]=None, start_stage:int=0,
                              look_ahead:int=2) -> None:
         """Function to build the scenario tree; with decisions and constraints for each node"""
-        print("Building constraints for scenario tree")
         demand = copy.deepcopy(input_demand)
         for stage in range(start_stage, start_stage + stages):
             # Define sets at current stage/port
@@ -389,7 +388,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             scenarios = num_nodes_per_stage[:look_ahead][stage-start_stage] if stochastic_algorithm in ['rolling_horizon', 'myopic'] \
                 else num_nodes_per_stage[stage]
             for node_id in range(scenarios):
-                print(f"Stage {stage}, Node {node_id}")
                 for (i, j) in load_moves:
                     for k in range(K):
                         # Demand satisfaction
@@ -552,7 +550,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         demand = copy.deepcopy(demand)
 
         for t in range(stages):
-            print(f"\n--- Rolling horizon solve at stage {t} ---")
             mdl.clear()
 
             # Determine remaining horizon and RH window size
@@ -584,7 +581,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             if t < stages - 1:
                 realized_scen = 0 if deterministic else random.randint(0, scenarios_per_stage - 1)
                 local_demand[(t + 1, 0)] = demand[(t + 1, realized_scen)]
-                print(f"  Realized scenario at t={t + 1}: {realized_scen}")
 
             # Build demand window dynamically for RH stages
             demand_window = {}
@@ -597,7 +593,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                     demand_window[(stage_idx, 0)] = local_demand[(stage_idx, 0)]
                 else:
                     # For future stages, include all stochastic scenarios
-                    for s in range(scenarios_per_stage):
+                    for s in range(num_nodes_per_stage[offset]):
                         demand_window[(stage_idx, s)] = local_demand[(stage_idx, s)]
 
             # Build constraints for this RH window
@@ -609,8 +605,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                 look_ahead=look_ahead,
             )
 
-            print(f"  RH window from {t} to {t + rh_stages - 1}, "
-                      f"{len(demand_window)} demand nodes used.")
             objective = objective_function(x, HO, CM, revenues_, start_stage=t)
             sol = solve_model(mdl, objective)
 
@@ -628,17 +622,12 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 rolling_horizon_x[t, 0, b, d, bl, k, t, j] = x[(t, 0, b, d, bl, k, t, j)].solution_value
 
         # Compute objective over all current stage decisions
-        objective_value = final_objective(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_, stages)
+        objective_expr = final_objective(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_, stages)
+        objective_value = mdl.solution.get_value(objective_expr)
         return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective_value}
 
     def final_objective(x: Dict, HO: Dict, CM: Dict, revenues: Any, stages: int) -> Any:
         """Compute total objective over all stored stage-0 decisions."""
-        print("--------------------------------")
-        print("Final objective computation based on:")
-        print("Sum(x)", sum(x.values()))
-        print("Sum(HO)", sum(HO.values()))
-        print("Sum(CM)", sum(CM.values()))
-        print("--------------------------------")
         return mdl.sum((mdl.sum(revenues[stage, k, j] * x[stage, 0, b, d, bl, k, stage, j]
                                 for j in range(stage + 1, P) # Loop over discharge ports
                                 for b in range(B) # Loop over bays
@@ -708,107 +697,44 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             )
 
         elif stochastic_algorithm == "rolling_horizon":
+            with_blocks = (config.env.env_name == "block_mpp")
+
             if start_stage is None:
-                # Case 1: No specific start stage given.
-                # -------------------------------------
-                # Rolling horizon here just reduces to a deterministic path:
-                # - We only take node_id = 0 for every stage
-                # - No probabilities, because there's no branching
-                # - Equivalent to solving a deterministic lookahead plan across all stages.
-                objective = mdl.sum(revenue_term(stage, 0, True) - ho_cost_term(stage, 0, True)
-                                    - cm_cost_term(stage, 0) for stage in range(stages))
-
+                # deterministic path: node 0 only across all stages
+                objective = mdl.sum(
+                    revenue_term(s, 0, with_blocks)
+                    - ho_cost_term(s, 0, with_blocks)
+                    - cm_cost_term(s, 0)
+                    for s in range(stages)
+                )
             else:
-                # Case 2: Rolling horizon with a specified start_stage.
-                # -----------------------------------------------------
-                # Here we consider a small 2-stage stochastic program starting at start_stage.
-                # That means: we look at nodes in [start_stage, start_stage+1],
-                # and optimize expected value over their possible scenarios.
-                # number of nodes (scenarios) to consider at each of the two stages
-                scenarios_per_stage = num_nodes_per_stage[:2]
+                # rolling_horizon
+                with_blocks = (config.env.env_name == "block_mpp")
 
-                # Assign equal probabilities to each node at start_stage and start_stage+1
-                for stage in range(start_stage, start_stage + 2):
-                    for node_id in range(scenarios_per_stage[stage - start_stage]):
-                        probabilities[stage, node_id] = 1 / scenarios_per_stage[stage - start_stage]
+                h_start = start_stage
+                h_end = min(stages, h_start + look_ahead)  # exclusive
+                window_nodes = list(num_nodes_per_stage[:h_end-h_start])  # e.g., [1, 4] for 2-step
 
-                print("\n=== RH / Myopic Debug Info ===")
-
-                # 1. Probabilities used in the objective
-                try:
-                    print("Probabilities in RH objective:")
-                    for key, val in probabilities.items():
-                        print(f"  Stage {key[0]}, Node {key[1]}: {val:.4f}")
-                except NameError:
-                    print("  [probabilities not yet defined in this scope]")
-
-                # 2. Demand values across scenarios
-                try:
-                    for s in range(num_nodes_per_stage[1]):  # next-stage nodes
-                        if (start_stage + 1, s) in demand:
-                            sample_demand = demand[(start_stage + 1, s)]
-                            print(
-                                f"Demand lookahead at stage {start_stage + 1}, node {s}: mean={np.mean(sample_demand):.2f}, std={np.std(sample_demand):.2f}")
-                        else:
-                            print(f"  Missing demand entry: ({start_stage + 1}, {s})")
-                except Exception as e:
-                    print(f"Error printing demand debug info: {e}")
-
-                # 3. Objective coefficients (if constants exist)
-                try:
-                    print("Revenue weight example:", getattr(revenues_, 'shape', None) or type(revenues_))
-                    print("HO cost weight example:", getattr(env, "ho_costs", "[ho_cost undefined]"))
-                    print("CM cost weight example:", getattr(env, "cm_costs", "[cm_cost undefined]"))
-                except Exception as e:
-                    print(f"Error printing objective weights: {e}")
-
-                # 4. Sanity check: sum of probabilities per stage
-                try:
-                    stage_probs = {}
-                    for (st, node), p in probabilities.items():
-                        stage_probs.setdefault(st, 0)
-                        stage_probs[st] += p
-                    for st, total in stage_probs.items():
-                        print(f"Sum of probs at stage {st}: {total:.4f}")
-                except Exception as e:
-                    print(f"Error computing stage prob sums: {e}")
-
-                print("=== End of RH / Myopic Debug Info ===\n")
-
-                if start_stage < stages - 1:
-                    # Future stage exists; obj = here-and-now + recourse
-                    objective = mdl.sum(
-                        probabilities[start_stage, 0] * (
-                                revenue_term(start_stage, 0, True)
-                                - ho_cost_term(start_stage, 0, True)
-                                - cm_cost_term(start_stage, 0)
-                        )
-                    ) + mdl.sum(
-                        probabilities[start_stage+1, node_id] * (
-                                revenue_term(start_stage+1, node_id, True)
-                                - ho_cost_term(start_stage+1, node_id, True)
-                                - cm_cost_term(start_stage+1, node_id)
-                        )
-                        for node_id in range(scenarios_per_stage[1])
+                # probs aligned to only the current and lookahead steps
+                probabilities = {
+                    (stage, node): 1.0 / window_nodes[stage - h_start]
+                    for stage in range(h_start, h_end)
+                    for node in range(window_nodes[stage - h_start])
+                }
+                objective = mdl.sum(
+                    probabilities[(s, n)] * (
+                            revenue_term(s, n, with_blocks)
+                            - ho_cost_term(s, n, with_blocks)
+                            - cm_cost_term(s, n)
                     )
-                else:
-                    # No future stages, obj = here-and-now
-                    objective = mdl.sum(
-                        probabilities[start_stage, node_id] * (
-                                revenue_term(start_stage, node_id, True)
-                                - ho_cost_term(start_stage, node_id, True)
-                                - cm_cost_term(start_stage, node_id)
-                        )
-                        for node_id in range(scenarios_per_stage[0])
-                    )
-
-
+                    for idx, s in enumerate(range(h_start, h_end))
+                    for n in range(window_nodes[idx])
+                )
         elif stochastic_algorithm == "myopic":
             stages_to_iter = range(stages) if start_stage is None else range(start_stage, start_stage + 1)
             objective = mdl.sum(revenue_term(stage, 0, True) - ho_cost_term(stage, 0, True)
                 - cm_cost_term(stage, 0) for stage in stages_to_iter
             )
-
         else:
             raise ValueError(f"Invalid stochastic algorithm: {stochastic_algorithm}")
 
@@ -820,9 +746,9 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         mdl.parameters.mip.strategy.file = 3
         mdl.parameters.emphasis.memory = 1  # Prioritize memory savings over speed
         mdl.parameters.threads = 1  # Use only 1 thread to reduce memory usage
-        mdl.parameters.mip.tolerances.mipgap = 0.01  # 1% or 0.1%
+        mdl.parameters.mip.tolerances.mipgap = 0.05  # 1% or 0.1%
         mdl.set_time_limit(3600)  # 1 hour
-        solution = mdl.solve(log_output=True)
+        solution = mdl.solve(log_output=print_results)
         return solution
 
     # Reshape revenues to match the shape of x
@@ -857,10 +783,10 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
     if solution:
         if "objective_value" in solution:
             obj = solution["objective_value"]
-            print(f"Objective value ({stochastic_algorithm}): {solution['objective_value']}")
+            # print(f"Objective value ({stochastic_algorithm}): {solution['objective_value']}")
         else:
             obj = solution.objective_value
-            print(f"Objective value: {solution.objective_value}")
+            # print(f"Objective value: {solution.objective_value}")
 
         # Analyze the solution
         x_ = np.zeros((stages, max_paths, B, D, BL, K, P, P), dtype=float)
@@ -1021,12 +947,12 @@ if __name__ == "__main__":
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--scenarios", type=int, default=1) # 20
+    parser.add_argument("--scenarios", type=int, default=4) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--num_episodes", type=int, default=1)
+    parser.add_argument("--num_episodes", type=int, default=5)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
-    parser.add_argument("--look_ahead", type=int, default=5)  # only for rolling horizon
+    parser.add_argument("--look_ahead", type=int, default=2)  # only for rolling horizon
     parser.add_argument("--stochastic_algorithm", type=str, default="rolling_horizon") # rolling_horizon, myopic, multi_stage
     # todo: add warm solution
     parser = parser.parse_args()
@@ -1065,7 +991,7 @@ if __name__ == "__main__":
     teu = config.env.teu
     max_scenarios_per_stage = max(num_scenarios) if max(num_scenarios) <= 28 else 28
     # Number of scenarios per stage
-    max_paths = max_scenarios_per_stage ** (stages-1) + 1 if not deterministic else 1
+    max_paths = max_scenarios_per_stage ** (stages-1) if not deterministic else 1
     node_list = precompute_node_list(stages, max_scenarios_per_stage, deterministic)
     obj_list = []
     tot_demand_list = []
@@ -1075,7 +1001,7 @@ if __name__ == "__main__":
     total_cm_list = []
     max_revenue_list = []
 
-    for x in range(num_episodes):  # Iterate over episodes
+    for x in tqdm(range(num_episodes), desc="Episodes", unit="ep"):
         # Create the environment on cpu
         seed = config.env.seed + x + 1
         config.env.seed = seed
@@ -1091,17 +1017,18 @@ if __name__ == "__main__":
             # Run the main logic and get results and variables
             result, var = main(env=env, demand=demand_sub_tree, scenarios_per_stage=scen, stages=stages,
                                max_paths=max_paths, seed=seed, perfect_information=perfect_information,
-                               deterministic=deterministic, algorithm=stochastic_algorithm, look_ahead=look_ahead)
+                               deterministic=deterministic, algorithm=stochastic_algorithm, look_ahead=look_ahead,
+                               print_results=False)
             # log result as error (to show in .err file):
 
             # print total teu on board per port
-            print("--------------------------------------------------")
-            print(f"Result: TEU{teu}_P{stages+1}_E{x}_S{scen}_PI{perfect_information}_Gen{generalization}: Obj {result.get('obj', None)}, Time {result.get('time', None)}, Gap {result.get('gap', None)}")
+            # print("--------------------------------------------------")
+            # print(f"Result: TEU{teu}_P{stages+1}_E{x}_S{scen}_PI{perfect_information}_Gen{generalization}: Obj {result.get('obj', None)}, Time {result.get('time', None)}, Gap {result.get('gap', None)}")
             total_x_list.append(np.sum(np.array(var.get('x', []), dtype=float)))
             total_ho_list.append(np.sum(np.array(var.get('HO', []), dtype=float)))
             total_cm_list.append(np.sum(np.array(var.get('CM', []), dtype=float)))
-            print("Total sum of X:", np.sum(np.array(var.get('x', []), dtype=float)))
-            print(f"Total TEU load per port: {np.array(result.get('mean_teu_load_per_port', []), dtype=float)}")
+            # print("Total sum of X:", np.sum(np.array(var.get('x', []), dtype=float)))
+            # print(f"Total TEU load per port: {np.array(result.get('mean_teu_load_per_port', []), dtype=float)}")
             demand = np.array(result.get('demand', []), dtype=int)
             ob_demand = []
             ob_teus = []
@@ -1116,9 +1043,9 @@ if __name__ == "__main__":
                 ob_demand.append(ob)
                 ob_teus.append(ob_teu.item())
 
-            print(f"Load demand: {demand[:,0].sum(axis=(-2,-1))}")
-            print(f"Onboard demand per port: {ob_demand}")
-            print(f"Onboard TEU per port: {ob_teus}")
+            # print(f"Load demand: {demand[:,0].sum(axis=(-2,-1))}")
+            # print(f"Onboard demand per port: {ob_demand}")
+            # print(f"Onboard TEU per port: {ob_teus}")
             tot_demand_list.append(demand[:,0].sum())
             max_ob_demand_list.append(max(x for x in ob_teus))
             max_revenue_list.append(result["max_revenue"])
@@ -1137,13 +1064,14 @@ if __name__ == "__main__":
             #     json.dump(result, json_file, indent=4)
 
     print("==================================================")
-    print("Type of algorithm:", stochastic_algorithm)
+    print(f"Type of algorithm: {stochastic_algorithm} with {num_episodes} episodes")
     if stochastic_algorithm in ["rolling_horizon", "myopic"]:
         print(f"Look-ahead window size: {look_ahead}")
-    print(f"Sum x over {num_episodes} episodes: {total_x_list}")
-    print(f"Sum HO over {num_episodes} episodes: {total_ho_list}")
-    print(f"Sum CM over {num_episodes} episodes: {total_cm_list}")
-    print(f"Obj over {num_episodes} episodes: {obj_list}")
-    print(f"Total demand over {num_episodes} episodes: {tot_demand_list}")
-    print(f"Max onboard demand over {num_episodes} episodes: {max_ob_demand_list}")
-    print(f"Max revenue over {num_episodes} episodes: {max_revenue_list}")
+
+    print(f"Avg/Std Sum(x) {np.mean(total_x_list)}/{np.std(total_x_list)}")
+    print(f"Avg/Std Sum(HO) {np.mean(total_ho_list)}/{np.std(total_ho_list)}")
+    print(f"Avg/Std Sum(CM) {np.mean(total_cm_list)}/{np.std(total_cm_list)}")
+    print(f"Avg/Std Obj {np.mean(obj_list)}/{np.std(obj_list)}")
+    print(f"Avg/Std Total demand {np.mean(tot_demand_list)}/{np.std(tot_demand_list)}")
+    print(f"Avg/Std Max onboard demand {np.mean(max_ob_demand_list)}/{np.std(max_ob_demand_list)}")
+    print(f"Avg/Std Max revenue {np.mean(max_revenue_list)}/{np.std(max_revenue_list)}")
