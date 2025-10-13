@@ -1026,8 +1026,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_episodes", type=int, default=1)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
-    parser.add_argument("--look_ahead", type=int, default=3)  # only for rolling horizon
-    parser.add_argument("--stochastic_algorithm", type=str, default="rolling_horizon")  # rolling_horizon, myopic, multi_stage
+    parser.add_argument("--look_ahead", type=int, default=5)  # only for rolling horizon
+    parser.add_argument("--stochastic_algorithm", type=str, default="rolling_horizon") # rolling_horizon, myopic, multi_stage
     # todo: add warm solution
     parser = parser.parse_args()
 
@@ -1046,12 +1046,12 @@ if __name__ == "__main__":
     config.testing.num_episodes = parser.num_episodes
 
     # Set parameters
-    look_ahead = parser.look_ahead
     perfect_information = parser.perfect_information
     deterministic = parser.deterministic
     generalization = config.env.generalization
     num_episodes = config.testing.num_episodes
     stochastic_algorithm = parser.stochastic_algorithm
+    look_ahead = 1 if stochastic_algorithm == "myopic" else parser.look_ahead
     scenario_range = parser.scenario_range if not generalization else False
     if deterministic:
         num_scenarios = [1]
@@ -1089,7 +1089,9 @@ if __name__ == "__main__":
             demand_sub_tree = get_scenario_tree_indices(demand_tree, scen)
 
             # Run the main logic and get results and variables
-            result, var = main(env, demand_sub_tree, scen, stages, max_paths, seed, perfect_information, deterministic, stochastic_algorithm, look_ahead)
+            result, var = main(env=env, demand=demand_sub_tree, scenarios_per_stage=scen, stages=stages,
+                               max_paths=max_paths, seed=seed, perfect_information=perfect_information,
+                               deterministic=deterministic, algorithm=stochastic_algorithm, look_ahead=look_ahead)
             # log result as error (to show in .err file):
 
             # print total teu on board per port
@@ -1100,8 +1102,6 @@ if __name__ == "__main__":
             total_cm_list.append(np.sum(np.array(var.get('CM', []), dtype=float)))
             print("Total sum of X:", np.sum(np.array(var.get('x', []), dtype=float)))
             print(f"Total TEU load per port: {np.array(result.get('mean_teu_load_per_port', []), dtype=float)}")
-
-            # todo: check
             demand = np.array(result.get('demand', []), dtype=int)
             ob_demand = []
             ob_teus = []
@@ -1138,6 +1138,8 @@ if __name__ == "__main__":
 
     print("==================================================")
     print("Type of algorithm:", stochastic_algorithm)
+    if stochastic_algorithm in ["rolling_horizon", "myopic"]:
+        print(f"Look-ahead window size: {look_ahead}")
     print(f"Sum x over {num_episodes} episodes: {total_x_list}")
     print(f"Sum HO over {num_episodes} episodes: {total_ho_list}")
     print(f"Sum CM over {num_episodes} episodes: {total_cm_list}")
