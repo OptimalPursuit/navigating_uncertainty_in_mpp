@@ -87,9 +87,6 @@ def get_scenario_tree_indices(scenario_tree:Dict, num_scenarios:int) -> Dict:
     for (stage, node), value in scenario_tree.items():
         # Calculate the maximum number of nodes for this stage
         max_nodes = num_scenarios ** stage
-        # For stage > 0, increase max_nodes by 1 for realization in rolling horizon
-        if stage > 0 and stochastic_algorithm == 'rolling_horizon':
-            max_nodes += 1
         # Include only nodes within the allowed range
         if node < max_nodes:
             filtered_tree[(stage, node)] = value
@@ -338,7 +335,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
     def initialize_vars_tree_block_mpp(stages:int, start_stage:int=0) -> None:
         # Build variables for full scenario tree
         for stage in range(start_stage, start_stage + stages):
-            for node_id in range(num_nodes_per_stage[stage - start_stage] + 1):
+            for node_id in range(num_nodes_per_stage[stage - start_stage]):
                 # Crane intensity:
                 CI[stage, node_id] = mdl.continuous_var(name=f'CI_{stage}_{node_id}', lb=0)
                 CI_target[stage, node_id] = mdl.continuous_var(name=f'CI_target_{stage}_{node_id}', lb=0)
@@ -379,15 +376,12 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         for stage in range(start_stage, start_stage + stages):
             # Define sets at current stage/port
             on_board, port_moves, load_moves = onboard_groups(P, stage, transport_indices)
-            on_boards.append(on_board)
-            all_port_moves.append(port_moves)
-            all_load_moves.append(load_moves)
-
+            prev_on_board, _, _ = onboard_groups(P, stage-1, transport_indices) if stage > 0 else ([], [], [])
 
             # Scenario range
-            scenarios = num_nodes_per_stage[:look_ahead][stage-start_stage] if stochastic_algorithm in ['rolling_horizon', 'myopic'] \
+            node_ids = num_nodes_per_stage[:look_ahead][stage-start_stage] if stochastic_algorithm in ['rolling_horizon', 'myopic'] \
                 else num_nodes_per_stage[stage]
-            for node_id in range(scenarios):
+            for node_id in range(node_ids):
                 for (i, j) in load_moves:
                     for k in range(K):
                         # Demand satisfaction
@@ -421,16 +415,16 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
                         # Open hatch (d=1 is below deck)
                         mdl.add_constraint(
-                            mdl.sum(x[stage, node_id, b, 1, bl, k, i, j] for (i, j) in all_port_moves[stage] for k in range(K))
+                            mdl.sum(x[stage, node_id, b, 1, bl, k, i, j] for (i, j) in port_moves for k in range(K))
                             <= M * HM[stage, node_id, b, bl], ctname=f'hatch_move_{stage}_{node_id}_{b}_{bl}'
                         )
 
                         # Hatch overstows (d=0 is on deck)
-                        # Overstowage is arrival condition of previous port: on_boards[stage - 1]
+                        # Overstowage is arrival condition of previous port: prev_on_board
                         # Vessel is empty before stage 0, hence no overstows
                         if stage > 0:
                             mdl.add_constraint(
-                                mdl.sum(x[stage, node_id, b, 0, bl, k, i, j] for (i, j) in on_boards[stage - 1]
+                                mdl.sum(x[stage, node_id, b, 0, bl, k, i, j] for (i, j) in prev_on_board
                                         for k in range(K) if j > stage) - M * (1 - HM[stage, node_id, b, bl] )
                                 <= HO[stage, node_id, b, bl], ctname=f'hatch_overstow_{stage}_{node_id}_{b}_{bl}'
                             )
@@ -489,7 +483,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                 # Compute lower bound on long crane
                 for adj_bay in range(B - 1):
                     mdl.add_constraint(
-                        mdl.sum(x[stage, node_id, b, d, bl, k, i, j] for (i, j) in all_port_moves[stage]
+                        mdl.sum(x[stage, node_id, b, d, bl, k, i, j] for (i, j) in port_moves
                                 for k in range(K) for bl in range(BL) for d in range(D) for b in [adj_bay, adj_bay + 1])
                         <= CI[stage, node_id], ctname=f'crane_intensity_{stage}_{node_id}_{adj_bay}'
                     )
@@ -497,7 +491,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                 mdl.add_constraint(
                     CI_target[stage, node_id] ==
                     CI_target_parameter * 2 / B * mdl.sum(demand[stage, node_id][k, j]
-                                                          for (i, j) in all_port_moves[stage] for k in range(K)),
+                                                          for (i, j) in port_moves for k in range(K)),
                     ctname=f'crane_intensity_target_{stage}_{node_id}'
                 )
                 # mdl.add_constraint(CI[stage, node_id] <= CI_target[stage, node_id])
@@ -551,6 +545,9 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
         for t in range(stages):
             mdl.clear()
+            on_boards.clear()
+            all_port_moves.clear()
+            all_load_moves.clear()
 
             # Determine remaining horizon and RH window size
             remaining = stages - t
@@ -574,27 +571,24 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                         x[t, 0, b, d, bl, k, i, j].set_ub(
                                             rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
 
-            # Deepcopy to isolate this RH iteration
+            def _nodes_at(dct, s):
+                return sorted({n for (ss, n) in dct.keys() if ss == s})
+
+            # in build_rolling_block_mpp:
             local_demand = copy.deepcopy(demand)
-
-            # Pick realized scenario for next stage if one exists
             if t < stages - 1:
-                realized_scen = 0 if deterministic else random.randint(0, scenarios_per_stage - 1)
-                local_demand[(t + 1, 0)] = demand[(t + 1, realized_scen)]
+                avail = _nodes_at(local_demand, t + 1)
+                realized_scen = 0 if deterministic else random.choice(avail)
+                local_demand[(t + 1, 0)] = demand[(t + 1, realized_scen)]  # remap realized → node 0
 
-            # Build demand window dynamically for RH stages
             demand_window = {}
-            for offset in range(rh_stages):  # 0, 1, ..., rh_stages-1
-                stage_idx = t + offset  # actual stage in global time
-                if stage_idx >= stages:
-                    break  # don't go past final stage
-                # For stage 0 in RH window, only root node (deterministic)
+            for offset in range(rh_stages):
+                s = t + offset
                 if offset == 0:
-                    demand_window[(stage_idx, 0)] = local_demand[(stage_idx, 0)]
+                    demand_window[(s, 0)] = local_demand[(s, 0)]
                 else:
-                    # For future stages, include all stochastic scenarios
-                    for s in range(num_nodes_per_stage[offset]):
-                        demand_window[(stage_idx, s)] = local_demand[(stage_idx, s)]
+                    for n in _nodes_at(local_demand, s):
+                        demand_window[(s, n)] = local_demand[(s, n)]
 
             # Build constraints for this RH window
             build_tree_block_mpp(
@@ -746,7 +740,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         mdl.parameters.mip.strategy.file = 3
         mdl.parameters.emphasis.memory = 1  # Prioritize memory savings over speed
         mdl.parameters.threads = 1  # Use only 1 thread to reduce memory usage
-        mdl.parameters.mip.tolerances.mipgap = 0.05  # 1% or 0.1%
+        mdl.parameters.mip.tolerances.mipgap = 0.05  # 5-1% or 0.1%
         mdl.set_time_limit(3600)  # 1 hour
         solution = mdl.solve(log_output=print_results)
         return solution
@@ -953,7 +947,7 @@ if __name__ == "__main__":
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
     parser.add_argument("--look_ahead", type=int, default=2)  # only for rolling horizon
-    parser.add_argument("--stochastic_algorithm", type=str, default="rolling_horizon") # rolling_horizon, myopic, multi_stage
+    parser.add_argument("--stochastic_algorithm", type=str, default="myopic") # rolling_horizon, myopic, multi_stage
     # todo: add warm solution
     parser = parser.parse_args()
 
