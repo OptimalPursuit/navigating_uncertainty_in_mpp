@@ -44,6 +44,21 @@ from torchrl.objectives.sac import SACLoss, _delezify, compute_log_prob
 # Custom
 from environment.utils import compute_violation
 
+def weight_violations(violations, lagrange_multiplier):
+    """ Weight violations by the lagrange multiplier of lm.dim()\in{3,4}."""
+    if lagrange_multiplier is None:
+        return violations
+
+    lm = lagrange_multiplier
+    k = lm.ndim - violations.ndim
+    assert k in (0, 1), f"incompatible: λ{lm.shape} vs vio{violations.shape}"
+
+    if k == 1:
+        lm = lm.mean(dim=0)
+
+    # now shapes are broadcastable; env/batch/time untouched
+    return violations * lm
+
 
 def loss_feasibility(td:TensorDictBase, action:Tensor, lagrange_multiplier:Optional[Tensor]=None,
                      aggregate_feasibility:str="sum",) -> Tuple[Tensor, Tensor]:
@@ -52,11 +67,7 @@ def loss_feasibility(td:TensorDictBase, action:Tensor, lagrange_multiplier:Optio
     rhs = td.get("rhs")
     excess_pod_locations = td["observation"].get("excess_pod_locations", None)
     violations = compute_violation(action, lhs_A, rhs)
-
-    if lagrange_multiplier is not None:
-        weighted_violations = violations * lagrange_multiplier
-    else:
-        weighted_violations = violations
+    weighted_violations = weight_violations(violations, lagrange_multiplier)
 
     # Get aggregation dimensions
     sum_dims = [-x for x in range(1, violations.dim())]
