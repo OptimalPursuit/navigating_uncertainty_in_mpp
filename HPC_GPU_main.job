@@ -11,6 +11,20 @@
 # Ensure the output directory exists
 mkdir -p output_files
 
+# Use tmp in own memory
+TMP_BASE="${SCRATCH:-$HOME/tmp}"          # prefer $SCRATCH if defined
+mkdir -p "$TMP_BASE"
+JOB_TMPDIR="$(mktemp -d "$TMP_BASE/${SLURM_JOB_ID}.XXXX")"
+
+export TMPDIR="$JOB_TMPDIR"
+export TMP="$JOB_TMPDIR"
+export TEMP="$JOB_TMPDIR"
+export TMP_DIR="$JOB_TMPDIR"              # matches admin’s check
+
+cleanup() { rm -rf "$JOB_TMPDIR"; }
+trap cleanup EXIT
+echo "Using TMPDIR=$TMPDIR"
+
 # Print the hostname of the allocated node
 hostname
 
