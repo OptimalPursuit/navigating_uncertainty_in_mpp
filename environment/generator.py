@@ -83,7 +83,7 @@ class MPP_Generator(Generator):
         self.cv[self.K // 2:] = self.cv_demand * 2/3
 
         # Precomputations
-        self.train_max_demand = 0
+        self.train_max_demand = None
         self.wave = self._create_wave(self.P - 1)
         self.transport_idx = get_transport_idx(self.P, device=self.device)
         self.num_loads = self._get_num_loads_in_voyage(self.transport_idx, self.P)
@@ -522,6 +522,8 @@ class AuthenticDemandGenerator(MPP_Generator):
             a = th.clamp(mu - sigma, min=0)
             b = mu + sigma
             x = Uniform(a, b).sample().round()
+        elif self.distribution == "fixed":
+            x = mu.clone()
         else:
             raise ValueError(f"Unknown dist {self.distribution}")
 
