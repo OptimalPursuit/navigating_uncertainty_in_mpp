@@ -401,11 +401,18 @@ class MasterPlanningEnv(EnvBase):
             torch.zeros_like(vessel_state["residual_capacity"], dtype=self.float_type).view(vessel_state["residual_capacity"].shape)
 
         # Compute action mask
-        if k == 0 and self.block_stowage_mask:
-            action_state["action_mask"] = generate_POD_mask(
+        if k == 0 and block:
+            if self.block_stowage_mask:
+                action_state["action_mask"] = generate_POD_mask(
+                    demand_state["realized_demand"][..., tau, :] @ self.teus,
+                    vessel_state["residual_capacity"], self.capacity,
+                    vessel_state["pod_locations"], pod, batch_size)
+
+            else:
+                vessel_state["locations_needed"] = self._compute_locations_needed(
                 demand_state["realized_demand"][..., tau, :] @ self.teus,
-                vessel_state["residual_capacity"], self.capacity,
-                vessel_state["pod_locations"], pod, batch_size)
+                vessel_state["residual_capacity"])
+
         action_mask = action_state.pop("action_mask", None)
 
         # Update residual lc capacity: target - actual load and discharge moves
@@ -439,6 +446,7 @@ class MasterPlanningEnv(EnvBase):
 
         if block:
             out["excess_pod_locations"] = vessel_state["excess_pod_locations"]
+            out["locations_needed"] = vessel_state["locations_needed"]
             out["action_mask"] = action_mask
         return out
 
@@ -695,7 +703,9 @@ class MasterPlanningEnv(EnvBase):
         norm_cost = demand_state["realized_demand"].view(*batch_size, -1)[..., :step + 1].sum(dim=-1, keepdims=True) / time[0]
 
         # Final reward: difference between normalized revenue and normalized cost
-        return (revenue.clone() / norm_revenue) - (cost.clone() / norm_cost)
+        rev_normed = th.where(norm_revenue > 0, revenue / norm_revenue, self.zero)
+        cost_normed = th.where(norm_cost > 0, cost / norm_cost, self.zero)
+        return rev_normed - cost_normed
 
     def _compute_residual_capacity(self, utilization:Tensor) -> Tensor:
         """Compute residual capacity based on utilization"""
@@ -738,12 +748,12 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # Kwargs and super
         self.BL = kwargs.get("blocks", 2)  # Number of paired blocks: 2 (wings + center), 3 (wings + center1 + center2)
         super().__init__(device=device, batch_size=batch_size, **kwargs)
-        # self.generator = UniformMPP_Generator(device=device, **kwargs)
-        kwargs["target_utils"] = [0.75, 0.99, 0.8]
+        self.generator = UniformMPP_Generator(device=device, **kwargs)
+        kwargs["target_utils"] = [0.3, 1.1, 1.4]
+            # [0.75, 0.99, 0.8]
         # print("Revenues matrix:\n", self.revenues_matrix.view(self.K, self.T))
         # print("TUEs", self.teus)
         # print("Revenue/TEU:", self.revenues_matrix.view(self.K, self.T)/self.teus.unsqueeze(1))
-        # breakpoint()
 
         # [0.6, 0.75, 0.99, 0.99, 0.8]
         #[0.6, 0.8, 0.95, 0.85, 0.5]  # Target utilization levels for demand generator
@@ -751,7 +761,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # print("By size:", self.summarize_shares(kwargs["cargo_shares"], dimension=0))
         # print("By weight:", self.summarize_shares(kwargs["cargo_shares"], dimension=1))
         # print("By revenue:", self.summarize_shares(kwargs["cargo_shares"], dimension=2))
-        self.generator = AuthenticDemandGenerator(device=device, **kwargs)
+        # self.generator = AuthenticDemandGenerator(device=device, **kwargs)
 
         # Shapes
         self._compact_form_block_shapes()
@@ -779,7 +789,10 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # Available locations based on pre-loading utilization
         empty_locations = self._empty_locations(vessel_state["utilization"], batch_size)
         POD_available_locations = self._available_locations_PODs_preload_utilization(vessel_state["utilization"], pod)
-        preload_mask = empty_locations & POD_available_locations
+        if not self.block_stowage_mask:
+            preload_mask = empty_locations & POD_available_locations
+        else:
+            preload_mask = th.zeros(*batch_size, self.n_block_locations, device=self.device, dtype=torch.bool)
 
         # Update utilization
         vessel_state["utilization"] = update_state_loading(action_state["action"], vessel_state["utilization"], tau, k, )
@@ -882,7 +895,9 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         vessel_state["vcg"] = th.ones_like(time, dtype=self.float_type)
         vessel_state["excess_pod_locations"] = th.zeros(*batch_size, self.B * self.BL, dtype=self.float_type)
         pod_locations = th.zeros((*batch_size, self.B, self.D, self.BL, self.P), dtype=self.float_type, device=device)
-        empty_locations = th.ones((*batch_size, self.B, self.D, self.BL), dtype=self.float_type, device=device)
+        preload_mask = th.ones((*batch_size, self.B, self.D, self.BL), dtype=th.bool, device=device)
+        locations_needed = self._compute_locations_needed(
+            realized_demand[..., tau, :] @ self.teus, vessel_state["residual_capacity"])
 
         # Action state
         action_state = TensorDict({}, batch_size=batch_size, device=device)
@@ -909,6 +924,8 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             "action_mask": action_mask,
             "total_profit":th.zeros_like(time, dtype=self.float_type).view(*batch_size, 1),
             "max_total_profit":th.zeros_like(time, dtype=self.float_type).view(*batch_size, 1),
+            "preload_mask": preload_mask.view(*batch_size, self.n_block_locations),
+            "locations_needed": locations_needed.view(*batch_size, 1),
         }, batch_size=batch_size, device=device,)
 
         # Init tds - full td
@@ -947,6 +964,8 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             # Misc
             timestep=Unbounded(shape=(*batch_size, 1), dtype=th.int64),
             pod=Unbounded(shape=(*batch_size, 1), dtype=th.int64),
+            locations_needed=Unbounded(shape=(*batch_size, 1), dtype=self.float_type),
+            preload_mask=Bounded(shape=(*batch_size, self.n_block_locations), low=0, high=1, dtype=th.bool),
             action_mask=Bounded(shape=(*batch_size, self.n_block_locations), low=0, high=1, dtype=th.bool),
             excess_pod_locations=Unbounded(shape=(*batch_size, self.B * self.BL), dtype=self.float_type),
             total_profit=Unbounded(shape=(*batch_size, 1), dtype=torch.float32),
@@ -1013,6 +1032,8 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             "long_crane_moves_discharge":td["observation", "long_crane_moves_discharge"].view(*batch_size, self.B-1).clone(),
             "residual_capacity": td["observation", "residual_capacity"].view(*batch_size, self.B, self.D, self.BL).clone(),
         }
+        if self.name == "block_mpp":
+            vessel["locations_needed"] = td["observation", "locations_needed"].view(*batch_size, 1).clone()
         return action, demand, vessel, timestep
 
     # Constraints
@@ -1043,6 +1064,18 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
     def _empty_locations(self, preload_utilization:Tensor, batch_size) -> Tensor:
         """Compute the available empty locations without utilization: eu(u'_p)."""
         return (preload_utilization.sum(dim=(-2,-1)) == 0).all(dim=-2).view(*batch_size, self.B, 1, self.BL) # Shape: [B, 1, BL]
+
+    def _compute_locations_needed(self, teu_tr_demand:Tensor, residual_capacity:Tensor, safety_factor: float = 1.05,) -> Tensor:
+        """Compute the number of locations needed to fulfill current demand."""
+        # todo: assumes equal distribution of demand over locations (can be improved)
+        # Compute average location size per batch
+        avg_location_size = residual_capacity.mean(dim=(-1, -2, -3))  # [batch]
+        avg_location_size = torch.clamp(avg_location_size, min=1e-6)
+
+        # Estimate number of locations needed
+        n_needed = torch.ceil((teu_tr_demand / avg_location_size) * safety_factor) # [batch]
+        n_needed = n_needed.clamp(max=self.n_block_locations).unsqueeze(-1)  # [batch,1]
+        return n_needed
 
     # Initialize
     def _initialize_block_capacity(self, capacity:Tensor) -> None:
