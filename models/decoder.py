@@ -44,6 +44,7 @@ class AttentionDecoderWithCache(nn.Module):
                  sdpa_fn: Callable = None,
                  **kwargs):
         super(AttentionDecoderWithCache, self).__init__()
+        # Embeddings
         self.context_embedding = context_embedding
         self.dynamic_embedding = dynamic_embedding if dynamic_embedding is not None else StaticEmbedding()
         self.is_dynamic_embedding = not isinstance(self.dynamic_embedding, StaticEmbedding)
@@ -87,12 +88,39 @@ class AttentionDecoderWithCache(nn.Module):
         # do not remove, part of model weights
         self.multiplier_head = nn.Linear(embed_dim * 2, 1) # Multiplier head
 
+        # Mask head: predicts probability of selecting each location (y_head)
+        self.use_mask_head = kwargs.get("use_mask_head", False)
+        if self.use_mask_head:
+            # Mask head to predict scores for each location
+            self.mask_head = nn.Sequential(
+                nn.Linear(embed_dim * 2, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.LeakyReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.LeakyReLU(),
+                nn.Linear(hidden_dim, action_dim)
+            )
+
+            # Global context encoder for mask prediction
+            self.mask_global_encoder = nn.Sequential(
+                nn.Linear(3, hidden_dim),  # pod_demand, residual_cap_sum, capacity_to_fill
+                nn.LeakyReLU(),
+                nn.Linear(hidden_dim, embed_dim * 2)
+            )
+
         # Temperature for the policy
         self.temperature = temperature
         self.scale_max = scale_max
 
         # Causal mask to allow anticipating future steps
         self.causal_mask = torch.triu(torch.ones(seq_dim, seq_dim, device='cuda'), diagonal=0)
+
+        # Hyperparameters for mask head
+        self.alpha = kwargs.get("alpha", 5.0)
+        self.beta = kwargs.get("beta", 1.0)
+        self.M = kwargs.get("M", 500.0)
+        self.tau = kwargs.get("tau", 1.0)  # Temperature for soft top-k
 
     def _compute_q(self, cached: PrecomputedCache, td: TensorDict) -> Tensor:
         """Compute query of static and context embedding for the attention mechanism."""
@@ -110,6 +138,83 @@ class AttentionDecoderWithCache(nn.Module):
         glimpse_v = glimpse_v_stat + glimpse_v_dyn
         logit_k = logit_k_stat + logit_k_dyn
         return glimpse_k, glimpse_v, logit_k
+
+    def soft_topk_sinkhorn(self, y_hat, n_needed, tau=1, iters=10, eps=1e-6):
+        """
+        Differentiable soft top-k using Sinkhorn-style normalization.
+
+        Args:
+            y_hat: [batch_size, seq_len, n_c] - logits
+            n_needed: scalar or [batch_size, seq_len, 1] - approx. number of locations to activate
+            tau: temperature for softmax
+            iters: number of Sinkhorn iterations
+            eps: small number for numerical stability
+
+        Returns:
+            mask: [batch_size, seq_len, n_c] - soft mask, sum(mask, dim=-1) ~ n_needed
+        """
+        B, S, n_c = y_hat.shape
+
+        # Flatten seq dimension for vectorization
+        y_flat = y_hat.view(B * S, n_c)
+
+        # Initial softmax (temperature scaling)
+        scores = torch.softmax(y_flat / tau, dim=-1)
+
+        # Prepare target sums
+        if isinstance(n_needed, (int, float)):
+            target_sum = torch.full((B * S, 1), float(n_needed), device=y_hat.device)
+        else:
+            target_sum = n_needed.view(B * S, 1)
+
+        # Sinkhorn iterations to renormalize to sum ~ n_needed
+        for _ in range(iters):
+            col_sum = scores.sum(dim=-1, keepdim=True)
+            scores = scores * (target_sum / (col_sum + eps))
+
+        # Clamp to [0,1] for safety
+        mask_flat = torch.clamp(scores, 0, 1)
+
+        # Reshape back
+        mask = mask_flat.view(B, S, n_c)
+        return mask
+
+    def soft_topk_batch(self, y_hat, n_needed):
+        """
+        Vectorized soft-topk over a batch.
+
+        Args:
+            y_hat: [batch_size, 1, n_c] - logits for candidate locations
+            n_needed: scalar or tensor broadcastable to [batch_size, 1, 1] - approx. number of locations to activate
+
+        Returns:
+            mask: [batch_size, 1, n_c] - soft top-k mask
+        """
+        batch_size, seq_len, n_c = y_hat.shape
+
+        # flatten seq dimension for pairwise differences
+        y_flat = y_hat.view(batch_size * seq_len, n_c)  # [B*seq_len, n_c]
+
+        # pairwise differences
+        diff = y_flat.unsqueeze(2) - y_flat.unsqueeze(1)  # [B*seq_len, n_c, n_c]
+        soft_ranks = torch.sum(torch.sigmoid(diff / self.tau), dim=-1) + 0.5  # [B*seq_len, n_c]
+
+        # broadcast n_needed
+        if isinstance(n_needed, (int, float)):
+            n_needed = torch.full((batch_size * seq_len, 1), float(n_needed), device=y_hat.device)
+        else:
+            n_needed = n_needed.view(batch_size * seq_len, 1)
+
+        mask_flat = torch.clamp(n_needed - soft_ranks + 1, 0, 1)  # [B*seq_len, n_c]
+
+        # reshape back to original [batch_size, seq_len, n_c]
+        mask = mask_flat.view(batch_size, seq_len, n_c)
+
+        return mask
+
+    def softmin(self, a, b, beta=10.0):
+        """Differentiable min approximation."""
+        return -1.0 / beta * torch.log(torch.exp(-beta * a) + torch.exp(-beta * b))
 
     def forward(self, td: TensorDict, cached: PrecomputedCache, num_starts: int = 0) -> Tuple[Tensor,Tensor]:
         # Compute query, key, and value for the attention mechanism
@@ -150,11 +255,24 @@ class AttentionDecoderWithCache(nn.Module):
         if self.scale_max is not None:
             std = std.clamp(max=self.scale_max)
 
-        # Apply the action mask to the mean and std logits
-        mask = td.get("action_mask", None)
-        if mask is not None:
-            mean = torch.where(mask, mean.squeeze(), 1e-6)
-            std = torch.where(mask, std.squeeze(), 1e-6)
+        # === Predict POD mask based on top-k sinkhorn ===
+        if self.use_mask_head:
+            y_hat = self.mask_head(combined_output)  # [batch_size, seq_len, action_dim]
+            n_needed = td.get("locations_needed", None)
+            y_topk = self.soft_topk_sinkhorn(y_hat, n_needed)
+            preload_mask = td.get("preload_mask", None).view(y_topk.shape)
+            if preload_mask is None:
+                raise ValueError("preload_mask not found in TensorDict.")
+
+            y_tilde = preload_mask * torch.sigmoid(self.alpha * y_hat) * y_topk
+            mean = self.softmin(mean, self.M * y_tilde, beta=self.beta)
+            std = std * y_tilde
+        else:
+            # Apply the action mask to the mean and std logits
+            mask = td.get("action_mask", None)
+            if mask is not None:
+                mean = torch.where(mask, mean.squeeze(), 1e-6)
+                std = torch.where(mask, std.squeeze(), 1e-6)
         return mean.squeeze(), std.squeeze()
 
     def pre_decoder_hook(self, td: TensorDict, env, embeddings: Tensor, num_starts: int = 0) -> Tuple[TensorDict, TensorDict, PrecomputedCache]:
