@@ -51,10 +51,15 @@ def weight_violations(violations, lagrange_multiplier):
 
     lm = lagrange_multiplier
     k = lm.ndim - violations.ndim
-    assert k in (0, 1), f"incompatible: λ{lm.shape} vs vio{violations.shape}"
+    assert k in (-2, -1, 0, 1,), f"incompatible shapes: λ {lm.shape} vs vio {violations.shape}"
 
     if k == 1:
         lm = lm.mean(dim=0)
+    # if not primal-dual, add dims to lm for broadcasting
+    elif k == -1:
+        lm = lm.view(1, *lm.shape)
+    elif k == -2:
+        lm = lm.view(1, 1, *lm.shape)
 
     # now shapes are broadcastable; env/batch/time untouched
     return violations * lm
