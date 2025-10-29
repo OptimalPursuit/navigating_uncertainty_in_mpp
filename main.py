@@ -184,7 +184,7 @@ def initialize_policy_and_critic(config: DotMap, env:nn.Module, device:Union[str
     )
     policy = ProjectionProbabilisticActor(
         module=actor,
-        in_keys=["loc", "scale", "mask"],
+        in_keys=["loc", "scale",],
         distribution_class=TruncatedNormal,
         distribution_kwargs={"low": env.action_spec.low[0], "high": env.action_spec.high[0]},
         return_log_prob=True,
