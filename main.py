@@ -180,11 +180,11 @@ def initialize_policy_and_critic(config: DotMap, env:nn.Module, device:Union[str
     actor = TensorDictModule(
         Autoencoder(encoder, decoder, env).to(device),
         in_keys=["observation"],  # Input tensor key in TensorDict
-        out_keys=["loc", "scale"]  # Output tensor key in TensorDict
+        out_keys=["loc", "scale", "mask"]  # Output tensor key in TensorDict
     )
     policy = ProjectionProbabilisticActor(
         module=actor,
-        in_keys=["loc", "scale"],
+        in_keys=["loc", "scale", "mask"],
         distribution_class=TruncatedNormal,
         distribution_kwargs={"low": env.action_spec.low[0], "high": env.action_spec.high[0]},
         return_log_prob=True,
