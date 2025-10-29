@@ -216,7 +216,7 @@ class AttentionDecoderWithCache(nn.Module):
         """Differentiable min approximation."""
         return -1.0 / beta * torch.log(torch.exp(-beta * a) + torch.exp(-beta * b))
 
-    def forward(self, td: TensorDict, cached: PrecomputedCache, num_starts: int = 0) -> Tuple[Tensor,Tensor]:
+    def forward(self, td: TensorDict, cached: PrecomputedCache, num_starts: int = 0) -> Tuple[Tensor,Tensor,Tensor]:
         # Compute query, key, and value for the attention mechanism
         glimpse_q = self._compute_q(cached, td)
         glimpse_q = self.q_norm(glimpse_q)
@@ -267,13 +267,15 @@ class AttentionDecoderWithCache(nn.Module):
             y_tilde = preload_mask * torch.sigmoid(self.alpha * y_hat) * y_topk
             mean = self.softmin(mean, self.M * y_tilde, beta=self.beta)
             std = std * y_tilde
+            # Return mean, std, and predicted mask
+            return mean.squeeze(), std.squeeze(), y_tilde.squeeze()
         else:
             # Apply the action mask to the mean and std logits
             mask = td.get("action_mask", None)
             if mask is not None:
                 mean = torch.where(mask, mean.squeeze(), 1e-6)
                 std = torch.where(mask, std.squeeze(), 1e-6)
-        return mean.squeeze(), std.squeeze()
+            return mean.squeeze(), std.squeeze(), mask
 
     def pre_decoder_hook(self, td: TensorDict, env, embeddings: Tensor, num_starts: int = 0) -> Tuple[TensorDict, TensorDict, PrecomputedCache]:
         return td, env, self._precompute_cache(embeddings, num_starts)
