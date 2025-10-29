@@ -295,6 +295,11 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             out["action"] = torch.where(out["observation", "action_mask"], out["action"],  1e-6)
             out["log_prob"] = torch.where(out["observation", "action_mask"], out["log_prob"], torch.tensor(-100, device=out["log_prob"].device))
 
+        if "mask" in out:
+            hard_mask = out["observation", "preload_mask"].float()
+            out["sample_log_prob"] = (out["log_prob"].clamp(min=-20, max=1) * hard_mask).sum(dim=-1)
+            return out
+
         # Get sample log probabilities for loss computations
         out["sample_log_prob"] = out["log_prob"].sum(dim=-1)
         return out
