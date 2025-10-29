@@ -266,8 +266,8 @@ class AttentionDecoderWithCache(nn.Module):
 
             y_tilde = preload_mask * torch.sigmoid(self.alpha * y_hat) * y_topk
             mean = self.softmin(mean, self.M * y_tilde, beta=self.beta)
-            std = std * y_tilde
-            # Return mean, std, and predicted mask
+            std = std * y_tilde + (1 - y_tilde) * 1e-3  # keep finite variance
+            std = std.clamp(min=1e-3) # avoid zero std
             return mean.squeeze(), std.squeeze(), y_tilde.squeeze()
         else:
             # Apply the action mask to the mean and std logits
