@@ -1,21 +1,19 @@
 ## Imports
 import os
-import copy
 import argparse
 
 # Datatypes
 import yaml
 from dotmap import DotMap
-from typing import Optional, Union
-from tensordict.nn import TensorDictModule, TensorDictSequential
+from typing import Union
+from tensordict.nn import TensorDictModule
 
 # Machine learning
-import torch
 import wandb
 
 # TorchRL
 from torchrl.envs.utils import check_env_specs
-from torchrl.modules import TruncatedNormal, ValueOperator
+from torchrl.modules import TruncatedNormal
 
 # Custom:
 # Training
@@ -27,7 +25,7 @@ from models.autoencoder import Autoencoder
 from models.encoder import MLPEncoder, AttentionEncoder
 from models.decoder import AttentionDecoderWithCache, MLPDecoderWithCache
 from models.critic import CriticNetwork
-from rl_algorithms.projection import ProjectionFactory
+from models.projection import ProjectionFactory
 from rl_algorithms.projection_prob_actor import ProjectionProbabilisticActor
 from rl_algorithms.test import evaluate_model
 
@@ -161,6 +159,7 @@ def initialize_policy_and_critic(config: DotMap, env:nn.Module, device:Union[str
         "action_dim": action_dim,
         "critic_embedding": critic_embed,
         "primal_dual": config.algorithm.primal_dual,
+        "n_constraints": config.training.projection_kwargs.n_constraints,
         **config.model,
     }
 
@@ -257,7 +256,7 @@ def parse_args():
     parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
     parser.add_argument('--ur', type=float, default=1.1)
     parser.add_argument('--cv', type=float, default=0.5)
-    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=True, help="Block stowage mask.")
+    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=False, help="Block stowage mask.")
 
     # Algorithm parameters
     parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
@@ -272,9 +271,8 @@ def parse_args():
                                                                   'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
                         help="Projection parameters.")
 
-
     # Run parameters
-    parser.add_argument('--testing_path', type=str, default='results/trained_models/AI2STOW_JOURNAL_VERSION', help="Path for testing results.")
+    parser.add_argument('--testing_path', type=str, default='results/trained_models/AI2STOW', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='SA_AM', help="Folder name for the run.")
     parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
