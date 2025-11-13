@@ -177,7 +177,7 @@ def compute_pol_pod_locations(utilization: th.Tensor, transform_tau_to_pol, tran
     pod_locations = (util @ transform_tau_to_pod).sum(dim=-2) > eps
     return pol_locations, pod_locations
 
-def generate_POD_mask(pod_demand: th.Tensor, residual_capacity: th.Tensor, capacity: th.Tensor,
+def generate_POD_mask(tr_demand_teu: th.Tensor, residual_capacity: th.Tensor, capacity: th.Tensor,
                       pod_locations: th.Tensor, pod:int, batch_size:tuple) -> th.Tensor:
     """
     Generates a boolean gate tensor of shape (B, BL) with exactly x elements set to True.
@@ -192,8 +192,8 @@ def generate_POD_mask(pod_demand: th.Tensor, residual_capacity: th.Tensor, capac
     used_pod_locations = pod_locations[..., pod] > 0
 
     # Get amount of demand to be filled by new blocks
-    remaining_pod_demand = th.clamp(pod_demand - (residual_capacity * used_pod_locations).sum(dim=(-1,-2,-3)), min=0)
-    capacity_to_fill = th.minimum(residual_capacity.sum(dim=(-1,-2,-3)), remaining_pod_demand)
+    # remaining_pod_demand = th.clamp(pod_demand - (residual_capacity * used_pod_locations).sum(dim=(-1,-2,-3)), min=0)
+    capacity_to_fill = th.minimum(residual_capacity.sum(dim=(-1,-2,-3)), tr_demand_teu)
 
     # Generate mirrored random scores for each bay
     half_B = B // 2 + (B % 2)
