@@ -161,7 +161,7 @@ class MPP_Generator(Generator):
             bound = self._initialize_demand_bound_on_capacity(batch_size)
             e_x_init_demand, _ = self._generate_initial_moments(batch_size, bound, self.cv)
             batch_updates = th.zeros(batch_size, device=self.device).view(*batch_size, 1)
-            self.train_max_demand = self._get_ub_demand_normalization(e_x_init_demand)
+            self.train_max_demand = self.demand_upper_bound(e_x_init_demand, self.cv_demand, sigmas=3.0) # Demand normalization (99.7%ile)
         else:
             e_x_init_demand = td["observation", "init_expected_demand"].view(-1, self.T, self.K)
             batch_updates = td["observation", "batch_updates"].clone() + 1
@@ -283,9 +283,9 @@ class MPP_Generator(Generator):
         mask = (transport_idx[:, 0] <= POL) & (transport_idx[:, 1] > POL)
         return mask.sum(dim=-1).squeeze()  # Shape: [num_POL]
 
-    def _get_ub_demand_normalization(self, bound:th.Tensor, eps:float=1e-2) -> th.Tensor:
-        """Get upper bound for demand normalization"""
-        return (bound + 4 * (bound / 2 * 0.5)).max()
+    def demand_upper_bound(self, mu: th.Tensor, CV: float = 1.0, sigmas: float = 4.0) -> th.Tensor:
+        sigma = mu * CV
+        return mu + sigmas * sigma  # μ + 3σ
 
 class UniformMPP_Generator(MPP_Generator):
     """Subclass for generating demand for stowage plans using uniform distribution."""
@@ -302,7 +302,7 @@ class UniformMPP_Generator(MPP_Generator):
         if td is None or td.is_empty():
             # Get initial demand bound based on capacity
             bound = self._initialize_demand_bound_on_capacity(batch_size)
-            self.train_max_demand = self._get_ub_demand_normalization(bound/2)
+            self.train_max_demand = self.demand_upper_bound(bound * 0.5, self.cv_demand, sigmas=3.0)  # Demand normalization (99.7%ile)
             if batch_size != []: bound = bound.unsqueeze(0).expand(*batch_size, -1, -1) # Expand to batch size
 
             # Get initial demand based on random perturbed bound
