@@ -345,7 +345,7 @@ class MasterPlanningEnv(EnvBase):
         """Get observation from the TensorDict."""
         if self.normalize_obs:
             # Normalize demand and clip max demand based on train range
-            max_demand = next_state_dict["realized_demand"].max() if self.generator.train_max_demand == None else self.generator.train_max_demand
+            max_demand = self.generator.train_max_demand
             out = th.cat([
                 time.view(*batch_size, 1) / (self.T * self.K),
                 next_state_dict["observed_demand"].view(*batch_size, self.T * self.K) / max_demand,
@@ -855,6 +855,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             "cost": cost,
             "reward": reward,
             "done": done,
+            "max_demand": td["max_demand"],
         }, td.shape)
         return out
 
@@ -939,6 +940,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             "revenue": th.zeros_like(time, dtype=self.float_type).view(*batch_size, 1),
             "cost": th.zeros_like(time, dtype=self.float_type).view(*batch_size, 1),
             "done": th.zeros_like(time, dtype=th.bool).view(*batch_size, 1),
+            "max_demand": self.generator.train_max_demand.expand(*batch_size, 1),
         }, batch_size=batch_size, device=device,)
         return out
 
@@ -990,6 +992,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             lhs_A=Unbounded(shape=(*batch_size,self.n_constraints,self.n_block_locations),dtype=self.float_type),
             rhs=Unbounded(shape=(*batch_size,self.n_constraints),dtype=self.float_type),
             violation=Unbounded(shape=(*batch_size,self.n_constraints),dtype=self.float_type),
+            max_demand=Unbounded(shape=(*batch_size, 1), dtype=self.float_type),
             shape=batch_size,
         )
         self.action_spec = Bounded(
@@ -1007,6 +1010,13 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         timestep = td["observation", "timestep"].view(-1).clone()
 
         # Action-related variables
+        if td["action"].max() < 1.0:
+            print("action min:", td["action"].min())
+            print("action mean:", td["action"].mean())
+            print("action max:", td["action"].max())
+            breakpoint()
+
+
         action = {
             "action": td["action"].view(*batch_size, self.B, self.D, self.BL).clone(),
             "action_mask": td["observation", "action_mask"].view(*batch_size, self.B, self.D, self.BL).clone(),
