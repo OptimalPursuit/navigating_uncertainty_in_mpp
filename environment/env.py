@@ -45,6 +45,7 @@ class MasterPlanningEnv(EnvBase):
         self.P = kwargs.get("ports") # Number of ports
         self.B = kwargs.get("bays")  # Number of bays
         self.D = kwargs.get("decks") # Number of decks
+        self.BL = 1 # Fixed number of blocks
         self.T = int((self.P ** 2 - self.P) / 2) # Number of (POL,POD) transports
         self.CC = kwargs.get("customer_classes")  # Number of customer contracts
         self.K = kwargs.get("cargo_classes") * self.CC # Number of container classes
@@ -507,12 +508,13 @@ class MasterPlanningEnv(EnvBase):
         # Perform matmul to get initial rhs, including:
         # note: utilization, A, teus_episode have static shapes
         A = swap_signs_stability.view(-1, 1, 1,) * input_A.clone() # Swap signs for constraints
-        rhs = utilization.view(*batch_size, -1) @ A.view(n_constraints, -1).T
+        norm_utilization = utilization / self.capacity.view(1, self.B, self.D, self.BL, 1)
+        rhs = norm_utilization.view(*batch_size, -1) @ A.view(n_constraints, -1).T
         # Update rhs with current demand and add teu capacity to the rhs
-        rhs[..., :n_demand] = current_demand.view(-1, 1)
+        rhs[..., :n_demand] = current_demand.view(-1, 1) / self.generator.train_max_demand
         rhs[..., n_demand:n_locations + n_demand] = \
             torch.clamp(rhs[..., n_demand:n_locations + n_demand] + self.capacity.view(1, -1),
-                        min=th.zeros_like(self.capacity.view(1, -1)), max=self.capacity.view(1, -1))
+                        min=th.zeros_like(self.capacity.view(1, -1)), max=self.capacity.view(1, -1)) / self.capacity.max()
         return rhs
 
     # Initializations
@@ -1049,10 +1051,11 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         """Create constraint matrix A for compact constraints Au <= b"""
         # [1, LM-TW, TW-LM, VM-TW, TW-VM]
         A = th.ones(shape, device=self.device, dtype=self.float_type)
-        scaling = self.teus.view(1, 1, 1, -1) if rhs else 1
+        scaling = self.teus.view(1, 1, 1, -1) / 2 if rhs else 1
         A[self.n_demand:self.n_block_locations + self.n_demand,] *= scaling * th.eye(self.n_block_locations, device=self.device, dtype=self.float_type).view(self.n_block_locations, self.n_block_locations, 1, 1)
         A *= self.block_constraint_signs.view(-1, 1, 1, 1)
-        A[self.n_block_locations + self.n_demand:self.n_block_locations + self.n_demand + self.n_stability] *= self.block_stability_params_lhs.view(self.n_stability, self.n_block_locations, 1, self.K,)
+        A[self.n_block_locations + self.n_demand:self.n_block_locations + self.n_demand + self.n_stability] *= \
+            self.block_stability_params_lhs.view(self.n_stability, self.n_block_locations, 1, self.K,) / self.normalizer_stability_params
         return A.view(self.n_constraints, self.n_block_locations, -1)
 
     def _available_locations_PODs_preload_utilization(self, preload_utilization:Tensor, pod:Tensor) -> Tensor:
@@ -1103,6 +1106,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         self.swap_signs_block_stability[0] = 1
 
         # Create constraint matrix
+        self.normalizer_stability_params = th.max(self.block_stability_params_lhs.abs())
         self.block_A_rhs = self._create_constraint_matrix_block(shape=(self.n_constraints, self.n_block_locations, self.T, self.K), rhs=True)
         self.block_A_lhs = self._create_constraint_matrix_block(shape=(self.n_constraints, self.n_block_locations, self.T, self.K), rhs=False)
 
