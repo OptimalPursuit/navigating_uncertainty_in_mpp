@@ -376,6 +376,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             "loss_critic": loss_out.get("loss_qvalue", 0) or loss_out.get("loss_critic", 0),
             "loss_feasibility":loss_out.get("loss_feasibility", 0),
             "violation": loss_out.get("violation", 0),
+            "pod_violation": loss_out.get("pod_violation", 0),
             "loss_entropy": loss_out.get("loss_alpha", 0) or loss_out.get("loss_entropy", 0),
             # Supporting metrics
             "step": step,
@@ -385,6 +386,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             **train_performance,
         }
         log["mean_total_violation"] = log["violation"].sum(dim=(-2, -1)).mean().item() if log["violation"].dim() > 1 else 0
+        log["mean_total_pod_violation"] = log["pod_violation"].sum(dim=(-2, -1)).mean().item() if log["pod_violation"].dim() > 1 else 0
         log["lagrangian_multiplier"] = loss_out["lagrangian_multiplier"].mean().item() if loss_out.get("lagrangian_multiplier") is not None else 0.0
         pbar.update(1)
         # Log metrics
@@ -397,6 +399,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             f"loss_critic:  {log['loss_critic']: 4.4f}, "
             f"feasibility_loss: {log['loss_feasibility']: 4.4f}, "
             f"mean_violation: {log['mean_total_violation']: 4.4f}, "  
+            f"mean_pod_violation: {log['mean_total_pod_violation']: 4.4f}, "
             # Prediction
             f"x: {log['x']: 4.4f}, "
             f"loc(x): {log['loc(x)']: 4.4f}, "
