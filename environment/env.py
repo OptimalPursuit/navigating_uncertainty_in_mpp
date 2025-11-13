@@ -846,6 +846,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
                 "timestep": time,
                 "pod":self.pod[time],
                 "preload_mask": preload_mask.view(*batch_size, self.n_block_locations),
+                "max_demand": td["observation", "max_demand"],
             },
             **action_state,
 
@@ -855,7 +856,6 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             "cost": cost,
             "reward": reward,
             "done": done,
-            "max_demand": td["max_demand"],
         }, td.shape)
         return out
 
@@ -929,6 +929,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             "max_total_profit":th.zeros_like(time, dtype=self.float_type).view(*batch_size, 1),
             "preload_mask": preload_mask.view(*batch_size, self.n_block_locations),
             "locations_needed": locations_needed.view(*batch_size, 1),
+            "max_demand": self.generator.train_max_demand.expand(*batch_size, 1),
         }, batch_size=batch_size, device=device,)
 
         # Init tds - full td
@@ -940,7 +941,6 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             "revenue": th.zeros_like(time, dtype=self.float_type).view(*batch_size, 1),
             "cost": th.zeros_like(time, dtype=self.float_type).view(*batch_size, 1),
             "done": th.zeros_like(time, dtype=th.bool).view(*batch_size, 1),
-            "max_demand": self.generator.train_max_demand.expand(*batch_size, 1),
         }, batch_size=batch_size, device=device,)
         return out
 
@@ -974,6 +974,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             excess_pod_locations=Unbounded(shape=(*batch_size, self.B * self.BL), dtype=self.float_type),
             total_profit=Unbounded(shape=(*batch_size, 1), dtype=torch.float32),
             max_total_profit=Unbounded(shape=(*batch_size, 1), dtype=torch.float32),
+            max_demand=Unbounded(shape=(*batch_size, 1), dtype=self.float_type),
             shape=batch_size,
         )
         self.observation_spec = Composite(
@@ -992,7 +993,6 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             lhs_A=Unbounded(shape=(*batch_size,self.n_constraints,self.n_block_locations),dtype=self.float_type),
             rhs=Unbounded(shape=(*batch_size,self.n_constraints),dtype=self.float_type),
             violation=Unbounded(shape=(*batch_size,self.n_constraints),dtype=self.float_type),
-            max_demand=Unbounded(shape=(*batch_size, 1), dtype=self.float_type),
             shape=batch_size,
         )
         self.action_spec = Bounded(
@@ -1010,13 +1010,6 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         timestep = td["observation", "timestep"].view(-1).clone()
 
         # Action-related variables
-        if td["action"].max() < 1.0:
-            print("action min:", td["action"].min())
-            print("action mean:", td["action"].mean())
-            print("action max:", td["action"].max())
-            breakpoint()
-
-
         action = {
             "action": td["action"].view(*batch_size, self.B, self.D, self.BL).clone(),
             "action_mask": td["observation", "action_mask"].view(*batch_size, self.B, self.D, self.BL).clone(),
