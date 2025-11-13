@@ -847,6 +847,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
                 "pod":self.pod[time],
                 "preload_mask": preload_mask.view(*batch_size, self.n_block_locations),
                 "max_demand": td["observation", "max_demand"],
+                "env_action": action_state["action"].view(*batch_size, self.n_block_locations),
             },
             **action_state,
 
@@ -930,6 +931,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             "preload_mask": preload_mask.view(*batch_size, self.n_block_locations),
             "locations_needed": locations_needed.view(*batch_size, 1),
             "max_demand": self.generator.train_max_demand.expand(*batch_size, 1),
+            "env_action": th.zeros(self.action_spec.shape, dtype=self.float_type, device=device),
         }, batch_size=batch_size, device=device,)
 
         # Init tds - full td
@@ -975,6 +977,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             total_profit=Unbounded(shape=(*batch_size, 1), dtype=torch.float32),
             max_total_profit=Unbounded(shape=(*batch_size, 1), dtype=torch.float32),
             max_demand=Unbounded(shape=(*batch_size, 1), dtype=self.float_type),
+            env_action=Unbounded(shape=(*batch_size, self.n_block_locations), dtype=self.float_type,),
             shape=batch_size,
         )
         self.observation_spec = Composite(
@@ -1011,7 +1014,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
 
         # Action-related variables
         action = {
-            "action": td["action"].view(*batch_size, self.B, self.D, self.BL).clone(),
+            "action": td["observation", "env_action"].view(*batch_size, self.B, self.D, self.BL).clone(),
             "action_mask": td["observation", "action_mask"].view(*batch_size, self.B, self.D, self.BL).clone(),
             "lhs_A": td["lhs_A"].clone(),
             "rhs": td["rhs"].clone(),
