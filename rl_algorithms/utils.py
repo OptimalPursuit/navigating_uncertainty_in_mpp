@@ -62,3 +62,17 @@ def set_unique_seed(batch_index, base_seed=42):
     # Ensure deterministic behavior on CUDA if applicable
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+def inspect_tensordict(td, prefix=""):
+    for key, value in td.items():
+        if isinstance(value, TensorDict):
+            print(f"{prefix}TensorDict: {key}")
+            inspect_tensordict(value, prefix + "  ")
+        else:
+            try:
+                shape = value.shape
+                dtype = value.dtype
+                mean = value.float().mean().item()
+                print(f"{prefix}Key: {key}, Shape: {shape}, Dtype: {dtype}, Mean: {mean}")
+            except Exception as e:
+                print(f"{prefix}Key: {key}, <uninspectable>: {e}")
