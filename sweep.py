@@ -37,6 +37,7 @@ if __name__ == "__main__":
                         help="Path to the directory containing the config.yaml and sweep_config.yaml files.")
     parser.add_argument("--folder", type=str, default="sac-bvp",
                         help="Folder to save the sweep configuration and results.")
+    parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
     args = parser.parse_args()
 
     def train():
@@ -69,6 +70,7 @@ if __name__ == "__main__":
             # Run
             config.testing.folder = args.folder
             config.model.phase = args.phase
+            config.testing.feasibility_recovery = args.feasibility_recovery
             n_constraints = config.training.projection_kwargs.n_constraints
 
             if config.env.env_name == "mpp":
