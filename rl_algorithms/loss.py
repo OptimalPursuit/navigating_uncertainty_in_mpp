@@ -42,7 +42,8 @@ from torchrl.objectives.ppo import PPOLoss
 from torchrl.objectives.sac import SACLoss, _delezify, compute_log_prob
 
 # Custom
-from environment.utils import compute_violation
+from environment.utils import *
+from rl_algorithms.utils import *
 
 def weight_violations(violations, lagrange_multiplier):
     """ Weight violations by the lagrange multiplier of lm.dim()\in{3,4}."""
@@ -192,25 +193,7 @@ class FeasibilitySACLoss(SACLoss):
         loss_actor, metadata_actor = self._actor_loss(tensordict)
 
         # Q-value loss
-        # print("tensordict keys in FeasibilitySACLoss:", tensordict.keys())
-        #
-        # def inspect_tensordict(td, prefix=""):
-        #     for key, value in td.items():
-        #         if isinstance(value, TensorDict):
-        #             print(f"{prefix}TensorDict: {key}")
-        #             inspect_tensordict(value, prefix + "  ")
-        #         else:
-        #             try:
-        #                 shape = value.shape
-        #                 dtype = value.dtype
-        #                 mean = value.float().mean().item()
-        #                 print(f"{prefix}Key: {key}, Shape: {shape}, Dtype: {dtype}, Mean: {mean}")
-        #             except Exception as e:
-        #                 print(f"{prefix}Key: {key}, <uninspectable>: {e}")
-        #
-        # inspect_tensordict(tensordict)
         loss_qvalue, metadata_qvalue = self._qvalue_v2_loss(tensordict)
-        # breakpoint()
 
         # Feasibility loss
         action = metadata_actor["action"]
