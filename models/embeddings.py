@@ -30,32 +30,32 @@ class CargoEmbedding(nn.Module):
         # Get the batch size
         if batch_size == torch.Size([]):
             norm_features = {
-                "pol": (self.env.pol.clone() / self.env.P).view(1, -1, 1),
-                "pod": (self.env.pod.clone() / self.env.P).view(1, -1, 1),
-                "weights": (self.env.weights[self.env.k].clone() / self.env.weights[self.env.k].max()).view(1, -1, 1),
-                "teus": (self.env.teus[self.env.k].clone() / self.env.teus[self.env.k].max()).view(1, -1, 1),
-                "revenues": (self.env.revenues.clone() / self.env.revenues.max()).view(1, -1, 1),
+                "pol": (self.env.pol.clone() / self.env.P).view(1, -1),
+                "pod": (self.env.pod.clone() / self.env.P).view(1, -1),
+                "weights": (self.env.weights[self.env.k].clone() / self.env.weights[self.env.k].max()).view(1, -1),
+                "teus": (self.env.teus[self.env.k].clone() / self.env.teus[self.env.k].max()).view(1, -1),
+                "revenues": (self.env.revenues.clone() / self.env.revenues.max()).view(1, -1),
             }
         else:
             norm_features = {
-                "pol": (self.env.pol.clone() / self.env.P).view(1, -1, 1).expand(batch_size[0], -1, -1),
-                "pod": (self.env.pod.clone() / self.env.P).view(1, -1, 1).expand(batch_size[0], -1, -1),
-                "weights": (self.env.weights[self.env.k].clone() / self.env.weights[self.env.k].max()).view(1, -1, 1).expand(batch_size[0], -1, -1),
-                "teus": (self.env.teus[self.env.k].clone() / self.env.teus[self.env.k].max()).view(1, -1, 1).expand(batch_size[0], -1, -1),
-                "revenues": (self.env.revenues.clone() / self.env.revenues.max()).view(1, -1, 1).expand(batch_size[0], -1, -1),
+                "pol": (self.env.pol.clone() / self.env.P).view(1, -1).expand(batch_size[0], -1),
+                "pod": (self.env.pod.clone() / self.env.P).view(1, -1).expand(batch_size[0], -1),
+                "weights": (self.env.weights[self.env.k].clone() / self.env.weights[self.env.k].max()).view(1, -1).expand(batch_size[0], -1,),
+                "teus": (self.env.teus[self.env.k].clone() / self.env.teus[self.env.k].max()).view(1, -1).expand(batch_size[0], -1,),
+                "revenues": (self.env.revenues.clone() / self.env.revenues.max()).view(1, -1).expand(batch_size[0], -1,),
             }
         return norm_features
 
     def forward(self, td: TensorDict,) -> Tensor:
         cargo_parameters = self._combine_cargo_parameters(batch_size=td.shape)
-        max_demand = td["realized_demand"].max() if self.train_max_demand in [None,0.0] else self.env.generator.train_max_demand
+        max_demand = td["max_demand"]
         if td["expected_demand"].dim() == 2:
-            expected_demand = td["expected_demand"].unsqueeze(-1) / max_demand
-            std_demand = td["std_demand"].unsqueeze(-1) / max_demand
+            expected_demand = td["expected_demand"] / max_demand
+            std_demand = td["std_demand"] / max_demand
         else:
-            expected_demand = td["expected_demand"][..., 0, :].unsqueeze(-1) / max_demand
-            std_demand = td["std_demand"][..., 0, :].unsqueeze(-1) / max_demand
-        combined_input = torch.cat([expected_demand, std_demand, *cargo_parameters.values()], dim=-1)
+            expected_demand = td["expected_demand"][..., 0, :] / max_demand.squeeze(-1)
+            std_demand = td["std_demand"][..., 0, :] / max_demand.squeeze(-1)
+        combined_input = torch.stack([expected_demand, std_demand, *cargo_parameters.values()], dim=-1)
         combined_emb = self.fc(combined_input)
 
         # Positional encoding
@@ -78,8 +78,7 @@ class CriticEmbedding(nn.Module):
 
     def normalize_obs(self, td:TensorDict) -> Tensor:
         batch_size = td.batch_size
-        max_demand = td["realized_demand"].max() if self.train_max_demand in [None,0.0] else self.env.generator.train_max_demand
-
+        max_demand = td["max_demand"]
         if hasattr(self.env, 'BL'):
             return torch.cat([
                 td["total_profit"] / (td["max_total_profit"]+1e-6),
@@ -202,14 +201,14 @@ class DynamicSelfAttentionEmbedding(nn.Module):
 
     def forward(self, latent_state: Optional[Tensor], td: TensorDict) -> Tuple[Tensor, Tensor, Tensor]:
         """Embed the dynamic demand for MPP using self-attention"""
-        max_demand = td["realized_demand"].max() if self.train_max_demand in [None, 0.0] else self.train_max_demand
+        max_demand = td["max_demand"]
         if td["observed_demand"].dim() == 2:
-            observed_demand = td["observed_demand"].unsqueeze(-1) / max_demand
+            observed_demand = td["observed_demand"] / max_demand
         else:
-            observed_demand = td["observed_demand"][...,0,:].unsqueeze(-1) / max_demand
+            observed_demand = td["observed_demand"][...,0,:] / max_demand.squeeze(-1)
 
         # Self-Attention over demand history
-        attended_demand = self.self_attention(observed_demand)
+        attended_demand = self.self_attention(observed_demand.view(observed_demand.size(0), -1, 1))
 
         # Combine with latent state
         hidden = torch.cat([attended_demand, latent_state], dim=-1)
@@ -229,11 +228,11 @@ class DynamicEmbedding(nn.Module):
     def forward(self, latent_state: Optional[Tensor], td: TensorDict) -> Tuple[Tensor, Tensor, Tensor]:
         """Embed the dynamic demand for the MPP"""
         # Get relevant demand embeddings
-        max_demand = td["realized_demand"].max() if self.train_max_demand in [None, 0.0] else self.train_max_demand
+        max_demand = td["max_demand"]
         if td["observed_demand"].dim() == 2:
-            observed_demand = td["observed_demand"].unsqueeze(-1) / max_demand
+            observed_demand = td["observed_demand"] / max_demand
         else:
-            observed_demand = td["observed_demand"][...,0,:].unsqueeze(-1) / max_demand
+            observed_demand = td["observed_demand"][...,0,:] / max_demand
 
         # Project key, value, and logit to anticipate future steps
         hidden = torch.cat([observed_demand, latent_state], dim=-1)
