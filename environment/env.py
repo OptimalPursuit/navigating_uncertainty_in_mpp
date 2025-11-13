@@ -508,7 +508,7 @@ class MasterPlanningEnv(EnvBase):
         # Perform matmul to get initial rhs, including:
         # note: utilization, A, teus_episode have static shapes
         A = swap_signs_stability.view(-1, 1, 1,) * input_A.clone() # Swap signs for constraints
-        norm_utilization = utilization / self.capacity.view(1, self.B, self.D, self.BL, 1)
+        norm_utilization = utilization / self.capacity.max()
         rhs = norm_utilization.view(*batch_size, -1) @ A.view(n_constraints, -1).T
         # Update rhs with current demand and add teu capacity to the rhs
         rhs[..., :n_demand] = current_demand.view(-1, 1) / self.generator.train_max_demand
