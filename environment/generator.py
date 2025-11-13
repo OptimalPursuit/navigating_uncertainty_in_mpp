@@ -302,7 +302,7 @@ class UniformMPP_Generator(MPP_Generator):
         if td is None or td.is_empty():
             # Get initial demand bound based on capacity
             bound = self._initialize_demand_bound_on_capacity(batch_size)
-            self.train_max_demand = self.demand_upper_bound(bound * 0.5, self.cv_demand, sigmas=3.0)  # Demand normalization (99.7%ile)
+            self.train_max_demand = self.demand_upper_bound(bound * 0.5, self.cv_demand, sigmas=3.0).max()  # Demand normalization (99.7%ile)
             if batch_size != []: bound = bound.unsqueeze(0).expand(*batch_size, -1, -1) # Expand to batch size
 
             # Get initial demand based on random perturbed bound
@@ -318,6 +318,7 @@ class UniformMPP_Generator(MPP_Generator):
             e_x = td["observation", "expected_demand"].view(-1, self.T, self.K)
             std_x = td["observation", "std_demand"].view(-1, self.T, self.K)
             init_e_x = td["observation", "init_expected_demand"].view(-1, self.T, self.K)
+            self.train_max_demand = self.demand_upper_bound(init_e_x, self.cv_demand, sigmas=3.0).max()  # Demand normalization (99.7%ile)
             batch_updates = td["observation", "batch_updates"].clone() + 1
 
         if not self.iid_demand:
@@ -484,8 +485,6 @@ class AuthenticDemandGenerator(MPP_Generator):
         """
         Generate e_x and sigma_x for all cargo types.
         """
-
-
         # Generate fixed expected demand per cargo type
         e_x = th.zeros((*batch_size,self.P, self.P,  self.K, ), dtype=th.float32, device=self.device)
         for k in range(self.K):
