@@ -48,7 +48,7 @@ class CargoEmbedding(nn.Module):
 
     def forward(self, td: TensorDict,) -> Tensor:
         cargo_parameters = self._combine_cargo_parameters(batch_size=td.shape)
-        max_demand = td["realized_demand"].max() if self.train_max_demand in [None,0.0]  else self.env.generator.train_max_demand
+        max_demand = td["realized_demand"].max() if self.train_max_demand in [None,0.0] else self.env.generator.train_max_demand
         if td["expected_demand"].dim() == 2:
             expected_demand = td["expected_demand"].unsqueeze(-1) / max_demand
             std_demand = td["std_demand"].unsqueeze(-1) / max_demand
@@ -78,7 +78,7 @@ class CriticEmbedding(nn.Module):
 
     def normalize_obs(self, td:TensorDict) -> Tensor:
         batch_size = td.batch_size
-        max_demand = td["realized_demand"].max() if self.train_max_demand == None else self.train_max_demand
+        max_demand = td["realized_demand"].max() if self.train_max_demand in [None,0.0] else self.env.generator.train_max_demand
 
         if hasattr(self.env, 'BL'):
             return torch.cat([
