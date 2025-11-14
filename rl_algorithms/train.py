@@ -390,7 +390,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             **train_performance,
         }
         log["lagrangian_multiplier"] = loss_out["lagrangian_multiplier"].mean().item() if loss_out.get("lagrangian_multiplier") is not None else 0.0
-        log["pod_violation"] = loss_out["pod_violation"].sum(dim=(1, 2)).mean().item() if train_env._get_name() == "block_mpp" else 0.0
+        log["pod_violation"] = loss_out["pod_violation"].sum(dim=(1, 2)).mean().item() if train_env.name == "block_mpp" else 0.0
         pbar.update(1)
         # Log metrics
         pbar.set_description(
