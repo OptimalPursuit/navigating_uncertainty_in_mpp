@@ -67,11 +67,12 @@ def weight_violations(violations, lagrange_multiplier):
 
 
 def loss_feasibility(td:TensorDictBase, action:Tensor, lagrange_multiplier:Optional[Tensor]=None,
-                     aggregate_feasibility:str="sum",) -> Tuple[Tensor, Tensor, Tensor]:
+                     aggregate_feasibility:str="sum",) -> Tuple[Tensor, Dict[str, Tensor]]:
     """ Compute feasibility loss based on the action and the lagrange multiplier."""
     lhs_A = td.get("lhs_A")
     rhs = td.get("rhs")
     excess_pod_locations = td["observation"].get("excess_pod_locations", None)
+    excess_pod_locations /= excess_pod_locations.shape[1] * excess_pod_locations.shape[2]  # normalize by steps and num locations
     violations = compute_violation(action, lhs_A, rhs)
     weighted_violations = weight_violations(violations, lagrange_multiplier)
 
@@ -87,14 +88,9 @@ def loss_feasibility(td:TensorDictBase, action:Tensor, lagrange_multiplier:Optio
     # Compute loss from weighted violations
     loss = agg_fn(weighted_violations)
     convex_violations = agg_fn(violations)
-    pod_violations = torch.tensor(0.0, device=loss.device)
-
-    # Add excess pod penalty if present
-    if excess_pod_locations is not None:
-        loss += agg_fn(excess_pod_locations)
-        pod_violations = agg_fn(excess_pod_locations)
-
-    return loss, convex_violations, pod_violations
+    pod_violations = agg_fn(excess_pod_locations) if excess_pod_locations is not None else torch.tensor(0.0, device=loss.device)
+    loss += pod_violations
+    return loss, {"total_convex_violations":convex_violations, "total_pod_violations":pod_violations, "violations":violations, "pod_violations":excess_pod_locations}
 
 
 class FeasibilitySACLoss(SACLoss):
@@ -200,7 +196,7 @@ class FeasibilitySACLoss(SACLoss):
         if "lhs_A" not in tensordict or "rhs" not in tensordict:
             raise ValueError("Feasibility loss requires 'lhs_A' and 'rhs' in tensordict.")
         lagrangian_multiplier = metadata_actor.get("lagrangian_multiplier", self.lagrangian_multiplier)
-        feasibility_loss, agg_convex_violation, pod_violation = loss_feasibility(tensordict, action, lagrangian_multiplier)
+        feasibility_loss, violation_dict = loss_feasibility(tensordict, action, lagrangian_multiplier)
 
         # Alpha loss
         loss_alpha = self._alpha_loss(metadata_actor["log_prob"])
@@ -214,8 +210,10 @@ class FeasibilitySACLoss(SACLoss):
             "alpha": self._alpha,
             "entropy": entropy.detach().mean(),
             "loss_feasibility": feasibility_loss,
-            "violation": agg_convex_violation,
-            "pod_violation": pod_violation,
+            "violation": violation_dict["violations"],
+            "total_violation": violation_dict["total_convex_violations"],
+            "pod_violation": violation_dict["pod_violations"],
+            "total_pod_violation": violation_dict["total_pod_violations"],
             "lagrangian_multiplier": lagrangian_multiplier,
         }
 
@@ -456,10 +454,12 @@ class FeasibilityClipPPOLoss(PPOLoss):
         if "lhs_A" not in tensordict or "rhs" not in tensordict:
             raise ValueError("Feasibility loss requires 'lhs_A' and 'rhs' in tensordict.")
         lagrangian_multiplier = tensordict.get("lagrangian_multiplier", self.lagrangian_multiplier)
-        feasibility_loss, agg_convex_violation, pod_violation = loss_feasibility(tensordict, loc, lagrangian_multiplier)
+        feasibility_loss, violation_dict = loss_feasibility(tensordict, loc, lagrangian_multiplier)
         td_out.set("loss_feasibility", feasibility_loss)
-        td_out.set("violation", agg_convex_violation)
-        td_out.set("pod_violation", pod_violation)
+        td_out.set("violation", violation_dict["violations"])
+        td_out.set("total_violation", violation_dict["total_convex_violations"])
+        td_out.set("pod_violation", violation_dict["pod_violations"])
+        td_out.set("total_pod_violation", violation_dict["total_pod_violations"])
         td_out.set("lagrangian_multiplier", lagrangian_multiplier)
 
         td_out.set("ESS", _reduce(ess, self.reduction) / batch)
