@@ -375,9 +375,13 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             "loss_actor": loss_out.get("loss_actor", 0) or loss_out.get("loss_objective", 0),
             "loss_critic": loss_out.get("loss_qvalue", 0) or loss_out.get("loss_critic", 0),
             "loss_feasibility":loss_out.get("loss_feasibility", 0),
-            "violation": loss_out.get("violation", 0),
-            "pod_violation": loss_out.get("pod_violation", 0),
             "loss_entropy": loss_out.get("loss_alpha", 0) or loss_out.get("loss_entropy", 0),
+            # Constraints
+            "total_violation": loss_out["violation"].sum(dim=(-2, -1)).mean().item(),
+            "demand_violation": loss_out["violation"][..., 0].sum(dim=(1)).mean().item(),
+            "capacity_violation": loss_out["violation"][..., 1:-4].sum(dim=(1)).mean().item(),
+            "LCG_violation": loss_out["violation"][..., train_env.next_port_mask, -4:-2].sum(dim=(1, 2)).mean().item(),
+            "VCG_violation": loss_out["violation"][..., train_env.next_port_mask, -2:].sum(dim=(1, 2)).mean().item(),
             # Supporting metrics
             "step": step,
             "gn_actor": loss_out.get("gn_actor", 0),
@@ -386,13 +390,14 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             **train_performance,
         }
         log["lagrangian_multiplier"] = loss_out["lagrangian_multiplier"].mean().item() if loss_out.get("lagrangian_multiplier") is not None else 0.0
+        log["pod_violation"] = loss_out["pod_violation"].sum(dim=(1, 2)).mean().item() if train_env._get_name() == "block_mpp" else 0.0
         pbar.update(1)
         # Log metrics
         pbar.set_description(
             # Loss, gn and rewards
             f"return: {log['return']: 4.4f}, "
             f"traj_return: {log['traj_return']: 4.4f}, "
-            f"total_loss: {log['total_loss']: 4.4f}, "
+            # f"total_loss: {log['total_loss']: 4.4f}, "
             f"loss_actor:  {log['loss_actor']: 4.4f}, "
             f"loss_critic:  {log['loss_critic']: 4.4f}, "
             f"feasibility_loss: {log['loss_feasibility']: 4.4f}, "
@@ -400,7 +405,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             f"x: {log['x']: 4.4f}, "
             f"loc(x): {log['loc(x)']: 4.4f}, "
             f"scale(x): {log['scale(x)']: 4.4f}, "
-            f"lagrangian_multiplier: {log['lagrangian_multiplier']: 4.4f}, "
+            # f"lagrangian_multiplier: {log['lagrangian_multiplier']: 4.4f}, "
             # Performance
             f"total_profit: {log['total_profit']: 4.4f}, "
             f"violation: {log['total_violation']: 4.4f}, "
@@ -444,16 +449,16 @@ def get_performance_metrics(subdata:Dict, td:TensorDict, env:nn.Module) -> Dict:
             "traj_return": subdata["next", "reward"].sum(dim=(-2, -1)).mean().item(),
 
             # Prediction
-            "x": subdata["action"].mean().item(),
+            "x": subdata["observation", "env_action"].mean().item(),
             "loc(x)": subdata["loc"].mean().item(),
             "scale(x)": subdata["scale"].mean().item(),
 
-            # Constraints
-            "total_violation": subdata["violation"].sum(dim=(-2,-1)).mean().item(),
-            "demand_violation": subdata["violation"][...,0].sum(dim=(1)).mean().item(),
-            "capacity_violation": subdata["violation"][...,1:-4].sum(dim=(1)).mean().item(),
-            "LCG_violation": subdata["violation"][..., env.next_port_mask, -4:-2].sum(dim=(1,2)).mean().item(),
-            "VCG_violation": subdata["violation"][..., env.next_port_mask, -2:].sum(dim=(1,2)).mean().item(),
+            # # Constraints
+            # "total_violation": subdata["violation"].sum(dim=(-2,-1)).mean().item(),
+            # "demand_violation": subdata["violation"][...,0].sum(dim=(1)).mean().item(),
+            # "capacity_violation": subdata["violation"][...,1:-4].sum(dim=(1)).mean().item(),
+            # "LCG_violation": subdata["violation"][..., env.next_port_mask, -4:-2].sum(dim=(1,2)).mean().item(),
+            # "VCG_violation": subdata["violation"][..., env.next_port_mask, -2:].sum(dim=(1,2)).mean().item(),
 
             # Environment
             "total_revenue": subdata["revenue"].sum(dim=(-2,-1)).mean().item(),
