@@ -257,18 +257,41 @@ class AttentionDecoderWithCache(nn.Module):
 
         # === Predict POD mask based on top-k sinkhorn ===
         if self.use_mask_head:
-            y_hat = self.mask_head(combined_output)  # [batch_size, seq_len, action_dim]
-            n_needed = td.get("locations_needed", None)
-            y_topk = self.soft_topk_sinkhorn(y_hat, n_needed)
-            preload_mask = td.get("preload_mask", None).view(y_topk.shape)
-            if preload_mask is None:
-                raise ValueError("preload_mask not found in TensorDict.")
+            # 1. Predict mask logits (learnable)
+            y_hat = self.mask_head(combined_output)  # [B, T, A]
+            mask_logits = self.alpha * y_hat  # sharpen if needed
+            mask_probs = torch.sigmoid(mask_logits)  # learnable soft mask
 
-            y_tilde = preload_mask * torch.sigmoid(self.alpha * y_hat) * y_topk
-            mean = self.softmin(mean, self.M * y_tilde, beta=self.beta)
-            std = std * y_tilde + (1 - y_tilde) * 1e-3  # keep finite variance
-            std = std.clamp(min=1e-3) # avoid zero std
-            return mean.squeeze(), std.squeeze(), y_tilde.squeeze()
+            # 2. Structured sparsity: soft top-k
+            n_needed = td["locations_needed"]
+            y_topk = self.soft_topk_sinkhorn(mask_probs, n_needed)  # differentiable sparse mask
+
+            # 3. Apply hard constraints AFTER learning
+            preload_mask = td["preload_mask"].view_as(y_topk)  # binary feasibility mask
+            mask_soft = preload_mask * y_topk  # continuous in [0,1]
+            mask_hard = preload_mask * (y_topk > 0.5).float()  # discrete {0,1}
+            mask_final = mask_soft + (mask_hard - mask_soft).detach() # STE trick
+
+            # 4. DO NOT TOUCH mean or std
+            # SAC distribution must be clean and fully learnable
+            # mean, std remain unchanged here
+
+            # 5. Return mask for post-sampling application
+            # (the caller should do: final_action = action * mask_final)
+            return mean.squeeze(), std.clamp(min=1e-3).squeeze(), mask_final.squeeze()
+        # if self.use_mask_head:
+        #     y_hat = self.mask_head(combined_output)  # [batch_size, seq_len, action_dim]
+        #     n_needed = td.get("locations_needed", None)
+        #     y_topk = self.soft_topk_sinkhorn(y_hat, n_needed)
+        #     preload_mask = td.get("preload_mask", None).view(y_topk.shape)
+        #     if preload_mask is None:
+        #         raise ValueError("preload_mask not found in TensorDict.")
+        #
+        #     y_tilde = preload_mask * torch.sigmoid(self.alpha * y_hat) * y_topk
+        #     mean = self.softmin(mean, self.M * y_tilde, beta=self.beta)
+        #     std = std * y_tilde + (1 - y_tilde) * 1e-3  # keep finite variance
+        #     std = std.clamp(min=1e-3) # avoid zero std
+        #     return mean.squeeze(), std.squeeze(), y_tilde.squeeze()
         else:
             # Apply the action mask to the mean and std logits
             mask = td.get("action_mask", None)
