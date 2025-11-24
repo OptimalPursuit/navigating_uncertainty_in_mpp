@@ -124,10 +124,18 @@ def compute_stability(utilization: th.Tensor, weights: th.Tensor, longitudinal_p
     vp_shape[axis + 1] = -1
     lp_shape, vp_shape = tuple(lp_shape), tuple(vp_shape)
 
-    # Compute LCG and VCG
+    # Compute LCG and VCG; if total_weight is zero make lcg and vcg equal to 1
     total_weight = location_weight.sum(dim=(sum_dims))
-    lcg = (location_weight * longitudinal_position.view(lp_shape)).sum(dim=(sum_dims)) / total_weight
-    vcg = (location_weight * vertical_position.view(vp_shape)).sum(dim=(sum_dims)) / total_weight
+    lcg = th.where(
+        total_weight > 0,
+        (location_weight * longitudinal_position.view(lp_shape)).sum(dim=(sum_dims)) / total_weight,
+        th.ones_like(total_weight)
+    )
+    vcg = th.where(
+        total_weight > 0,
+        (location_weight * vertical_position.view(vp_shape)).sum(dim=(sum_dims)) / total_weight,
+        th.ones_like(total_weight)
+    )
     return lcg, vcg
 
 def compute_target_long_crane(realized_demand: th.Tensor, moves: th.Tensor,
@@ -364,6 +372,20 @@ def compute_violation(action:th.Tensor, lhs_A:th.Tensor, rhs:th.Tensor, ) -> th.
 
 def flatten_values_td(td: TensorDict, batch_size:Tuple[int, ...]) -> TensorDict:
     return td.apply(lambda x: x.view(*batch_size, -1))
+
+def inspect_tensordict(td, prefix=""):
+    for key, value in td.items():
+        if isinstance(value, TensorDict):
+            print(f"{prefix}TensorDict: {key}")
+            inspect_tensordict(value, prefix + "  ")
+        else:
+            try:
+                shape = value.shape
+                dtype = value.dtype
+                mean = value.float().mean().item()
+                print(f"{prefix}Key: {key}, Shape: {shape}, Dtype: {dtype}, Mean: {mean}")
+            except Exception as e:
+                print(f"{prefix}Key: {key}, <uninspectable>: {e}")
 
 if __name__ == "__main__":
     # Test the transport sets
