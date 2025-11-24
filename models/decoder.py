@@ -139,7 +139,7 @@ class AttentionDecoderWithCache(nn.Module):
         logit_k = logit_k_stat + logit_k_dyn
         return glimpse_k, glimpse_v, logit_k
 
-    def soft_topk_sinkhorn(self, y_hat, n_needed, tau=1, iters=10, eps=1e-6):
+    def soft_topk_sinkhorn(self, y_hat, n_needed, tau=0.5, iters=20, eps=1e-6):
         """
         Differentiable soft top-k using Sinkhorn-style normalization.
 
@@ -267,24 +267,21 @@ class AttentionDecoderWithCache(nn.Module):
             y_topk = self.soft_topk_sinkhorn(mask_probs, n_needed)  # differentiable sparse mask
 
             # 3. Apply hard constraints AFTER learning
-            # preload_mask = td["preload_mask"].view_as(y_topk)  # binary feasibility mask
-            # mask_soft = preload_mask * y_topk  # continuous in [0,1]
-            # mask_hard = preload_mask * (y_topk > 0.5).float()  # discrete {0,1}
-            mask_soft = y_topk
-            mask_hard = (y_topk > 0.5).float()
+            preload_mask = td["preload_mask"].view_as(y_topk)  # binary feasibility mask
+            mask_soft = preload_mask * y_topk  # continuous in [0,1]
+            mask_hard = preload_mask * (y_topk > 0.5).float()  # discrete {0,1}
             mask_final = mask_soft + (mask_hard - mask_soft).detach() # STE trick
-
             # print("--------------------------------")
-            # print("y_hat:", y_hat.mean())
-            # print("mask_logits:", mask_logits.mean())
-            # print("mask_probs:", mask_probs.mean())
-            # print("n_needed:", n_needed.mean())
-            # print("y_topk:", y_topk.mean())
-            # # print("preload_mask:", preload_mask.sum() / preload_mask.numel())
-            # print("mask_soft:", mask_soft.sum() / mask_soft.numel())
-            # print("mask_hard:", mask_hard.sum() / mask_hard.numel())
-            # print("mask_final:", mask_final.sum() / mask_final.numel())
+            # print("y_hat:", y_hat.mean().item())
+            # print("mask_logits:", mask_logits.mean().item())
+            # print("mask_probs:", mask_probs.mean().item())
+            # print("n_needed:", td["locations_needed"].mean().item())
+            # print("y_topk:", y_topk.mean(), y_topk.max().item(), y_topk.min().item())
             # print("--------------------------------")
+            # print("preload_mask:", preload_mask.sum().item() / preload_mask.numel())
+            # print("mask_soft:", mask_soft.sum().item() / mask_soft.numel())
+            # print("mask_hard:", mask_hard.sum().item() / mask_hard.numel())
+            # print("mask_final:", mask_final.sum().item() / mask_final.numel())
 
             # 4. DO NOT TOUCH mean or std
             # SAC distribution must be clean and fully learnable
@@ -293,19 +290,6 @@ class AttentionDecoderWithCache(nn.Module):
             # 5. Return mask for post-sampling application
             # (the caller should do: final_action = action * mask_final)
             return mean.squeeze(), std.clamp(min=1e-3).squeeze(), mask_final.squeeze()
-        # if self.use_mask_head:
-        #     y_hat = self.mask_head(combined_output)  # [batch_size, seq_len, action_dim]
-        #     n_needed = td.get("locations_needed", None)
-        #     y_topk = self.soft_topk_sinkhorn(y_hat, n_needed)
-        #     preload_mask = td.get("preload_mask", None).view(y_topk.shape)
-        #     if preload_mask is None:
-        #         raise ValueError("preload_mask not found in TensorDict.")
-        #
-        #     y_tilde = preload_mask * torch.sigmoid(self.alpha * y_hat) * y_topk
-        #     mean = self.softmin(mean, self.M * y_tilde, beta=self.beta)
-        #     std = std * y_tilde + (1 - y_tilde) * 1e-3  # keep finite variance
-        #     std = std.clamp(min=1e-3) # avoid zero std
-        #     return mean.squeeze(), std.squeeze(), y_tilde.squeeze()
         else:
             # Apply the action mask to the mean and std logits
             mask = td.get("action_mask", None)
