@@ -83,11 +83,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         return out["action"]
 
     def violation_projection(self, out:TensorDict) -> Tensor:
-        print("action before projection:", out["action"].mean())
-        print("lhs_A:", out["lhs_A"].mean())
-        print("rhs:", out["rhs"].mean())
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"])
-        print("action after projection:", out["action"].mean())
         return out["action"]
 
     def bound_violation_projection(self, out:TensorDict) -> Tensor:
