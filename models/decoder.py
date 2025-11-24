@@ -120,7 +120,8 @@ class AttentionDecoderWithCache(nn.Module):
         self.alpha = kwargs.get("alpha", 5.0)
         self.beta = kwargs.get("beta", 1.0)
         self.M = kwargs.get("M", 500.0)
-        self.tau = kwargs.get("tau", 1.0)  # Temperature for soft top-k
+        self.tau_sinkhorn = kwargs.get("tau_sinkhorn", 1.0)
+        self.iters_sinkhorn = kwargs.get("iters_sinkhorn", 10)
 
     def _compute_q(self, cached: PrecomputedCache, td: TensorDict) -> Tensor:
         """Compute query of static and context embedding for the attention mechanism."""
@@ -139,7 +140,7 @@ class AttentionDecoderWithCache(nn.Module):
         logit_k = logit_k_stat + logit_k_dyn
         return glimpse_k, glimpse_v, logit_k
 
-    def soft_topk_sinkhorn(self, y_hat, n_needed, tau=0.5, iters=20, eps=1e-6):
+    def soft_topk_sinkhorn(self, y_hat, n_needed, tau=1.0, iters=20, eps=1e-6):
         """
         Differentiable soft top-k using Sinkhorn-style normalization.
 
