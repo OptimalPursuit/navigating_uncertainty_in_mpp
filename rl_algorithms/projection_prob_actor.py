@@ -17,6 +17,7 @@ from torchrl.data.tensor_specs import Composite, TensorSpec
 # Custom
 from environment.utils import compute_violation
 from rl_algorithms.clipped_gaussian import ClippedGaussian
+from rl_algorithms.utils import inspect_tensordict
 
 class ProjectionProbabilisticActor(ProbabilisticActor):
     """Probabilistic actor with projection layer for enforcing constraints."""
@@ -269,7 +270,8 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         # Get distribution
         dist = self.get_dist(out)
         out["unprojected_action"] = out["action"].clone()
-        out["action"] = out["unprojected_action"].clone() / out["observation", "max_demand"]
+        out["unprojected_masked_action"] = out["unprojected_action"] * out["mask"]
+        out["action"] = out["unprojected_masked_action"] / out["observation", "max_demand"]
 
         # Get log probabilities
         if self.projection_type in ["policy_clipping", "weighted_scaling_policy_clipping"]:
