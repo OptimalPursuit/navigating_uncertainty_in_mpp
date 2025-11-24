@@ -267,10 +267,24 @@ class AttentionDecoderWithCache(nn.Module):
             y_topk = self.soft_topk_sinkhorn(mask_probs, n_needed)  # differentiable sparse mask
 
             # 3. Apply hard constraints AFTER learning
-            preload_mask = td["preload_mask"].view_as(y_topk)  # binary feasibility mask
-            mask_soft = preload_mask * y_topk  # continuous in [0,1]
-            mask_hard = preload_mask * (y_topk > 0.5).float()  # discrete {0,1}
+            # preload_mask = td["preload_mask"].view_as(y_topk)  # binary feasibility mask
+            # mask_soft = preload_mask * y_topk  # continuous in [0,1]
+            # mask_hard = preload_mask * (y_topk > 0.5).float()  # discrete {0,1}
+            mask_soft = y_topk
+            mask_hard = (y_topk > 0.5).float()
             mask_final = mask_soft + (mask_hard - mask_soft).detach() # STE trick
+
+            # print("--------------------------------")
+            # print("y_hat:", y_hat.mean())
+            # print("mask_logits:", mask_logits.mean())
+            # print("mask_probs:", mask_probs.mean())
+            # print("n_needed:", n_needed.mean())
+            # print("y_topk:", y_topk.mean())
+            # # print("preload_mask:", preload_mask.sum() / preload_mask.numel())
+            # print("mask_soft:", mask_soft.sum() / mask_soft.numel())
+            # print("mask_hard:", mask_hard.sum() / mask_hard.numel())
+            # print("mask_final:", mask_final.sum() / mask_final.numel())
+            # print("--------------------------------")
 
             # 4. DO NOT TOUCH mean or std
             # SAC distribution must be clean and fully learnable
