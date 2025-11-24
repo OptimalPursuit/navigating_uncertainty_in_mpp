@@ -45,7 +45,6 @@ class MasterPlanningEnv(EnvBase):
         self.P = kwargs.get("ports") # Number of ports
         self.B = kwargs.get("bays")  # Number of bays
         self.D = kwargs.get("decks") # Number of decks
-        self.BL = 1 # Fixed number of blocks
         self.T = int((self.P ** 2 - self.P) / 2) # Number of (POL,POD) transports
         self.CC = kwargs.get("customer_classes")  # Number of customer contracts
         self.K = kwargs.get("cargo_classes") * self.CC # Number of container classes
@@ -123,7 +122,6 @@ class MasterPlanningEnv(EnvBase):
             clip_max=Unbounded(shape=(*batch_size,self.B*self.D),dtype=self.float_type),
             lhs_A=Unbounded(shape=(*batch_size,self.n_constraints,self.B*self.D),dtype=self.float_type),
             rhs=Unbounded(shape=(*batch_size,self.n_constraints),dtype=self.float_type),
-            violation=Unbounded(shape=(*batch_size,self.n_constraints),dtype=self.float_type),
             shape=batch_size,
         )
         self.action_spec = Bounded(
@@ -154,10 +152,6 @@ class MasterPlanningEnv(EnvBase):
 
         # Update utilization
         vessel_state["utilization"] = update_state_loading(action_state["action"], vessel_state["utilization"], tau, k,)
-
-        # Compute violation
-        action_state["violation"] = self._compute_violation(
-            action_state["lhs_A"], action_state["rhs"], action_state["action"],  batch_size)
 
         # Compute long crane moves & od-pairs
         vessel_state["long_crane_moves_load"] = compute_long_crane(vessel_state["utilization"], moves, self.T)
@@ -221,6 +215,8 @@ class MasterPlanningEnv(EnvBase):
         else: time = th.zeros(*batch_size, dtype=th.int64, device=device)
         pol, pod, tau, k, rev, step = self._extract_cargo_parameters_for_step(time[0])
         load_idx = self.load_transport[pol]
+        if self.BL is None:
+            self.BL = 1.0
 
         # Demand state
         demand_state = td["observation"].clone()#.exclude("batch_updates", "init_expected_demand")
@@ -256,7 +252,6 @@ class MasterPlanningEnv(EnvBase):
         action_state["rhs"] = self.create_rhs(
             vessel_state["utilization"].to(self.float_type), current_demand, self.swap_signs_stability,
             self.A_rhs, self.n_constraints, self.n_demand, self.n_locations, batch_size)
-        action_state["violation"] = th.zeros_like(action_state["rhs"], dtype=self.float_type)
 
         # Init tds
         initial_state = TensorDict({
@@ -463,10 +458,10 @@ class MasterPlanningEnv(EnvBase):
 
         if not is_done:
             # Update feasibility constraints
-            action_state["lhs_A"] = self.create_lhs_A(lhs_input, time).view(*batch_size, self.n_constraints, locations_shape)
+            action_state["lhs_A"] = self.create_lhs_A(lhs_input, time, normalize=True).view(*batch_size, self.n_constraints, locations_shape)
             action_state["rhs"] = self.create_rhs(
                 next_state_dict["utilization"], current_demand, swap_sign_stability,
-                rhs_input, self.n_constraints, self.n_demand, locations_shape, batch_size)
+                rhs_input, self.n_constraints, self.n_demand, locations_shape, batch_size, normalize=True)
 
         # Update action state
         action_state["clip_max"] = self._compute_clip_max(next_state_dict["residual_capacity"], current_demand, batch_size, step)
@@ -488,17 +483,18 @@ class MasterPlanningEnv(EnvBase):
         scaling = self.teus.view(1, 1, 1, -1) if rhs else 1
         A[self.n_demand:self.n_locations + self.n_demand,] *= scaling * th.eye(self.n_locations, device=self.device, dtype=self.float_type).view(self.n_locations, self.B*self.D, 1, 1)
         A *= self.constraint_signs.view(-1, 1, 1, 1)
-        A[self.n_locations + self.n_demand:self.n_locations + self.n_demand + self.n_stability] *= self.stability_params_lhs.view(self.n_stability, self.B*self.D, 1, self.K,)
+        A[self.n_demand+self.n_locations:self.n_demand + self.n_locations + self.n_stability] *= self.stability_params_lhs.view(self.n_stability, self.B*self.D, 1, self.K,)
         return A.view(self.n_constraints, self.B*self.D, -1)
 
-    def create_lhs_A(self, A:Tensor, time:Tensor) -> Tensor:
+    def create_lhs_A(self, A:Tensor, time:Tensor, normalize=False) -> Tensor:
         """Get A_t based on batch of steps to prevent expanding A_t for each step"""
         steps = self.steps[time]
-        return A[..., steps].permute((2, 0, 1,)).contiguous()
+        output = A[..., steps].permute((2, 0, 1,)).contiguous()
+        return output
 
     def create_rhs(self, utilization:Tensor, current_demand:Tensor,
                    swap_signs_stability:Tensor, input_A:Tensor,
-                   n_constraints:int, n_demand:int, n_locations:int, batch_size:Tuple) -> Tensor:
+                   n_constraints:int, n_demand:int, n_locations:int, batch_size:Tuple, normalize=False) -> Tensor:
         """Create b_t based on current utilization:
         - b_t = [current_demand, capacity, LM_ub, LM_lb, VM_ub, VM_lb]
         - demand -> stepwise current demand [#]
@@ -508,13 +504,16 @@ class MasterPlanningEnv(EnvBase):
         # Perform matmul to get initial rhs, including:
         # note: utilization, A, teus_episode have static shapes
         A = swap_signs_stability.view(-1, 1, 1,) * input_A.clone() # Swap signs for constraints
-        norm_utilization = utilization / self.capacity.max()
-        rhs = norm_utilization.view(*batch_size, -1) @ A.view(n_constraints, -1).T
+        rhs = utilization.view(*batch_size, -1) @ A.view(n_constraints, -1).T
         # Update rhs with current demand and add teu capacity to the rhs
-        rhs[..., :n_demand] = current_demand.view(-1, 1) / self.generator.train_max_demand
+        rhs[..., :n_demand] = current_demand.view(-1, 1)
         rhs[..., n_demand:n_locations + n_demand] = \
             torch.clamp(rhs[..., n_demand:n_locations + n_demand] + self.capacity.view(1, -1),
-                        min=th.zeros_like(self.capacity.view(1, -1)), max=self.capacity.view(1, -1)) / self.capacity.max()
+                        min=th.zeros_like(self.capacity.view(1, -1)), max=self.capacity.view(1, -1))
+        if normalize:
+            rhs[..., 0] /= (self.capacity.sum() * self.teus.mean())
+            rhs[..., n_demand:n_locations + n_demand] /= self.total_capacity
+            rhs[..., n_demand+n_locations:n_demand + n_locations + self.n_stability,] /= ((self.total_capacity / self.teus.mean()))
         return rhs
 
     # Initializations
@@ -799,9 +798,6 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # Update utilization
         vessel_state["utilization"] = update_state_loading(action_state["action"], vessel_state["utilization"], tau, k, )
 
-        # Compute violation
-        action_state["violation"] = self._compute_violation(action_state["lhs_A"], action_state["rhs"], action_state["action"], batch_size)
-
         # Compute long crane moves & od-pairs
         vessel_state["long_crane_moves_load"] = compute_long_crane(vessel_state["utilization"], moves, self.T, block=True)
         vessel_state["pol_locations"], vessel_state["pod_locations"] = \
@@ -908,11 +904,10 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         action_state["action"] = th.zeros(self.action_spec.shape, dtype=self.float_type, device=device)
         action_state["clip_min"] = th.zeros(self.action_spec.shape, dtype=self.float_type, device=device)
         action_state["clip_max"] = vessel_state["residual_capacity"].view(*batch_size, self.n_block_locations)
-        action_state["lhs_A"] = self.create_lhs_A(self.block_A_lhs, time).view(*batch_size, self.n_constraints, self.n_block_locations)
+        action_state["lhs_A"] = self.create_lhs_A(self.block_A_lhs, time, normalize=True).view(*batch_size, self.n_constraints, self.n_block_locations)
         action_state["rhs"] = self.create_rhs(
             vessel_state["utilization"].to(self.float_type), current_demand, self.swap_signs_block_stability,
-            self.block_A_rhs, self.n_constraints, self.n_demand, self.n_block_locations, batch_size)
-        action_state["violation"] = th.zeros_like(action_state["rhs"], dtype=self.float_type)
+            self.block_A_rhs, self.n_constraints, self.n_demand, self.n_block_locations, batch_size, normalize=True)
         if self.block_stowage_mask:
             action_mask = generate_POD_mask(realized_demand[..., tau, :] @ self.teus, vessel_state["residual_capacity"],
                                             self.capacity, pod_locations, pod, batch_size)
@@ -930,7 +925,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             "max_total_profit":th.zeros_like(time, dtype=self.float_type).view(*batch_size, 1),
             "preload_mask": preload_mask.view(*batch_size, self.n_block_locations),
             "locations_needed": locations_needed.view(*batch_size, 1),
-            "max_demand": self.generator.train_max_demand.expand(*batch_size, 1),
+            "max_demand": self.capacity.sum().expand(*batch_size, 1) / self.teus.mean(),
             "env_action": th.zeros(self.action_spec.shape, dtype=self.float_type, device=device),
         }, batch_size=batch_size, device=device,)
 
@@ -995,7 +990,6 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             clip_max=Unbounded(shape=(*batch_size,self.n_block_locations),dtype=self.float_type),
             lhs_A=Unbounded(shape=(*batch_size,self.n_constraints,self.n_block_locations),dtype=self.float_type),
             rhs=Unbounded(shape=(*batch_size,self.n_constraints),dtype=self.float_type),
-            violation=Unbounded(shape=(*batch_size,self.n_constraints),dtype=self.float_type),
             shape=batch_size,
         )
         self.action_spec = Bounded(
@@ -1057,11 +1051,11 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         """Create constraint matrix A for compact constraints Au <= b"""
         # [1, LM-TW, TW-LM, VM-TW, TW-VM]
         A = th.ones(shape, device=self.device, dtype=self.float_type)
-        scaling = self.teus.view(1, 1, 1, -1) / 2 if rhs else 1
+        scaling = self.teus.view(1, 1, 1, -1) if rhs else 1
         A[self.n_demand:self.n_block_locations + self.n_demand,] *= scaling * th.eye(self.n_block_locations, device=self.device, dtype=self.float_type).view(self.n_block_locations, self.n_block_locations, 1, 1)
         A *= self.block_constraint_signs.view(-1, 1, 1, 1)
         A[self.n_block_locations + self.n_demand:self.n_block_locations + self.n_demand + self.n_stability] *= \
-            self.block_stability_params_lhs.view(self.n_stability, self.n_block_locations, 1, self.K,) / self.normalizer_stability_params
+            (self.block_stability_params_lhs.view(self.n_stability, self.n_block_locations, 1, self.K,) /  th.max(self.block_stability_params_lhs.abs()))
         return A.view(self.n_constraints, self.n_block_locations, -1)
 
     def _available_locations_PODs_preload_utilization(self, preload_utilization:Tensor, pod:Tensor) -> Tensor:
