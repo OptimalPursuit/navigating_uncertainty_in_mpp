@@ -403,7 +403,6 @@ class MasterPlanningEnv(EnvBase):
                     demand_state["realized_demand"][..., tau, :] @ self.teus,
                     vessel_state["residual_capacity"], self.capacity,
                     vessel_state["pod_locations"], pod, batch_size)
-
             else:
                 vessel_state["locations_needed"] = self._compute_locations_needed(
                 demand_state["realized_demand"][..., tau, :] @ self.teus,
@@ -749,7 +748,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # Kwargs and super
         self.BL = kwargs.get("blocks", 2)  # Number of paired blocks: 2 (wings + center), 3 (wings + center1 + center2)
         super().__init__(device=device, batch_size=batch_size, **kwargs)
-        self.generator = UniformMPP_Generator(device=device, **kwargs)
+        # self.generator = UniformMPP_Generator(device=device, **kwargs)
         kwargs["target_utils"] = [0.3, 1.1, 1.4]
             # [0.75, 0.99, 0.8]
         # print("Revenues matrix:\n", self.revenues_matrix.view(self.K, self.T))
@@ -762,7 +761,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # print("By size:", self.summarize_shares(kwargs["cargo_shares"], dimension=0))
         # print("By weight:", self.summarize_shares(kwargs["cargo_shares"], dimension=1))
         # print("By revenue:", self.summarize_shares(kwargs["cargo_shares"], dimension=2))
-        # self.generator = AuthenticDemandGenerator(device=device, **kwargs)
+        self.generator = AuthenticDemandGenerator(device=device, **kwargs)
 
         # Shapes
         self._compact_form_block_shapes()
@@ -790,10 +789,10 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # Available locations based on pre-loading utilization
         empty_locations = self._empty_locations(vessel_state["utilization"], batch_size)
         POD_available_locations = self._available_locations_PODs_preload_utilization(vessel_state["utilization"], pod)
-        if not self.block_stowage_mask:
-            preload_mask = empty_locations & POD_available_locations
-        else:
+        if self.block_stowage_mask:
             preload_mask = th.zeros(*batch_size, self.n_block_locations, device=self.device, dtype=torch.bool)
+        else:
+            preload_mask = empty_locations & POD_available_locations
 
         # Update utilization
         vessel_state["utilization"] = update_state_loading(action_state["action"], vessel_state["utilization"], tau, k, )
@@ -1062,6 +1061,10 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         """Compute the available locations for each POD based on pre-loading utilization: di(u'_p)."""
         _, pod_locations = compute_pol_pod_locations(preload_utilization, self.transform_tau_to_pol, self.transform_tau_to_pod)
         used_pod_locations = pod_locations[..., pod] > 0
+        # Handle case where no locations are used for a given POD
+        used_pod_locations = torch.where(pod_locations.sum(dim=-1) == 0,
+                                         torch.ones_like(used_pod_locations, dtype=torch.bool),
+                                         used_pod_locations)
         return used_pod_locations
 
     def _empty_locations(self, preload_utilization:Tensor, batch_size) -> Tensor:
