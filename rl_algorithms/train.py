@@ -29,6 +29,7 @@ from torchrl.data.replay_buffers.storages import LazyTensorStorage
 # Custom code
 from rl_algorithms.utils import make_env
 from rl_algorithms.loss import FeasibilityClipPPOLoss, FeasibilitySACLoss
+from rl_algorithms.utils import inspect_tensordict
 
 # Classes
 class EarlyStopping:
