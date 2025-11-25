@@ -12,6 +12,7 @@ import json
 import argparse
 from typing import List, Dict, Tuple, Optional, Any
 from tqdm.auto import tqdm
+import copy
 
 path = 'add path to cplex here'
 sys.path.append(path)
@@ -184,6 +185,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
     def build_tree_mpp(stages:int, demand:np.array, warm_solution:Optional[Dict]=None) -> None:
         """Function to build the scenario tree; with decisions and constraints for each node"""
+        block = 0  # Single block version
         for stage in range(stages):
             for node_id in range(num_nodes_per_stage[stage]):
                 # Crane intensity:
@@ -206,8 +208,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                             for pol in range(stage + 1):
                                 for pod in range(pol + 1, P):
                                     # Cargo allocation:
-                                    x[stage, node_id, bay, deck, cargo_class, pol, pod] = \
-                                        mdl.continuous_var(name=f'x_{stage}_{node_id}_{bay}_{deck}_{cargo_class}_{pol}_{pod}', lb=0)
+                                    x[stage, node_id, bay, deck, block, cargo_class, pol, pod] = \
+                                        mdl.continuous_var(name=f'x_{stage}_{node_id}_{bay}_{deck}_{block}_{cargo_class}_{pol}_{pod}', lb=0)
 
             # Define sets
             # Current port
@@ -223,7 +225,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                     for k in range(K):
                         # Demand satisfaction
                         mdl.add_constraint(
-                            mdl.sum(x[stage, node_id, b, d, k, i, j] for b in range(B) for d in range(D))
+                            mdl.sum(x[stage, node_id, b, d, block, k, i, j] for b in range(B) for d in range(D))
                             <= demand[stage, node_id][k, j]
                         )
 
@@ -231,7 +233,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                     for d in range(D):
                         # TEU capacity
                         mdl.add_constraint(
-                            mdl.sum(teus[k] * mdl.sum(x[stage, node_id, b, d, k, i, j]
+                            mdl.sum(teus[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j]
                                                       for (i, j) in on_board) for k in range(K))
                             <= capacity[b, d]
                         )
@@ -245,12 +247,12 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                         for (i, j) in load_moves:
                                             # Non-anticipation at stage, provided demand history is similar
                                             mdl.add_constraint(
-                                                x[stage, node_id, b, d, k, i, j] == x[stage, node_id2, b, d, k, i, j]
+                                                x[stage, node_id, b, d, block, k, i, j] == x[stage, node_id2, b, d, k, i, j]
                                             )
 
                     # Open hatch (d=1 is below deck)
                     mdl.add_constraint(
-                        mdl.sum(x[stage, node_id, b, 1, k, i, j] for (i, j) in all_port_moves[stage] for k in range(K))
+                        mdl.sum(x[stage, node_id, b, 1, block, k, i, j] for (i, j) in all_port_moves[stage] for k in range(K))
                         <= M * HM[stage, node_id, b]
                     )
 
@@ -259,14 +261,14 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                     # Vessel is empty before stage 0, hence no overstows
                     if stage > 0:
                         mdl.add_constraint(
-                            mdl.sum(x[stage, node_id, b, 0, k, i, j] for (i, j) in on_boards[stage - 1]
+                            mdl.sum(x[stage, node_id, b, 0, block, k, i, j] for (i, j) in on_boards[stage - 1]
                                     for k in range(K) if j > stage) - M * (1 - HM[stage, node_id, b] )
                             <= HO[stage, node_id, b]
                         )
 
                 # Stability
                 mdl.add_constraint(
-                    TW[stage, node_id] == mdl.sum(weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j]
+                    TW[stage, node_id] == mdl.sum(weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j]
                                                                        for (i, j) in on_board for d in range(D))
                                                   for k in range(K) for b in range(B))
                 )
@@ -274,46 +276,46 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                 # LCG
                 mdl.add_constraint(
                     LM[stage, node_id] == mdl.sum(longitudinal_position[b] * mdl.sum(
-                        weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for d in range(D))
+                        weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for d in range(D))
                         for k in range(K)) for b in range(B)))
                 mdl.add_constraint(
-                    stab_delta * mdl.sum(weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for d in range(D))
+                    stab_delta * mdl.sum(weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for d in range(D))
                                          for k in range(K) for b in range(B)) >= mdl.sum(longitudinal_position[b] * mdl.sum(
-                        weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for d in range(D)) for k in
+                        weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for d in range(D)) for k in
                         range(K)) for b in range(B)) - LCG_target * mdl.sum(
-                        weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for d in range(D)) for k in
+                        weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for d in range(D)) for k in
                         range(K) for b in range(B)))
                 mdl.add_constraint(stab_delta * mdl.sum(
-                    weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for d in range(D)) for k in
+                    weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for d in range(D)) for k in
                     range(K) for b in range(B)) >= - mdl.sum(longitudinal_position[b] * mdl.sum(
-                    weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for d in range(D)) for k in
+                    weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for d in range(D)) for k in
                     range(K)) for b in range(B)) + LCG_target * mdl.sum(
-                    weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for d in range(D)) for k in
+                    weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for d in range(D)) for k in
                     range(K) for b in range(B)))
 
                 # VCG
                 mdl.add_constraint(VM[stage, node_id] == mdl.sum(vertical_position[d] * mdl.sum(
-                    weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for b in range(B)) for k in
+                    weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for b in range(B)) for k in
                     range(K)) for d in range(D)))
                 mdl.add_constraint(stab_delta * mdl.sum(
-                    weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for b in range(B)) for k in
+                    weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for b in range(B)) for k in
                     range(K) for d in range(D)) >= mdl.sum(vertical_position[d] * mdl.sum(
-                    weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for b in range(B)) for k in
+                    weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for b in range(B)) for k in
                     range(K)) for d in range(D)) - VCG_target * mdl.sum(
-                    weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for b in range(B)) for k in
+                    weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for b in range(B)) for k in
                     range(K) for d in range(D)))
                 mdl.add_constraint(stab_delta * mdl.sum(
-                    weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for b in range(B)) for k in
+                    weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for b in range(B)) for k in
                     range(K) for d in range(D)) >= - mdl.sum(vertical_position[d] * mdl.sum(
-                    weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for b in range(B)) for k in
+                    weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for b in range(B)) for k in
                     range(K)) for d in range(D))  + VCG_target * mdl.sum(
-                    weights[k] * mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in on_board for b in range(B)) for k in
+                    weights[k] * mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in on_board for b in range(B)) for k in
                     range(K) for d in range(D)))
 
                 # Compute lower bound on long crane
                 for adj_bay in range(B - 1):
                     mdl.add_constraint(
-                        mdl.sum(x[stage, node_id, b, d, k, i, j] for (i, j) in all_port_moves[stage] for k in range(K)
+                        mdl.sum(x[stage, node_id, b, d, block, k, i, j] for (i, j) in all_port_moves[stage] for k in range(K)
                                 for d in range(D) for b in [adj_bay, adj_bay + 1])
                         <= CI[stage, node_id]
                     )
@@ -527,6 +529,69 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             start_dict = _get_warm_start_dict(warm_solution)
             mdl.add_mip_start({x[key]: value for key, value in start_dict.items()}, write_level=1)
 
+    def build_scenario_tree_mpc(stages: int,
+                                demand: np.array,
+                                warm_solution: Optional[Dict] = None) -> Dict:
+        """
+        Recedding horizon model predictive control with solving multi-stage SMIP each step.
+        """
+        rolling_horizon_x = {}
+        rolling_horizon_HO = {}
+        rolling_horizon_CM = {}
+
+        for t in range(stages):
+            # Determine the remaining horizon and adjust the lookahead window
+            remaining_horizon = stages - t  # min(look_ahead, stages - t)
+
+            # Initialize variables for the current horizon
+            initialize_vars_tree_block_mpp(remaining_horizon, start_stage=t)
+
+            # Freeze previous solution x_{t-1} to current solution x_t
+            if t > 0:
+                prev_stage = t - 1
+                for b in range(B):
+                    for bl in range(BL):
+                        for d in range(D):
+                            for k in range(K):
+                                # only fix x_{t-1} to x_t
+                                for i in range(prev_stage, prev_stage + 1):
+                                    for j in range(i + 1, P):
+                                        x[t, 0, b, d, bl, k, i, j].set_lb(rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
+                                        x[t, 0, b, d, bl, k, i, j].set_ub(rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
+                                        if j == t:
+                                            x[t, 0, b, d, bl, k, i, j].set_lb(0)
+                                            x[t, 0, b, d, bl, k, i, j].set_ub(0)
+
+            # Build the scenario tree for the current horizon
+            build_tree_block_mpp(remaining_horizon, demand, warm_solution, start_stage=t)
+
+            # Define the objective function for the current horizon
+            objective = objective_function(x, HO, CM, revenues_, start_stage=t)
+
+            # Solve the optimization problem
+            solution = solve_model(mdl, objective)
+
+            # Check if a solution was found
+            if solution is None:
+                raise RuntimeError(f"No solution found at stage {t}")
+
+            # Apply the first-stage decision
+            # Extract current stage decisions
+            rolling_horizon_CM[t, 0] = CM[(t, 0)].solution_value
+            for b in range(B):
+                for bl in range(BL):
+                    rolling_horizon_HO[t, 0, b, bl] = HO[(t, 0, b, bl)].solution_value
+                    for d in range(D):
+                        for k in range(K):
+                            for j in range(t + 1, P):
+                                rolling_horizon_x[t, 0, b, d, bl, k, t, j] = x[(t, 0, b, d, bl, k, t, j)].solution_value
+
+        # Compute objective over all current stage decisions
+        objective_expr = final_objective(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_, stages)
+        objective_value = mdl.solution.get_value(objective_expr)
+        return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective_value}
+
+
     def build_rolling_block_mpp(stages: int,
                                 demand: np.array,
                                 look_ahead: int = 2,
@@ -566,10 +631,11 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 # only fix x_{t-1} to x_t
                                 for i in range(prev_stage, prev_stage + 1):
                                     for j in range(i + 1, P):
-                                        x[t, 0, b, d, bl, k, i, j].set_lb(
-                                            rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
-                                        x[t, 0, b, d, bl, k, i, j].set_ub(
-                                            rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
+                                        x[t, 0, b, d, bl, k, i, j].set_lb(rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
+                                        x[t, 0, b, d, bl, k, i, j].set_ub(rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
+                                        if j == t:
+                                            x[t, 0, b, d, bl, k, i, j].set_lb(0)
+                                            x[t, 0, b, d, bl, k, i, j].set_ub(0)
 
             def _nodes_at(dct, s):
                 return sorted({n for (ss, n) in dct.keys() if ss == s})
@@ -651,7 +717,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                 )
             else:
                 return mdl.sum(
-                    revenues[stage, k, j] * x[stage, node_id, b, d, k, stage, j]
+                    revenues[stage, k, j] * x[stage, node_id, b, d, 0, k, stage, j]
                     for j in range(stage + 1, P)
                     for b in range(B)
                     for d in range(D)
@@ -674,7 +740,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         # ------------------------------------------------------------
         probabilities = {}
 
-        if stochastic_algorithm == "multi_stage":
+        if stochastic_algorithm == "multi_stage" or stochastic_algorithm == "mpc":
             for (stage, node_id) in node_list:
                 probabilities[stage, node_id] = 1 / num_nodes_per_stage[stage]
 
@@ -740,7 +806,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         mdl.parameters.mip.strategy.file = 3
         mdl.parameters.emphasis.memory = 1  # Prioritize memory savings over speed
         mdl.parameters.threads = 1  # Use only 1 thread to reduce memory usage
-        mdl.parameters.mip.tolerances.mipgap = 0.05  # 5-1% or 0.1%
+        mdl.parameters.mip.tolerances.mipgap = 0.05  # 1% or 0.1%
         mdl.set_time_limit(3600)  # 1 hour
         solution = mdl.solve(log_output=print_results)
         return solution
@@ -768,6 +834,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             solution = build_rolling_block_mpp(stages, demand, look_ahead=look_ahead)
         elif stochastic_algorithm == "myopic":
             solution = build_rolling_block_mpp(stages, demand, look_ahead=1)
+        elif stochastic_algorithm == "mpc":
+            solution = build_scenario_tree_mpc(stages, demand, warm_solution)
         else:
             raise ValueError("Invalid stochastic algorithm")
     else:
@@ -816,17 +884,25 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                         revenue_[stage, node_id,] += revenues_[stage, cargo_class, pod] * x_[stage, node_id, bay, deck, block, cargo_class, pol, pod]
                                         demand_[stage, node_id, cargo_class, pod] = demand[stage, node_id][cargo_class, pod]
 
-                        for pod in range(stage + 1, P):
-                            PD_[stage, node_id, bay, block, pod] = PD[stage, node_id, bay, block, pod].solution_value
-                        mixing_[stage, node_id, bay, block,] = mixing[stage, node_id, bay, block,].solution_value
+                        if env.name == "block_mpp":
+                            for pod in range(stage + 1, P):
+                                PD_[stage, node_id, bay, block, pod] = PD[stage, node_id, bay, block, pod].solution_value
+                            mixing_[stage, node_id, bay, block,] = mixing[stage, node_id, bay, block,].solution_value
 
-                        if stochastic_algorithm == "rolling_horizon":
-                            HO_[stage, node_id, bay, block,] = solution["HO"][stage, node_id, bay, block]
-                            HM_[stage, node_id, bay, block,] = 1 if HO_[stage, node_id, bay, block,] > 0 else 0
+                            if stochastic_algorithm == "rolling_horizon":
+                                HO_[stage, node_id, bay, block,] = solution["HO"][stage, node_id, bay, block]
+                                HM_[stage, node_id, bay, block,] = 1 if HO_[stage, node_id, bay, block,] > 0 else 0
+                            else:
+                                HO_[stage, node_id, bay, block,] = HO[stage, node_id, bay, block,].solution_value
+                                HM_[stage, node_id, bay, block,] = HM[stage, node_id, bay, block,].solution_value
+                            cost_[stage, node_id,] += env.ho_costs * HO_[stage, node_id, bay, block]
                         else:
-                            HO_[stage, node_id, bay, block,] = HO[stage, node_id, bay, block,].solution_value
-                            HM_[stage, node_id, bay, block,] = HM[stage, node_id, bay, block,].solution_value
-                        cost_[stage, node_id,] += env.ho_costs * HO_[stage, node_id, bay, block]
+                            if stochastic_algorithm == "rolling_horizon":
+                                HO_[stage, node_id, bay,] = solution["HO"][stage, node_id, bay,]
+                                HM_[stage, node_id, bay,] = 1 if HO_[stage, node_id, bay,] > 0 else 0
+                            else:
+                                HO_[stage, node_id, bay,] = HO[stage, node_id, bay,].solution_value
+                                HM_[stage, node_id, bay,] = HM[stage, node_id, bay,].solution_value
 
 
                 if stochastic_algorithm == "rolling_horizon":
@@ -841,18 +917,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                     TW_[stage, node_id] = TW[stage, node_id].solution_value
                 cost_[stage, node_id,] += env.cm_costs * CM_[stage, node_id]
 
-        # print("Total allocated containers per stage:")
-        # num_nodes_per_stage = np.array(num_nodes_per_stage)
-        # mean_load_per_port = np.sum(x_, axis=(1, 2, 3, 4, 5, 6, 7)) / num_nodes_per_stage # Shape (stages,)
-        # print(mean_load_per_port)
-        # mean_load_per_port2 = np.sum(x_, axis=(1, 2, 3, 4, 5, 7)) / num_nodes_per_stage.reshape(-1, 1,) # Shape (stages,)
-        # print(mean_load_per_port2)
-        # mean_load_per_port3 = np.sum(x_, axis=(1, 2, 3, 4, 5, 6)) / num_nodes_per_stage.reshape(-1, 1,) # Shape (stages,)
-        # print(mean_load_per_port3)
-        # breakpoint() # todo: remove later
-
         # Get metrics from the solution
-        # todo: some computations here are wrong!
+        # todo: redo computations here!
         num_nodes_per_stage = np.array(num_nodes_per_stage)
         mean_load_per_port = np.sum(x_, axis=(1, 2, 3, 4, 5, 6, 7)) / num_nodes_per_stage # Shape (stages,)
         mean_load_per_demand = np.sum(x_, axis=(1, 2, 3, 4, 5)) / num_nodes_per_stage.reshape(-1, 1, 1) # Shape (stages, P, P)
@@ -863,26 +929,11 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         mean_pd = np.sum(PD_, axis=(1, 2, 3, 4)) / num_nodes_per_stage # Shape (stages,)
         mean_mixing = np.sum(mixing_, axis=(1, 2, 3)) / num_nodes_per_stage # Shape (stages,)
 
-        # todo: on board demand works well for P=4,5,6; B=10 -> check B=20
-        # for pol in range(P):
-        #     ob_dem = 0
-        #     on_boards = onboard_groups(P, pol, transport_indices)[0]
-        #     print(f"on_boards p{pol}:{on_boards}")
-        #     for (i,j) in on_boards:
-        #         for k in range(K):
-        #             ob_dem += demand[pol, 0][k, j]
-        #     print(f"ob_demand p{pol}:{ob_dem}")
-
         # Auxiliary metrics
         mean_demand = np.sum(demand_, axis=(1, 2, 3)) / num_nodes_per_stage # Shape (stages,)
         mean_revenue = np.sum(revenue_, axis=1) / num_nodes_per_stage # Shape (stages,)
         mean_cost = np.sum(cost_, axis=1) / num_nodes_per_stage # Shape (stages,)
 
-        # print(f"Mean load per port: {mean_load_per_port}")
-        # print(f"Mean teu load per port: {mean_teu_load_per_port}")
-        # print(f"Mean load per demand: {mean_load_per_demand}")
-        # print(f"Realized demand: {mean_demand}")
-        # breakpoint() # todo: remove later
 
         results = {
             # Input parameters
@@ -936,18 +987,18 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ports", type=int, default=6)
-    parser.add_argument("--teu", type=int, default=20000)
+    parser.add_argument("--ports", type=int, default=4)
+    parser.add_argument("--teu", type=int, default=1000) #20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--scenarios", type=int, default=4) # 20
+    parser.add_argument("--scenarios", type=int, default=1) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=5)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
-    parser.add_argument("--look_ahead", type=int, default=2)  # only for rolling horizon
-    parser.add_argument("--stochastic_algorithm", type=str, default="myopic") # rolling_horizon, myopic, multi_stage
+    parser.add_argument("--look_ahead", type=int, default=3)  # only for rolling horizon
+    parser.add_argument("--stochastic_algorithm", type=str, default="mpc") # rolling_horizon, myopic, multi_stage, mpc
     # todo: add warm solution
     parser = parser.parse_args()
 
