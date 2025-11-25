@@ -131,8 +131,8 @@ if __name__ == "__main__":
             config['model']['batch_size'] = sweep_config.batch_size
             config['model']['scale_max'] = sweep_config.scale_max
             config['model']['temperature'] = sweep_config.temperature
-            # config['model']['tau_sinkhorn'] = sweep_config.tau_sinkhorn
-            # config['model']['iters_sinkhorn'] = sweep_config.iters_sinkhorn
+            config['model']['tau_sinkhorn'] = sweep_config.tau_sinkhorn
+            config['model']['iters_sinkhorn'] = sweep_config.iters_sinkhorn
 
             # # PPO hyperparameters
             # config['algorithm']['ppo_epochs'] = sweep_config.ppo_epochs
