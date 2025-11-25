@@ -216,7 +216,7 @@ class MasterPlanningEnv(EnvBase):
         pol, pod, tau, k, rev, step = self._extract_cargo_parameters_for_step(time[0])
         load_idx = self.load_transport[pol]
         if not hasattr(self, "BL"):
-            self.BL = 1.0
+            self.BL = 1
 
         # Demand state
         demand_state = td["observation"].clone()#.exclude("batch_updates", "init_expected_demand")
