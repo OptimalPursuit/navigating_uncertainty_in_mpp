@@ -29,7 +29,7 @@ env:
   demand_uncertainty: true
   demand_sparsity: 0.3
   demand_perturbation: 0.15
-  distribution: normal # normal, uniform, poisson, lognormal, fixed
+  distribution: fixed # normal, uniform, poisson, lognormal, fixed
   dirichlet_alpha: 0.3
   env_name: block_mpp #block_mpp #mpp
   episode_order: standard
@@ -40,7 +40,7 @@ env:
   iid_demand: true
   include_reefers: false
   limit_revenue: true
-  loading_discharge_region: false
+  loading_discharge_region: true
   long_crane_costs: 0.5
   normalize_obs: true
   ports: 6
@@ -72,6 +72,9 @@ model:
   tanh_squashing: false
   temperature: 0.11243639449117128
   use_mask_head: true
+  use_preload_mask: false
+#  tau_sinkhorn: 0.5
+#  iters_sinkhorn: 20
 testing:
   feasibility_recovery: false
   folder: 'sac-pd' #'sac-ws+pc' #'SA_AM'   # todo: has dependency on main.py (make sure arguments have this role); set to SA_AM for AI2STOW

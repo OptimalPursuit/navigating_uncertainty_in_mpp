@@ -90,17 +90,31 @@ class AttentionDecoderWithCache(nn.Module):
 
         # Mask head: predicts probability of selecting each location (y_head)
         self.use_mask_head = kwargs.get("use_mask_head", False)
+        self.self.use_preload_mask = kwargs.get("use_preload_mask", False)
+
         if self.use_mask_head:
             # Mask head to predict scores for each location
             self.mask_head = nn.Sequential(
                 nn.Linear(embed_dim * 2, hidden_dim),
-                nn.LayerNorm(hidden_dim),
+                add_normalization_layer("identity", hidden_dim),
                 nn.LeakyReLU(),
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.LeakyReLU(),
+                *[ResidualBlock(hidden_dim, nn.LeakyReLU(), add_normalization_layer("identity", hidden_dim), dropout_rate)
+                    for _ in range(num_hidden_layers - 1)
+                ],
                 nn.Linear(hidden_dim, action_dim)
             )
+            # self.mask_head = nn.Sequential(
+            #     nn.Linear(embed_dim * 2, hidden_dim),
+            #     nn.LayerNorm(hidden_dim),
+            #     nn.LeakyReLU(),
+            #     nn.Linear(hidden_dim, hidden_dim),
+            #     nn.LayerNorm(hidden_dim),
+            #     nn.LeakyReLU(),
+            #     nn.Linear(hidden_dim, hidden_dim),
+            #     nn.LayerNorm(hidden_dim),
+            #     nn.LeakyReLU(),
+            #     nn.Linear(hidden_dim, action_dim)
+            # )
 
             # Global context encoder for mask prediction
             self.mask_global_encoder = nn.Sequential(
@@ -268,10 +282,16 @@ class AttentionDecoderWithCache(nn.Module):
             y_topk = self.soft_topk_sinkhorn(mask_probs, n_needed)  # differentiable sparse mask
 
             # 3. Apply hard constraints AFTER learning
-            preload_mask = td["preload_mask"].view_as(y_topk)  # binary feasibility mask
-            mask_soft = preload_mask * y_topk  # continuous in [0,1]
-            mask_hard = preload_mask * (y_topk > 0.5).float()  # discrete {0,1}
+            if self.use_preload_mask:
+                preload_mask = td["preload_mask"].view_as(y_topk)  # binary feasibility mask
+                mask_soft = preload_mask * y_topk  # continuous in [0,1]
+                mask_hard = preload_mask * (y_topk > 0.5).float()  # discrete {0,1}
+            else:
+                mask_soft = y_topk  # continuous in [0,1]
+                mask_hard = (y_topk > 0.5).float()  # discrete {0,1}
+
             mask_final = mask_soft + (mask_hard - mask_soft).detach() # STE trick
+
             # print("--------------------------------")
             # print("y_hat:", y_hat.mean().item())
             # print("mask_logits:", mask_logits.mean().item())
