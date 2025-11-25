@@ -90,7 +90,7 @@ class AttentionDecoderWithCache(nn.Module):
 
         # Mask head: predicts probability of selecting each location (y_head)
         self.use_mask_head = kwargs.get("use_mask_head", False)
-        self.self.use_preload_mask = kwargs.get("use_preload_mask", False)
+        self.use_preload_mask = kwargs.get("use_preload_mask", False)
 
         if self.use_mask_head:
             # Mask head to predict scores for each location
