@@ -215,7 +215,7 @@ class MasterPlanningEnv(EnvBase):
         else: time = th.zeros(*batch_size, dtype=th.int64, device=device)
         pol, pod, tau, k, rev, step = self._extract_cargo_parameters_for_step(time[0])
         load_idx = self.load_transport[pol]
-        if self.BL is None:
+        if not hasattr(self, "BL"):
             self.BL = 1.0
 
         # Demand state
