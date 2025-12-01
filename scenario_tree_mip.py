@@ -813,13 +813,13 @@ if __name__ == "__main__":
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--scenarios", type=int, default=4) # 20
+    parser.add_argument("--scenarios", type=int, default=28) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=5)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
-    parser.add_argument("--look_ahead", type=int, default=2)  # only for rolling horizon
-    parser.add_argument("--stochastic_algorithm", type=str, default="myopic") # rolling_horizon, myopic, multi_stage, mpc
+    parser.add_argument("--look_ahead", type=int, default=4)  # only for rolling horizon
+    parser.add_argument("--stochastic_algorithm", type=str, default="mpc") # rolling_horizon, myopic, multi_stage, mpc
     # todo: add warm solution
     parser = parser.parse_args()
 
