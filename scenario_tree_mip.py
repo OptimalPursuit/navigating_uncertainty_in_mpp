@@ -183,7 +183,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                     warm_start_dict[f'x_{stage}_{node_id}_{bay}_{deck}_{cargo_class}_{pol}_{pod}'] = x[
                                         stage, node_id, bay, deck, cargo_class, pol, pod].solution_value
         print(f'Warm start dict: {warm_start_dict}')
-        breakpoint() # todo: remove later
+        breakpoint() # todo: fix warm start
         return warm_start_dict
 
     def initialize_vars_tree(stages:int, start_stage:int=0, block_mpp:bool=False) -> None:
@@ -235,6 +235,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             # Scenario range
             node_ids = num_nodes_per_stage[:look_ahead][stage-start_stage] if stochastic_algorithm in ['rolling_horizon', 'myopic', 'mpc'] \
                 else num_nodes_per_stage[stage]
+            print(f'Building stage {stage} with {node_ids} nodes.')
             for node_id in range(node_ids):
                 for (i, j) in load_moves:
                     for k in range(K):
@@ -253,7 +254,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                                           for (i, j) in on_board) for k in range(K))
                                 <= capacity[b, d, bl], ctname=f'capacity_{stage}_{node_id}_{b}_{d}_{bl}'
                             )
-                            if not perfect_information and stochastic_algorithm not in ['rolling_horizon', 'myopic']:
+                            if not perfect_information and stochastic_algorithm not in ['rolling_horizon', 'myopic', 'mpc']:
                                 demand_history1 = get_demand_history(stage-start_stage, demand, num_nodes_per_stage)
                                 for node_id2 in range(node_id + 1, num_nodes_per_stage[stage-start_stage]):
                                     demand_history2 = get_demand_history(stage--start_stage, demand, num_nodes_per_stage)
@@ -377,13 +378,14 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
         # Add mip start
         if warm_solution:
-            # todo: add warm solution
             start_dict = _get_warm_start_dict(warm_solution)
             mdl.add_mip_start({x[key]: value for key, value in start_dict.items()}, write_level=1)
 
     def build_scenario_tree_mpc(stages: int,
                                 demand: np.array,
-                                warm_solution: Optional[Dict] = None, block_mpp=False) -> Dict:
+                                warm_solution: Optional[Dict] = None,
+                                block_mpp:bool=False,
+                                look_ahead:int=100) -> Dict:
         """
         Recedding horizon model predictive control with solving multi-stage SMIP each step.
         """
@@ -407,9 +409,10 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
             # Determine the remaining horizon and adjust the lookahead window
             remaining_horizon = stages - t  # min(look_ahead, stages - t)
+            rh_stages = min(look_ahead, remaining_horizon)  # adaptively shrink horizon
 
             # Initialize variables for the current horizon
-            initialize_vars_tree(remaining_horizon, start_stage=t, block_mpp=block_mpp)
+            initialize_vars_tree(rh_stages, start_stage=t, block_mpp=block_mpp)
 
             # Freeze previous solution x_{t-1} to current solution x_t
             if t > 0:
@@ -431,7 +434,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                         x[t, 0, b, d, bl, k, i, j].set_ub(ub)
 
             # Build the scenario tree for the current horizon
-            build_tree(remaining_horizon, demand, warm_solution, start_stage=t, look_ahead=remaining_horizon, block_mpp=block_mpp)
+            build_tree(rh_stages, demand, warm_solution, start_stage=t, look_ahead=rh_stages, block_mpp=block_mpp)
 
             # Define the objective function for the current horizon
             objective = objective_function(x, HO, CM, revenues_, start_stage=t)
@@ -614,55 +617,19 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                 for stage in range(stages)
                 for node_id in range(num_nodes_per_stage[stage])
             )
-
-        elif stochastic_algorithm == "rolling_horizon":
-            with_blocks = (config.env.env_name == "block_mpp")
-
-            if start_stage is None:
-                # deterministic path: node 0 only across all stages
-                objective = mdl.sum(
-                    revenue_term(s, 0, with_blocks)
-                    - ho_cost_term(s, 0, with_blocks)
-                    - cm_cost_term(s, 0)
-                    for s in range(stages)
-                )
-            else:
-                # rolling_horizon
-                with_blocks = (config.env.env_name == "block_mpp")
-
-                h_start = start_stage
-                h_end = min(stages, h_start + look_ahead)  # exclusive
-                window_nodes = list(num_nodes_per_stage[:h_end-h_start])  # e.g., [1, 4] for 2-step
-
-                # probs aligned to only the current and lookahead steps
-                probabilities = {
-                    (stage, node): 1.0 / window_nodes[stage - h_start]
-                    for stage in range(h_start, h_end)
-                    for node in range(window_nodes[stage - h_start])
-                }
-                objective = mdl.sum(
-                    probabilities[(s, n)] * (
-                            revenue_term(s, n, with_blocks)
-                            - ho_cost_term(s, n, with_blocks)
-                            - cm_cost_term(s, n)
-                    )
-                    for idx, s in enumerate(range(h_start, h_end))
-                    for n in range(window_nodes[idx])
-                )
-        elif stochastic_algorithm == "myopic":
-            stages_to_iter = range(stages) if start_stage is None else range(start_stage, start_stage + 1)
-            objective = mdl.sum(revenue_term(stage, 0, True) - ho_cost_term(stage, 0, True)
-                - cm_cost_term(stage, 0) for stage in stages_to_iter
-            )
-        elif stochastic_algorithm == "mpc":
+        elif stochastic_algorithm in ["mpc", "rolling_horizon", "myopic"]:
             h_start = start_stage
             h_end = min(stages, h_start + look_ahead)
-
+            # node counts inside MPC window (shifted)
+            window_nodes = [num_nodes_per_stage[s - h_start] for s in range(h_start, h_end)]
             objective = mdl.sum(
-                revenue_term(s, 0, True)
-                - ho_cost_term(s, 0, True)
-                - cm_cost_term(s, 0)
+                (1.0 / window_nodes[s - h_start]) * (
+                        revenue_term(s, n, True)
+                        - ho_cost_term(s, n, True)
+                        - cm_cost_term(s, n)
+                )
                 for s in range(h_start, h_end)
+                for n in range(window_nodes[s - h_start])
             )
         else:
             raise ValueError(f"Invalid stochastic algorithm: {stochastic_algorithm}")
@@ -689,42 +656,28 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                 revenues_[stage, cargo_class, pod,] = revenues[t]
 
     # Build the scenario tree
-    if config.env.env_name == "mpp":
-        if stochastic_algorithm == "multi_stage":
-            initialize_vars_tree(stages, block_mpp=False)
-            build_tree(stages, demand, warm_solution, block_mpp=False)
-            objective = objective_function(x, HO, CM, revenues_)
-            solution = solve_model(mdl, objective)
-        elif stochastic_algorithm == "mpc":
-            solution = build_scenario_tree_mpc(stages, demand, warm_solution, block_mpp=False)
-        else:
-            raise ValueError("Invalid stochastic algorithm for mpp environment")
-
-    elif config.env.env_name == "block_mpp":
-        if stochastic_algorithm == "multi_stage":
-            initialize_vars_tree(stages, block_mpp=True)
-            build_tree(stages, demand, warm_solution, block_mpp=True)
-            objective = objective_function(x, HO, CM, revenues_)
-            solution = solve_model(mdl, objective)
-        elif stochastic_algorithm == "rolling_horizon":
-            solution = build_rolling(stages, demand, look_ahead=look_ahead, block_tree=True)
-        elif stochastic_algorithm == "myopic":
-            solution = build_rolling(stages, demand, look_ahead=1, block_tree=True)
-        elif stochastic_algorithm == "mpc":
-            solution = build_scenario_tree_mpc(stages, demand, warm_solution, block_mpp=True)
-        else:
-            raise ValueError("Invalid stochastic algorithm")
+    block_mpp = (config.env.env_name == "block_mpp")
+    if stochastic_algorithm == "multi_stage":
+        initialize_vars_tree(stages, block_mpp=block_mpp)
+        build_tree(stages, demand, warm_solution, block_mpp=block_mpp)
+        objective = objective_function(x, HO, CM, revenues_)
+        solution = solve_model(mdl, objective)
+    elif stochastic_algorithm == "mpc":
+        solution = build_scenario_tree_mpc(stages, demand, warm_solution, block_mpp=block_mpp)
+    elif stochastic_algorithm == "rolling_horizon":
+        solution = build_scenario_tree_mpc(stages, demand, look_ahead=look_ahead, block_mpp=block_mpp)
+    elif stochastic_algorithm == "myopic":
+        # todo: should this lookahead be 1 or 0?
+        solution = build_scenario_tree_mpc(stages, demand, look_ahead=1, block_mpp=block_mpp)
     else:
-        raise ValueError("Invalid environment name")
+        raise ValueError("Invalid stochastic algorithm")
 
     # Print the solution # todo: fix this properly for mpp and block_mpp; now set to block_mpp
     if solution:
         if "objective_value" in solution:
             obj = solution["objective_value"]
-            # print(f"Objective value ({stochastic_algorithm}): {solution['objective_value']}")
         else:
             obj = solution.objective_value
-            # print(f"Objective value: {solution.objective_value}")
 
         # Analyze the solution
         x_ = np.zeros((stages, max_paths, B, D, BL, K, P, P), dtype=float)
@@ -774,8 +727,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                         cost_[stage, node_id,] += env.ho_costs * HO_[stage, node_id, bay, block]
 
                 if stochastic_algorithm in ["rolling_horizon", "myopic", "mpc"]:
-                    CM_[stage, node_id] = solution["CM"][stage, node_id]
                     # todo: implement CI, stability etc. in rolling horizon
+                    CM_[stage, node_id] = solution["CM"][stage, node_id]
                 else:
                     CM_[stage, node_id] = CM[stage, node_id].solution_value
                     CI_[stage, node_id] = CI[stage, node_id].solution_value
@@ -860,13 +813,13 @@ if __name__ == "__main__":
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--scenarios", type=int, default=8) # 20
+    parser.add_argument("--scenarios", type=int, default=4) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=5)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
-    parser.add_argument("--look_ahead", type=int, default=3)  # only for rolling horizon
-    parser.add_argument("--stochastic_algorithm", type=str, default="mpc") # rolling_horizon, myopic, multi_stage, mpc
+    parser.add_argument("--look_ahead", type=int, default=2)  # only for rolling horizon
+    parser.add_argument("--stochastic_algorithm", type=str, default="myopic") # rolling_horizon, myopic, multi_stage, mpc
     # todo: add warm solution
     parser = parser.parse_args()
 
