@@ -235,7 +235,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             # Scenario range
             node_ids = num_nodes_per_stage[:look_ahead][stage-start_stage] if stochastic_algorithm in ['rolling_horizon', 'myopic', 'mpc'] \
                 else num_nodes_per_stage[stage]
-            print(f'Building stage {stage} with {node_ids} nodes.')
             for node_id in range(node_ids):
                 for (i, j) in load_moves:
                     for k in range(K):
@@ -254,7 +253,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                                           for (i, j) in on_board) for k in range(K))
                                 <= capacity[b, d, bl], ctname=f'capacity_{stage}_{node_id}_{b}_{d}_{bl}'
                             )
-                            if not perfect_information and stochastic_algorithm not in ['rolling_horizon', 'myopic', 'mpc']:
+                            if not perfect_information and stochastic_algorithm not in ['rolling_horizon', 'myopic']:
                                 demand_history1 = get_demand_history(stage-start_stage, demand, num_nodes_per_stage)
                                 for node_id2 in range(node_id + 1, num_nodes_per_stage[stage-start_stage]):
                                     demand_history2 = get_demand_history(stage--start_stage, demand, num_nodes_per_stage)
@@ -820,7 +819,6 @@ if __name__ == "__main__":
     parser.add_argument("--cv_demand", type=float, default=0.5)
     parser.add_argument("--look_ahead", type=int, default=4)  # only for rolling horizon
     parser.add_argument("--stochastic_algorithm", type=str, default="mpc") # rolling_horizon, myopic, multi_stage, mpc
-    # todo: add warm solution
     parser = parser.parse_args()
 
     # Load the configuration file
@@ -873,12 +871,15 @@ if __name__ == "__main__":
     total_ho_list = []
     total_cm_list = []
     max_revenue_list = []
+    running_sum_obj = 0.0
+    running_count = 0
 
     # setup folder
     if not os.path.exists(f"{output_path}/{stochastic_algorithm}/"):
         os.makedirs(f"{output_path}/{stochastic_algorithm}/")
 
-    for x in tqdm(range(num_episodes), desc="Episodes", unit="ep"):
+    t = tqdm(range(num_episodes), desc="Episodes", unit="ep")
+    for x in t:
         # Create the environment on cpu
         seed = config.env.seed + x + 1
         config.env.seed = seed
@@ -928,7 +929,13 @@ if __name__ == "__main__":
             max_revenue_list.append(result["max_revenue"])
 
             # get onboard set and compute onboard demand
-            obj_list.append(result.get('obj', None))
+            obj = result.get("obj", None)
+            obj_list.append(obj)
+            if obj is not None:
+                running_sum_obj += obj
+                running_count += 1
+                avg_obj = running_sum_obj / running_count
+                t.set_description(f"Episodes (avg obj={avg_obj:.2f})")
 
             # Save results in json
             with open(f"{output_path}/results_scenario_tree_teu{teu}_p{stages}_"
