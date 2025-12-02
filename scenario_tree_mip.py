@@ -223,7 +223,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 mdl.binary_var(name=f'mixing_{start_stage}_{stage}_{node_id}_{bay}_{block}')
 
     def build_tree(stages:int, input_demand:np.array, warm_solution:Optional[Dict]=None, start_stage:int=0,
-                             look_ahead:int=2, block_mpp:bool=False) -> None:
+                             look_ahead:int=2, block_mpp:bool=False, strict_no_overstow:bool=False) -> None:
         """Function to build the scenario tree; with decisions and constraints for each node"""
         demand = copy.deepcopy(input_demand)
         for stage in range(start_stage, start_stage + stages):
@@ -281,10 +281,12 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                         for k in range(K) if j > stage) - M * (1 - HM[stage, node_id, b, bl] )
                                 <= HO[stage, node_id, b, bl], ctname=f'hatch_overstow_{stage}_{node_id}_{b}_{bl}'
                             )
-                            # # Add HO == 0
-                            # mdl.add_constraint(
-                            #     HO[stage, node_id, b, bl] == 0, ctname=f'hatch_overstow_zero_{stage}_{node_id}_{b}_{bl}'
-                            # )
+                            if strict_no_overstow:
+                                # Add HO == 0
+                                mdl.add_constraint(
+                                    HO[stage, node_id, b, bl] == 0, ctname=f'hatch_overstow_zero_{stage}_{node_id}_{b}_{bl}'
+                                )
+
 
                 # Stability
                 mdl.add_constraint(
@@ -813,7 +815,7 @@ if __name__ == "__main__":
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--scenarios", type=int, default=28) # 20
-    parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
+    parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=True)
     parser.add_argument("--num_episodes", type=int, default=30)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
@@ -853,7 +855,12 @@ if __name__ == "__main__":
     if deterministic:
         num_scenarios = [1]
     elif scenario_range:
-        num_scenarios = list(range(4, parser.scenarios + 1, 4))
+        if stochastic_algorithm == "multi_stage":
+            num_scenarios = list(range(4, parser.scenarios + 1, 4))
+        elif stochastic_algorithm in ["mpc"]:
+            num_scenarios = [1, 3, 5, 10]
+        else:
+            raise ValueError("Scenario range only supported for multi_stage and mpc algorithms")
     else:
         num_scenarios = [parser.scenarios]
 
