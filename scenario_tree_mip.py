@@ -71,7 +71,7 @@ def precompute_demand(node_list:List, max_paths:int, stages:int, env:nn.Module) 
 
     return demand_scenarios, real_demand
 
-def get_scenario_tree_indices(scenario_tree:Dict, num_scenarios:int) -> Dict:
+def get_scenario_tree_indices(scenario_tree:Dict, num_scenarios:int, real_out_tree:bool=False) -> Dict:
     """
     Extracts data from a scenario tree structure, keeping all stages but limiting nodes
     according to the number of scenarios.
@@ -88,6 +88,9 @@ def get_scenario_tree_indices(scenario_tree:Dict, num_scenarios:int) -> Dict:
     for (stage, node), value in scenario_tree.items():
         # Calculate the maximum number of nodes for this stage
         max_nodes = num_scenarios ** stage
+        # Add extra node for realized outcome if required
+        if real_out_tree:
+            max_nodes += 1
         # Include only nodes within the allowed range
         if node < max_nodes:
             filtered_tree[(stage, node)] = value
@@ -186,10 +189,12 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         breakpoint() # todo: fix warm start
         return warm_start_dict
 
-    def initialize_vars_tree(stages:int, start_stage:int=0, block_mpp:bool=False) -> None:
+    def initialize_vars_tree(stages:int, start_stage:int=0, block_mpp:bool=False, real_out_tree:bool=False) -> None:
         # Build variables for full scenario tree
         for stage in range(start_stage, start_stage + stages):
-            for node_id in range(num_nodes_per_stage[stage - start_stage]):
+            n = num_nodes_per_stage[stage - start_stage]
+            node_range = range(n + 1) if real_out_tree else range(n)
+            for node_id in node_range:
                 # Crane intensity:
                 CI[stage, node_id] = mdl.continuous_var(name=f'CI_{start_stage}_{stage}_{node_id}', lb=0)
                 CI_target[stage, node_id] = mdl.continuous_var(name=f'CI_target_{start_stage}_{stage}_{node_id}', lb=0)
@@ -223,9 +228,13 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 mdl.binary_var(name=f'mixing_{start_stage}_{stage}_{node_id}_{bay}_{block}')
 
     def build_tree(stages:int, input_demand:np.array, warm_solution:Optional[Dict]=None, start_stage:int=0,
-                             look_ahead:int=2, block_mpp:bool=False, strict_no_overstow:bool=False) -> None:
+                   look_ahead:int=2, block_mpp:bool=False, strict_no_overstow:bool=False, real_out_tree:bool=False) -> None:
         """Function to build the scenario tree; with decisions and constraints for each node"""
         demand = copy.deepcopy(input_demand)
+
+        # todo: ensure demand realization from node 0 is properly handled
+        #  Now non-anticipativity constraints are only added if demand histories are similar
+
         for stage in range(start_stage, start_stage + stages):
 
             # Define sets at current stage/port
@@ -233,9 +242,18 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             prev_on_board, _, _ = onboard_groups(P, stage-1, transport_indices) if stage > 0 else ([], [], [])
 
             # Scenario range
-            node_ids = num_nodes_per_stage[:look_ahead][stage-start_stage] if stochastic_algorithm in ['rolling_horizon', 'myopic', 'mpc'] \
-                else num_nodes_per_stage[stage]
-            for node_id in range(node_ids):
+            n = num_nodes_per_stage[:look_ahead][stage - start_stage]
+            if stochastic_algorithm in ['rolling_horizon', 'myopic', 'mpc']:
+                if stage == start_stage:
+                    node_range = range(n)
+                else:
+                    node_range = range(1, n + 1)
+
+            elif stochastic_algorithm == 'multi_stage':
+                node_range = range(n)
+            else:
+                raise ValueError(f'Unknown stochastic algorithm: {stochastic_algorithm}')
+            for node_id in node_range:
                 for (i, j) in load_moves:
                     for k in range(K):
                         # Demand satisfaction
@@ -256,7 +274,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                             if not perfect_information and stochastic_algorithm not in ['rolling_horizon', 'myopic']:
                                 demand_history1 = get_demand_history(stage-start_stage, demand, num_nodes_per_stage)
                                 for node_id2 in range(node_id + 1, num_nodes_per_stage[stage-start_stage]):
-                                    demand_history2 = get_demand_history(stage--start_stage, demand, num_nodes_per_stage)
+                                    demand_history2 = get_demand_history(stage-start_stage, demand, num_nodes_per_stage)
                                     if np.allclose(demand_history1, demand_history2, atol=1e-5):  # Use a tolerance if floats
                                         for k in range(K):
                                             for (i, j) in load_moves:
@@ -286,7 +304,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 mdl.add_constraint(
                                     HO[stage, node_id, b, bl] == 0, ctname=f'hatch_overstow_zero_{stage}_{node_id}_{b}_{bl}'
                                 )
-
 
                 # Stability
                 mdl.add_constraint(
@@ -386,7 +403,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 demand: np.array,
                                 warm_solution: Optional[Dict] = None,
                                 block_mpp:bool=False,
-                                look_ahead:int=100) -> Dict:
+                                look_ahead:int=100,
+                                real_out_tree:bool=False) -> Dict:
         """
         Recedding horizon model predictive control with solving multi-stage SMIP each step.
         """
@@ -413,7 +431,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             rh_stages = min(look_ahead, remaining_horizon)  # adaptively shrink horizon
 
             # Initialize variables for the current horizon
-            initialize_vars_tree(rh_stages, start_stage=t, block_mpp=block_mpp)
+            initialize_vars_tree(rh_stages, start_stage=t, block_mpp=block_mpp, real_out_tree=real_out_tree)
 
             # Freeze previous solution x_{t-1} to current solution x_t
             if t > 0:
@@ -621,17 +639,21 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         elif stochastic_algorithm in ["mpc", "rolling_horizon", "myopic"]:
             h_start = start_stage
             h_end = min(stages, h_start + look_ahead)
-            # node counts inside MPC window (shifted)
-            window_nodes = [num_nodes_per_stage[s - h_start] for s in range(h_start, h_end)]
+
             objective = mdl.sum(
-                (1.0 / window_nodes[s - h_start]) * (
+                (1.0 / num_nodes_per_stage[s - h_start]) * (
                         revenue_term(s, n, True)
                         - ho_cost_term(s, n, True)
                         - cm_cost_term(s, n)
                 )
                 for s in range(h_start, h_end)
-                for n in range(window_nodes[s - h_start])
+                for n in (
+                    range(num_nodes_per_stage[s - h_start])  # stage == start
+                    if s == start_stage
+                    else range(1, num_nodes_per_stage[s - h_start] + 1)  # stage > start
+                )
             )
+
         else:
             raise ValueError(f"Invalid stochastic algorithm: {stochastic_algorithm}")
 
@@ -664,12 +686,12 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         objective = objective_function(x, HO, CM, revenues_)
         solution = solve_model(mdl, objective)
     elif stochastic_algorithm == "mpc":
-        solution = build_scenario_tree_mpc(stages, demand, warm_solution, block_mpp=block_mpp)
+        solution = build_scenario_tree_mpc(stages, demand, warm_solution, block_mpp=block_mpp, real_out_tree=real_out_tree)
     elif stochastic_algorithm == "rolling_horizon":
-        solution = build_scenario_tree_mpc(stages, demand, look_ahead=look_ahead, block_mpp=block_mpp)
+        solution = build_scenario_tree_mpc(stages, demand, look_ahead=look_ahead, block_mpp=block_mpp, real_out_tree=real_out_tree)
     elif stochastic_algorithm == "myopic":
         # todo: should this lookahead be 1 or 0?
-        solution = build_scenario_tree_mpc(stages, demand, look_ahead=1, block_mpp=block_mpp)
+        solution = build_scenario_tree_mpc(stages, demand, look_ahead=1, block_mpp=block_mpp, real_out_tree=real_out_tree)
     else:
         raise ValueError("Invalid stochastic algorithm")
 
@@ -867,7 +889,7 @@ if __name__ == "__main__":
     # Precompute largest scenario tree
     stages = config.env.ports - 1  # Number of load ports (P-1)
     teu = config.env.teu
-    max_scenarios_per_stage = max(num_scenarios) if max(num_scenarios) <= 28 else 28
+    max_scenarios_per_stage = max(num_scenarios) if max(num_scenarios) > 28 else 28
     # Number of scenarios per stage
     max_paths = max_scenarios_per_stage ** (stages-1) if not deterministic else 1
     node_list = precompute_node_list(stages, max_scenarios_per_stage, deterministic)
@@ -895,9 +917,11 @@ if __name__ == "__main__":
         # Precompute for each episode
         demand_tree, real_demand = precompute_demand(node_list, max_paths, stages, env)
 
-        for scen in num_scenarios:  # Iterate over scenarios
+        t2 = tqdm(num_scenarios, desc="Scenarios", unit="scen", leave=False)
+        for scen in t2:
             # Filter sub-tree for the number of scenarios
-            demand_sub_tree = get_scenario_tree_indices(demand_tree, scen)
+            real_out_tree = stochastic_algorithm in {"mpc", "rolling_horizon", "myopic"}
+            demand_sub_tree = get_scenario_tree_indices(demand_tree, scen, real_out_tree=real_out_tree,)
 
             # Run the main logic and get results and variables
             result, var = main(env=env, demand=demand_sub_tree, scenarios_per_stage=scen, stages=stages,
@@ -942,7 +966,7 @@ if __name__ == "__main__":
                 running_sum_obj += obj
                 running_count += 1
                 avg_obj = running_sum_obj / running_count
-                t.set_description(f"Episodes (avg obj={avg_obj:.2f})")
+                t2.set_description(f"Episodes (avg obj={avg_obj:.2f})")
 
             # Save results in json
             with open(f"{output_path}/results_scenario_tree_teu{teu}_p{stages}_"
