@@ -882,7 +882,7 @@ if __name__ == "__main__":
     # Precompute largest scenario tree
     stages = config.env.ports - 1  # Number of load ports (P-1)
     teu = config.env.teu
-    max_scenarios_per_stage = max(num_scenarios) + 1 if max(num_scenarios) > 28 else 28
+    max_scenarios_per_stage = max(num_scenarios) + 1 if max(num_scenarios) > 32 else 32 + 1
     # Number of scenarios per stage
     max_paths = max_scenarios_per_stage ** (stages-1) if not deterministic else 1
     node_list = precompute_node_list(stages, max_scenarios_per_stage, deterministic)
@@ -913,6 +913,7 @@ if __name__ == "__main__":
         t2 = tqdm(num_scenarios, desc="Scenarios", unit="scen", leave=False)
         for scen in t2:
             # Filter sub-tree for the number of scenarios
+            scen += int(stochastic_algorithm in {"mpc", "rolling_horizon", "myopic"})
             real_out_tree = stochastic_algorithm in {"mpc", "rolling_horizon", "myopic"}
             demand_sub_tree = get_scenario_tree_indices(demand_tree, scen, real_out_tree=real_out_tree,)
 
