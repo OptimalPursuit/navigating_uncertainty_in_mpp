@@ -256,6 +256,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         else:
             out = super().forward(*args, **kwargs)
 
+        # todo: clean this up later
 
         # Raise error for projection layers without log prob adaptation implementations
         if self.projection_type not in ["linear_violation", "linear_violation_policy_clipping", "inner_convex_violation",
@@ -266,7 +267,10 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         # Get distribution
         dist = self.get_dist(out)
         out["unprojected_action"] = out["action"].clone()
-        out["unprojected_masked_action"] = out["unprojected_action"] * out["mask"]
+        if out["mask"] is not None:
+            out["unprojected_masked_action"] = out["unprojected_action"] * out["mask"]
+        else:
+            out["unprojected_masked_action"] = out["unprojected_action"]
         out["action"] = out["unprojected_masked_action"] / out["observation", "max_demand"]
 
         # Get log probabilities
@@ -299,7 +303,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             out["action"] = torch.where(out["observation", "action_mask"], out["action"],  1e-6)
             out["log_prob"] = torch.where(out["observation", "action_mask"], out["log_prob"], torch.tensor(-100, device=out["log_prob"].device))
 
-        if "mask" in out:
+        if "preload_mask" in out["observation"]:
             hard_mask = out["observation", "preload_mask"].float()
             out["sample_log_prob"] = (out["log_prob"].clamp(min=-20, max=1) * hard_mask).sum(dim=-1)
             return out
