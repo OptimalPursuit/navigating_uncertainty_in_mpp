@@ -16,7 +16,7 @@ class CargoEmbedding(nn.Module):
         self.train_max_demand = self.env.generator.train_max_demand
 
         # Embedding layers
-        if env.name == "port_mpp":
+        if env.name == "block_mpp":
             num_embeddings = self.seq_dim  # Number of embeddings
             self.fc = nn.Linear(num_embeddings, embed_dim)
         else:
@@ -69,9 +69,9 @@ class CriticEmbedding(nn.Module):
         super(CriticEmbedding, self).__init__()
         self.env = env
         self.seq_dim = seq_dim
-        self.BL = self.env.BL if hasattr(self.env, 'BL') else 1
+        self.BL = self.env.BL
         self.obs_dim = 1+self.env.T * self.env.K + self.env.B*self.env.D*self.BL + self.env.B-1 + 2 + 3*self.env.B*self.env.D*self.BL
-        if not hasattr(self.env, 'BL'):
+        if self.env.name == "mpp":
             self.obs_dim -= 21
         self.project_context = nn.Linear(embed_dim + self.obs_dim, embed_dim,)
         self.train_max_demand = self.env.generator.train_max_demand
@@ -79,7 +79,7 @@ class CriticEmbedding(nn.Module):
     def normalize_obs(self, td:TensorDict) -> Tensor:
         batch_size = td.batch_size
         max_demand = td["max_demand"]
-        if hasattr(self.env, 'BL'):
+        if self.env.name == "block_mpp":
             return torch.cat([
                 td["total_profit"] / (td["max_total_profit"]+1e-6),
                 (td["observed_demand"] / max_demand ).view(*batch_size, -1),
@@ -125,15 +125,15 @@ class ContextEmbedding(nn.Module):
         super(ContextEmbedding, self).__init__()
         self.env = env
         self.seq_dim = seq_dim
-        self.BL = self.env.BL if hasattr(self.env, 'BL') else 1
+        self.BL = self.env.BL
         self.obs_dim = 1+self.env.B*self.env.D*self.BL + self.env.B-1 + 2 + 3*self.env.B*self.env.D*self.BL
-        if not hasattr(self.env, 'BL'):
+        if self.env.name == "mpp":
             self.obs_dim -= 21
         self.project_context = nn.Linear(embed_dim + self.obs_dim, embed_dim,)
 
     def normalize_obs(self, td:TensorDict) -> Tensor:
         batch_size = td.batch_size
-        if hasattr(self.env, 'BL'):
+        if self.env.name == "block_mpp":
             return torch.cat([
                 td["total_profit"] / (td["max_total_profit"]+1e-6),
                 (td["residual_capacity"] / self.env.capacity.view(1, -1)).view(*batch_size, -1),
