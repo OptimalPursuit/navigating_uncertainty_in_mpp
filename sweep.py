@@ -130,7 +130,8 @@ if __name__ == "__main__":
             # config['model']['embed_dim'] = sweep_config.embed_dim
             # config['model']['num_encoder_layers'] = sweep_config.num_encoder_layers
             # config['model']['num_decoder_layers'] = sweep_config.num_decoder_layers
-            # config['model']['batch_size'] = sweep_config.batch_size
+            config['model']['batch_size'] = sweep_config.batch_size
+            config['algorithm']['mini_batch_size'] = sweep_config.mini_batch_size
             # config['model']['scale_max'] = sweep_config.scale_max
             # config['model']['temperature'] = sweep_config.temperature
             # config['model']['tau_sinkhorn'] = sweep_config.tau_sinkhorn
@@ -138,7 +139,6 @@ if __name__ == "__main__":
             #
             # # # PPO hyperparameters
             # # config['algorithm']['ppo_epochs'] = sweep_config.ppo_epochs
-            # # config['algorithm']['mini_batch_size'] = sweep_config.mini_batch_size
             # # config['algorithm']['entropy_lambda'] = sweep_config.entropy_lambda
             #
             # # # AM-PPO hyperparameters
