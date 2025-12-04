@@ -85,8 +85,9 @@ class AttentionDecoderWithCache(nn.Module):
         self.output_norm = add_normalization_layer(normalization, embed_dim * 2)
         self.mean_head = nn.Linear(embed_dim * 2, action_dim) # Mean head
         self.std_head = nn.Linear(embed_dim * 2, action_dim) # Standard deviation head
-        # do not remove, part of model weights
-        self.multiplier_head = nn.Linear(embed_dim * 2, 1) # Multiplier head
+        # do not remove; sometimes part of model weights (but never used)
+        # todo: fix this to be dynamic (maybe even remove from loaded weights)
+        # self.multiplier_head = nn.Linear(embed_dim * 2, 1) # Multiplier head
 
         # Mask head: predicts probability of selecting each location (y_head)
         self.use_mask_head = kwargs.get("use_mask_head", False)
@@ -103,18 +104,6 @@ class AttentionDecoderWithCache(nn.Module):
                 ],
                 nn.Linear(hidden_dim, action_dim)
             )
-            # self.mask_head = nn.Sequential(
-            #     nn.Linear(embed_dim * 2, hidden_dim),
-            #     nn.LayerNorm(hidden_dim),
-            #     nn.LeakyReLU(),
-            #     nn.Linear(hidden_dim, hidden_dim),
-            #     nn.LayerNorm(hidden_dim),
-            #     nn.LeakyReLU(),
-            #     nn.Linear(hidden_dim, hidden_dim),
-            #     nn.LayerNorm(hidden_dim),
-            #     nn.LeakyReLU(),
-            #     nn.Linear(hidden_dim, action_dim)
-            # )
 
             # Global context encoder for mask prediction
             self.mask_global_encoder = nn.Sequential(
