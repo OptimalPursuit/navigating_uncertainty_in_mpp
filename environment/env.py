@@ -104,6 +104,7 @@ class MasterPlanningEnv(EnvBase):
             agg_pol_location=Unbounded(shape=(*batch_size, self.B * self.D), dtype=self.float_type),
             agg_pod_location=Unbounded(shape=(*batch_size, self.B * self.D), dtype=self.float_type),
             max_demand=Unbounded(shape=(*batch_size, 1), dtype=self.float_type),
+            env_action=Unbounded(shape=(*batch_size, self.B * self.D), dtype=self.float_type),
             timestep=Unbounded(shape=(*batch_size, 1), dtype=th.int64),
             shape=batch_size,
         )
@@ -191,6 +192,7 @@ class MasterPlanningEnv(EnvBase):
                 **flatten_values_td(next_state_dict, batch_size=batch_size),
                 "timestep": time,
                 "max_demand": td["observation", "max_demand"],
+                "env_action": action_state["action"].view(*batch_size, self.n_locations),
             },
             **action_state,
 
@@ -252,7 +254,7 @@ class MasterPlanningEnv(EnvBase):
         action_state["lhs_A"] = self.create_lhs_A(self.A_lhs, time).view(*batch_size, self.n_constraints, self.n_locations)
         action_state["rhs"] = self.create_rhs(
             vessel_state["utilization"].to(self.float_type), current_demand, self.swap_signs_stability,
-            self.A_rhs, self.n_constraints, self.n_demand, self.n_locations, batch_size)
+            self.A_rhs, self.n_constraints, self.n_demand, self.n_locations, batch_size, normalize=True)
 
         # Init tds
         initial_state = TensorDict({
@@ -260,6 +262,7 @@ class MasterPlanningEnv(EnvBase):
             **flatten_values_td(vessel_state, batch_size=batch_size),
             "timestep": time,
             "max_demand": self.capacity.sum().expand(*batch_size, 1) / self.teus.mean(),
+            "env_action": th.zeros(self.action_spec.shape, dtype=self.float_type, device=device),
         }, batch_size=batch_size, device=device,)
 
         # Init tds - full td
@@ -299,7 +302,7 @@ class MasterPlanningEnv(EnvBase):
 
         # Action-related variables
         action = {
-            "action": td["action"].view(*batch_size, self.B, self.D,).clone(),
+            "action": td["observation", "env_action"].view(*batch_size, self.B, self.D,).clone(),
             "lhs_A": td["lhs_A"].view(*batch_size, self.n_constraints, self.B*self.D,).clone(),
             "rhs": td["rhs"].view(*batch_size, self.n_constraints,).clone(),
             "clip_max": td["clip_max"].view(*batch_size, self.B*self.D,).clone(),
@@ -459,7 +462,7 @@ class MasterPlanningEnv(EnvBase):
 
         if not is_done:
             # Update feasibility constraints
-            action_state["lhs_A"] = self.create_lhs_A(lhs_input, time, normalize=True).view(*batch_size, self.n_constraints, locations_shape)
+            action_state["lhs_A"] = self.create_lhs_A(lhs_input, time).view(*batch_size, self.n_constraints, locations_shape)
             action_state["rhs"] = self.create_rhs(
                 next_state_dict["utilization"], current_demand, swap_sign_stability,
                 rhs_input, self.n_constraints, self.n_demand, locations_shape, batch_size, normalize=True)
@@ -487,7 +490,7 @@ class MasterPlanningEnv(EnvBase):
         A[self.n_demand+self.n_locations:self.n_demand + self.n_locations + self.n_stability] *= self.stability_params_lhs.view(self.n_stability, self.B*self.D, 1, self.K,)
         return A.view(self.n_constraints, self.B*self.D, -1)
 
-    def create_lhs_A(self, A:Tensor, time:Tensor, normalize=False) -> Tensor:
+    def create_lhs_A(self, A:Tensor, time:Tensor) -> Tensor:
         """Get A_t based on batch of steps to prevent expanding A_t for each step"""
         steps = self.steps[time]
         output = A[..., steps].permute((2, 0, 1,)).contiguous()
@@ -653,16 +656,6 @@ class MasterPlanningEnv(EnvBase):
         return output.view(-1, self.B*self.D, self.K,)
 
     # Compute functions
-    def _compute_violation(self, lhs_A:Tensor, rhs:Tensor, action:Tensor, batch_size:Tuple) -> Tensor:
-        if lhs_A.dim() == 2:
-            violation = lhs_A @ action.view(*batch_size, -1) - rhs
-        elif lhs_A.dim() == 3:
-            violation = torch.bmm(lhs_A, action.view(*batch_size, -1, 1)) - rhs.unsqueeze(-1)
-        else:
-            raise ValueError("lhs_A has wrong dimensions.")
-
-        return torch.clamp(violation, min=0).view(*batch_size, -1)
-
     def _compute_revenue(self, sum_action:Tensor, demand_state:TensorDict, rev:Tensor) -> Tensor:
         if self.limit_revenue:
             return torch.clamp(sum_action, min=self.zero, max=demand_state["current_demand"]) * rev
@@ -905,7 +898,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         action_state["action"] = th.zeros(self.action_spec.shape, dtype=self.float_type, device=device)
         action_state["clip_min"] = th.zeros(self.action_spec.shape, dtype=self.float_type, device=device)
         action_state["clip_max"] = vessel_state["residual_capacity"].view(*batch_size, self.n_block_locations)
-        action_state["lhs_A"] = self.create_lhs_A(self.block_A_lhs, time, normalize=True).view(*batch_size, self.n_constraints, self.n_block_locations)
+        action_state["lhs_A"] = self.create_lhs_A(self.block_A_lhs, time).view(*batch_size, self.n_constraints, self.n_block_locations)
         action_state["rhs"] = self.create_rhs(
             vessel_state["utilization"].to(self.float_type), current_demand, self.swap_signs_block_stability,
             self.block_A_rhs, self.n_constraints, self.n_demand, self.n_block_locations, batch_size, normalize=True)
