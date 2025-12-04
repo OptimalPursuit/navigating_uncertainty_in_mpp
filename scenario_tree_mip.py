@@ -834,10 +834,10 @@ if __name__ == "__main__":
     parser.add_argument("--ports", type=int, default=4)
     parser.add_argument("--teu", type=int, default=1000) #20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=True)
+    parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=True)
     parser.add_argument("--scenarios", type=int, default=28) # 20
-    parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=True)
+    parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=30)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
@@ -874,6 +874,12 @@ if __name__ == "__main__":
     stochastic_algorithm = parser.stochastic_algorithm
     look_ahead = 1 if stochastic_algorithm == "myopic" else parser.look_ahead
     scenario_range = parser.scenario_range if not generalization else False
+
+    print(f"Stochastic algorithm: {stochastic_algorithm}, Deterministic: {deterministic}, "
+          f"Perfect information: {perfect_information}, Generalization: {generalization}",
+          f"Scenario range: {scenario_range}, Look-ahead: {look_ahead}",
+          f"Ports: {parser.ports}, TEU: {parser.teu}, Episodes: {num_episodes}", sep="\n")
+
     if deterministic:
         num_scenarios = [1]
     elif scenario_range:
