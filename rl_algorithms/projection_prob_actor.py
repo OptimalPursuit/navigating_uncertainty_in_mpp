@@ -250,6 +250,69 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         # This is appropriate for our projection functions, as the actions are transformed globally rather than per element
         return logprob_ # Apply reduction for loss computations. Shape: [Batch]
 
+    # def forward(self, *args, **kwargs,) -> TensorDict:
+    #     if "action" in kwargs:
+    #         out = args[0]
+    #     else:
+    #         out = super().forward(*args, **kwargs)
+    #
+    #     # todo: clean this up later
+    #
+    #     # Raise error for projection layers without log prob adaptation implementations
+    #     if self.projection_type not in ["linear_violation", "linear_violation_policy_clipping", "inner_convex_violation",
+    #                                     "bound_convex_violation", "weighted_scaling_policy_clipping", "none",
+    #                                     "quadratic_program", "convex_program", "convex_program_policy_clipping"]:
+    #         raise ValueError(f"Log prob adaptation for projection type \'{self.projection_type}\' not supported.")
+    #
+    #     # Get distribution
+    #     dist = self.get_dist(out)
+    #     out["unprojected_action"] = out["action"].clone()
+    #     if out["mask"] is not None:
+    #         out["unprojected_masked_action"] = out["unprojected_action"] * out["mask"]
+    #     else:
+    #         out["unprojected_masked_action"] = out["unprojected_action"]
+    #     out["action"] = out["unprojected_masked_action"] / out["observation", "max_demand"]
+    #
+    #     # Get log probabilities
+    #     if self.projection_type in ["policy_clipping", "weighted_scaling_policy_clipping"]:
+    #         # Apply log_prob adjustment of clipping based on https://arxiv.org/pdf/1802.07564v2.pdf
+    #         self.clipped_gaussian.mean = out["loc"]
+    #         self.clipped_gaussian.var = out["scale"]
+    #         self.clipped_gaussian.low = out["clip_min"]
+    #         self.clipped_gaussian.high = out["clip_max"]
+    #         out["log_prob"] = self.clipped_gaussian.log_prob(out["unprojected_action"])
+    #     else:
+    #         out["log_prob"] = self.get_logprobs(out["unprojected_action"], dist)
+    #
+    #     # Mask out the action
+    #     if "action_mask" in out["observation"]:
+    #         out["action"] = torch.where(out["observation", "action_mask"], out["action"], 0)
+    #
+    #     # # Pre-compute upper bound for weighted_scaling
+    #     timestep_idx = out["observation", "timestep"].squeeze(0)
+    #     out["ub"] = out["observation", "realized_demand"].gather(-1, timestep_idx.unsqueeze(-1)).squeeze(-1)
+    #
+    #     # Projection and log probs adjustment
+    #     out["action"] = self.handle_action_projection(out)
+    #     out["observation", "env_action"] = out["action"] * out["observation", "max_demand"]
+    #     jacobian = self.handle_jacobian_adjustment(out)
+    #     out["log_prob"] = self.jacobian_adaptation(out["log_prob"], jacobian=jacobian).clamp(min=-50)
+    #
+    #     # Mask out the action again; after projection
+    #     if "action_mask" in out["observation"]:
+    #         out["action"] = torch.where(out["observation", "action_mask"], out["action"],  1e-6)
+    #         out["log_prob"] = torch.where(out["observation", "action_mask"], out["log_prob"], torch.tensor(-100, device=out["log_prob"].device))
+    #
+    #     if "preload_mask" in out["observation"]:
+    #         hard_mask = out["observation", "preload_mask"].float()
+    #         out["sample_log_prob"] = (out["log_prob"].clamp(min=-20, max=1) * hard_mask).sum(dim=-1)
+    #         return out
+    #
+    #     # Get sample log probabilities for loss computations
+    #     out["sample_log_prob"] = out["log_prob"].sum(dim=-1)
+    #     return out
+
+
     def forward(self, *args, **kwargs,) -> TensorDict:
         if "action" in kwargs:
             out = args[0]
@@ -266,12 +329,6 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
         # Get distribution
         dist = self.get_dist(out)
-        out["unprojected_action"] = out["action"].clone()
-        if out["mask"] is not None:
-            out["unprojected_masked_action"] = out["unprojected_action"] * out["mask"]
-        else:
-            out["unprojected_masked_action"] = out["unprojected_action"]
-        out["action"] = out["unprojected_masked_action"] / out["observation", "max_demand"]
 
         # Get log probabilities
         if self.projection_type in ["policy_clipping", "weighted_scaling_policy_clipping"]:
@@ -280,13 +337,9 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             self.clipped_gaussian.var = out["scale"]
             self.clipped_gaussian.low = out["clip_min"]
             self.clipped_gaussian.high = out["clip_max"]
-            out["log_prob"] = self.clipped_gaussian.log_prob(out["unprojected_action"])
+            out["log_prob"] = self.clipped_gaussian.log_prob(out["action"])
         else:
-            out["log_prob"] = self.get_logprobs(out["unprojected_action"], dist)
-
-        # Mask out the action
-        if "action_mask" in out["observation"]:
-            out["action"] = torch.where(out["observation", "action_mask"], out["action"], 0)
+            out["log_prob"] = self.get_logprobs(out["action"], dist)
 
         # # Pre-compute upper bound for weighted_scaling
         timestep_idx = out["observation", "timestep"].squeeze(0)
@@ -294,20 +347,11 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
         # Projection and log probs adjustment
         out["action"] = self.handle_action_projection(out)
-        out["observation", "env_action"] = out["action"] * out["observation", "max_demand"]
         jacobian = self.handle_jacobian_adjustment(out)
         out["log_prob"] = self.jacobian_adaptation(out["log_prob"], jacobian=jacobian).clamp(min=-50)
 
-        # Mask out the action again; after projection
-        if "action_mask" in out["observation"]:
-            out["action"] = torch.where(out["observation", "action_mask"], out["action"],  1e-6)
-            out["log_prob"] = torch.where(out["observation", "action_mask"], out["log_prob"], torch.tensor(-100, device=out["log_prob"].device))
-
-        if "preload_mask" in out["observation"]:
-            hard_mask = out["observation", "preload_mask"].float()
-            out["sample_log_prob"] = (out["log_prob"].clamp(min=-20, max=1) * hard_mask).sum(dim=-1)
-            return out
-
         # Get sample log probabilities for loss computations
         out["sample_log_prob"] = out["log_prob"].sum(dim=-1)
+        # Out
+        out["observation", "env_action"] = out["action"]
         return out
