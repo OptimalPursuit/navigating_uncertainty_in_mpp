@@ -6,6 +6,7 @@ from tqdm import tqdm
 from tensordict import TensorDict
 from dotmap import DotMap
 from typing import Dict, Optional, Tuple, Union
+from environment.utils import compute_violation
 from rl_algorithms.utils import make_env
 from rl_algorithms.train import get_performance_metrics
 from rl_algorithms.utils import set_unique_seed
@@ -125,16 +126,19 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
                     tensordict=td_r,
                 )
 
-                # Post-process violations
-                zero_idx = torch.where((traj["action"][0] == 0.0) & (traj["clip_max"][0] == 0.0))
-                traj["violation"][0][zero_idx] = 0.0
-
                 # Calculate profit and max revenue
                 profit = traj["profit"][0].sum().item()
                 max_revenue = (test_env.revenues * traj["observation", "realized_demand"][0,0]).sum().item()
 
                 # Feasibility check (same as your logic)
-                violation_adjusted = traj["violation"][0].clone()
+                violation = compute_violation(traj["action"][0], traj["lhs_A"][0], traj["rhs"][0],)
+
+                # Post-process violations
+                zero_idx = torch.where((traj["action"][0] == 0.0) & (traj["clip_max"][0] == 0.0))
+                violation[zero_idx] = 0.0
+
+                # Adjust violations based on delta and next_port_mask
+                violation_adjusted = violation.clone()
                 v_mask = violation_adjusted[:, :-4] < delta
                 violation_adjusted[:, :-4][v_mask] = 0.0
                 violation_adjusted[:, -4:][~test_env.next_port_mask] = 0.0
@@ -144,6 +148,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
                 rollout_info = {
                     "trajectory": traj,
                     "profit": profit,
+                    "violation": violation,
                     "total_violation": total_violation,
                     "feasible": is_feasible,
                     "max_revenue": max_revenue,
@@ -172,7 +177,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
             metrics["max_revenues"][episode] = best["max_revenue"]
 
             # Detailed violation metrics
-            violation_adjusted = trajectory["violation"][0].clone()
+            violation_adjusted = best["violation"]
             v_mask = violation_adjusted[:, :-4] < delta
             violation_adjusted[:, :-4][v_mask] = 0.0
             violation_adjusted[:, -4:][~test_env.next_port_mask] = 0.0
