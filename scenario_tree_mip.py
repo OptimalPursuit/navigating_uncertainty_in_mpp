@@ -94,17 +94,34 @@ def get_scenario_tree_indices(scenario_tree:Dict, num_scenarios:int, real_out_tr
     return filtered_tree
 
 # Support functions
-def get_demand_history(stage:int, demand:np.array, stage_nodes:Dict, real_out_tree:bool=True) -> np.array:
-    """Get the demand history up to the given stage for the given scenario"""
-    if stage > 0:
-        demand_history = []
-        for s in range(stage):
-            for node_id in stage_nodes[s][1:]if real_out_tree else stage_nodes[s][:-1]:
-                demand_history.append(demand[s, node_id].flatten())
-        return np.array(demand_history)
-    else:
-        # If there's no history (stage 0), return an empty array or some other initialization
-        return np.array([])  # Or use np.zeros((shape,))
+def get_demand_history(stage: int,
+                       node_id: int,
+                       demand: np.ndarray,
+                       parent: Dict[Tuple[int,int], Optional[Tuple[int,int]]]
+                       ) -> np.ndarray:
+    """History of realized demand along the path to (stage, node_id) up to 'stage' (excluded)."""
+    history = []
+    s, n = stage, node_id
+    # walk backwards through parents
+    while s > 0:
+        s_prev, n_prev = parent[(s, n)]
+        history.append(demand[s_prev, n_prev].flatten())
+        s, n = s_prev, n_prev
+    history.reverse()
+    return np.concatenate(history) if history else np.array([])
+
+
+# def get_demand_history(stage:int, demand:np.array, stage_nodes:Dict, real_out_tree:bool=True) -> np.array:
+#     """Get the demand history up to the given stage for the given scenario"""
+#     if stage > 0:
+#         demand_history = []
+#         for s in range(stage):
+#             for node_id in stage_nodes[s][1:]if real_out_tree else stage_nodes[s][:-1]:
+#                 demand_history.append(demand[s, node_id].flatten())
+#         return np.array(demand_history)
+#     else:
+#         # If there's no history (stage 0), return an empty array or some other initialization
+#         return np.array([])  # Or use np.zeros((shape,))
 
 def onboard_groups(ports:int, pol:int, transport_indices:list) -> np.array:
     load_index = np.array([transport_indices.index((pol, i)) for i in range(ports) if i > pol])  # List of cargo groups to load
@@ -125,8 +142,41 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
     # Build mapping: stage -> list of node_ids
     stage_nodes = {s: [] for s in range(stages)}
-    for (s, n) in node_list:
-        stage_nodes[s].append(n)
+
+    for s, n in node_list:
+        if s == 0:
+            # Always keep root nodes
+            stage_nodes[0].append(n)
+            continue
+        if stochastic_algorithm == 'multi_stage':
+            # Keep nodes 1..(scenarios_per_stage**s - 1)
+            if 0 <= n <= scenarios_per_stage ** s - 1:
+                stage_nodes[s].append(n)
+        elif stochastic_algorithm in ('mpc', 'rolling_horizon', 'myopic'):
+            # Keep nodes 1..(scenarios_per_stage**s)
+            if 0 < n <= scenarios_per_stage ** s:
+                stage_nodes[s].append(n)
+        else:
+            raise ValueError(f"Unknown stochastic_algorithm: {stochastic_algorithm}")
+
+    # Build parent mapping: (stage, node) -> (stage-1, parent_node)
+    parent = {}
+    for s in range(stages):
+        nodes = stage_nodes[s]
+        if s == 0:
+            for n in nodes:
+                parent[(s, n)] = None
+        else:
+            prev_nodes = stage_nodes[s - 1]
+            n_curr = len(nodes)
+            n_prev = len(prev_nodes)
+            if n_prev == 0:
+                raise ValueError(f"No nodes at stage {s - 1}, cannot assign parents for stage {s}.")
+
+            # Even if branching is uneven, assign parents sequentially in order
+            for idx, n in enumerate(nodes):
+                p = prev_nodes[min(idx // max(1, n_curr // n_prev), n_prev - 1)]
+                parent[(s, n)] = (s - 1, p)
 
     # Problem parameters
     P = env.P
@@ -196,10 +246,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
             # Get actual nodes at this stage
             node_ids = stage_nodes[stage]
-            if stochastic_algorithm == 'multi_stage' and stage > 0:
-                node_ids = stage_nodes[stage][:-1]  # Remove last node
-            elif stochastic_algorithm in ['mpc', 'rolling_horizon', 'myopic'] and stage > 0:
-                node_ids = stage_nodes[stage][1:] # Remove first node (realized outcome)
             for node_id in node_ids:
                 # Crane intensity:
                 CI[stage, node_id] = mdl.continuous_var(name=f'CI_{start_stage}_{stage}_{node_id}', lb=0)
@@ -245,11 +291,6 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
             # Get actual nodes at this stage
             node_ids = stage_nodes[stage]
-            if stochastic_algorithm == 'multi_stage' and stage > 0:
-                node_ids = stage_nodes[stage][:-1]  # Remove last node
-            elif stochastic_algorithm in ['mpc', 'rolling_horizon', 'myopic'] and stage > 0:
-                node_ids = stage_nodes[stage][1:] # Remove first node (realized outcome)
-
             for node_id in node_ids:
                 for (i, j) in load_moves:
                     for k in range(K):
@@ -268,22 +309,22 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                                           for (i, j) in on_board) for k in range(K))
                                 <= capacity[b, d, bl], ctname=f'capacity_{stage}_{node_id}_{b}_{d}_{bl}'
                             )
-                            if not perfect_information and stochastic_algorithm not in ['rolling_horizon', 'myopic']:
-                                demand_history1 = get_demand_history(stage - start_stage, demand, stage_nodes, real_out_tree=real_out_tree)
-                                # Loop only over REAL nodes in the same stage
-                                for node_id2 in node_ids:
-                                    if node_id2 <= node_id:
-                                        continue
 
-                                    demand_history2 = get_demand_history(stage - start_stage, demand, stage_nodes, real_out_tree=real_out_tree)
-                                    if np.allclose(demand_history1, demand_history2, atol=1e-5):  # Use a tolerance if floats
-                                        for k in range(K):
-                                            for (i, j) in load_moves:
-                                                # Non-anticipation at stage, provided demand history is similar
-                                                mdl.add_constraint(
-                                                    x[stage, node_id, b, d, bl, k, i, j] == x[stage, node_id2, b, d, bl, k, i, j],
-                                                    ctname=f'non_anticipation_{stage}_{node_id}_{node_id2}_{b}_{d}_{bl}_{k}_{i}_{j}'
-                                                )
+                            if (not perfect_information and stochastic_algorithm not in ['rolling_horizon', 'myopic']
+                                    and stage > start_stage):
+
+                                for idx1, node_id1 in enumerate(node_ids):
+                                    h1 = get_demand_history(stage, node_id1, demand, parent)
+                                    for node_id2 in node_ids[idx1 + 1:]:
+                                        h2 = get_demand_history(stage, node_id2, demand, parent)
+                                        if np.allclose(h1, h2, atol=1e-5):
+                                            for k in range(K):
+                                                for (i, j) in load_moves:
+                                                    # Non-anticipation at stage, provided demand history is similar
+                                                    mdl.add_constraint(
+                                                        x[stage, node_id, b, d, bl, k, i, j] == x[stage, node_id2, b, d, bl, k, i, j],
+                                                        ctname=f'non_anticipation_{stage}_{node_id}_{node_id2}_{b}_{d}_{bl}_{k}_{i}_{j}'
+                                                    )
 
                         # Open hatch (d=1 is below deck)
                         mdl.add_constraint(
@@ -748,7 +789,7 @@ if __name__ == "__main__":
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=True)
-    parser.add_argument("--scenarios", type=int, default=28) # 20
+    parser.add_argument("--scenarios", type=int, default=12) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=30)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
