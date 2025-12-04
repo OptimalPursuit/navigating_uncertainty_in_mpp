@@ -231,15 +231,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                    look_ahead:int=2, block_mpp:bool=False, strict_no_overstow:bool=False, real_out_tree:bool=False) -> None:
         """Function to build the scenario tree; with decisions and constraints for each node"""
         demand = copy.deepcopy(input_demand)
-        print("Demand in build_tree:")
-        print(demand.keys())
-        breakpoint()
-
-        # todo: ensure demand realization from node 0 is properly handled
-        #  Now non-anticipativity constraints are only added if demand histories are similar
 
         for stage in range(start_stage, start_stage + stages):
-
             # Define sets at current stage/port
             on_board, port_moves, load_moves = onboard_groups(P, stage, transport_indices)
             prev_on_board, _, _ = onboard_groups(P, stage-1, transport_indices) if stage > 0 else ([], [], [])
