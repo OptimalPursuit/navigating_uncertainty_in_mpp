@@ -72,7 +72,8 @@ def loss_feasibility(td:TensorDictBase, action:Tensor, lagrange_multiplier:Optio
     lhs_A = td.get("lhs_A")
     rhs = td.get("rhs")
     excess_pod_locations = td["observation"].get("excess_pod_locations", None)
-    excess_pod_locations /= excess_pod_locations.shape[1] * excess_pod_locations.shape[2]  # normalize by steps and num locations
+    if excess_pod_locations is not None:
+        excess_pod_locations /= excess_pod_locations.shape[1] * excess_pod_locations.shape[2]  # normalize by steps and num locations
     violations = compute_violation(action, lhs_A, rhs)
     weighted_violations = weight_violations(violations, lagrange_multiplier)
 
@@ -233,7 +234,7 @@ class FeasibilitySACLoss(SACLoss):
         ), self.actor_network_params.to_module(self.actor_network):
             dist = self.actor_network.get_dist(tensordict)
             tensordict["action"] = dist.rsample()
-            if "mask" in tensordict:
+            if "preload_mask" in tensordict["observation"]:
                 hard_mask = tensordict["observation", "preload_mask"].float()
                 tensordict["action"] = tensordict["action"] * hard_mask
         tensordict = self.actor_network(tensordict) # Perform projection
