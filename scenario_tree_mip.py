@@ -112,18 +112,6 @@ def get_demand_history(stage: int,
     return np.concatenate(history) if history else np.array([])
 
 
-# def get_demand_history(stage:int, demand:np.array, stage_nodes:Dict, real_out_tree:bool=True) -> np.array:
-#     """Get the demand history up to the given stage for the given scenario"""
-#     if stage > 0:
-#         demand_history = []
-#         for s in range(stage):
-#             for node_id in stage_nodes[s][1:]if real_out_tree else stage_nodes[s][:-1]:
-#                 demand_history.append(demand[s, node_id].flatten())
-#         return np.array(demand_history)
-#     else:
-#         # If there's no history (stage 0), return an empty array or some other initialization
-#         return np.array([])  # Or use np.zeros((shape,))
-
 def onboard_groups(ports:int, pol:int, transport_indices:list) -> np.array:
     load_index = np.array([transport_indices.index((pol, i)) for i in range(ports) if i > pol])  # List of cargo groups to load
     load = np.array([transport_indices[idx] for idx in load_index]).reshape((-1,2))
@@ -438,6 +426,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                             mdl.add_constraint(
                                 mdl.sum(PD[stage, node_id, b, bl, j] for j in range(P)) <= 1, ctname=f'max_pod_{stage}_{node_id}_{b}_{bl}'
                             )
+
+                # todo: Mixing bays constraints (optional)
                 #         # Get mixing bay
                 #         mdl.add_constraint(
                 #             mdl.sum(PD[stage, node_id, b, bl, j] for j in range(P)) <= 1 + M*mixing[stage, node_id, b, bl]
@@ -776,7 +766,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             "scenarios":scenarios_per_stage,
             # Solver results
             "obj":obj,
-            "solver_time":time,
+            "solver_time":solver_time,
             "time":wallclock_time,
             "gap":gap,
             # Solution metrics
