@@ -498,7 +498,7 @@ class MasterPlanningEnv(EnvBase):
 
     def create_rhs(self, utilization:Tensor, current_demand:Tensor,
                    swap_signs_stability:Tensor, input_A:Tensor,
-                   n_constraints:int, n_demand:int, n_locations:int, batch_size:Tuple, normalize=False) -> Tensor:
+                   n_constraints:int, n_demand:int, n_locations:int, batch_size:Tuple, normalize=True) -> Tensor:
         """Create b_t based on current utilization:
         - b_t = [current_demand, capacity, LM_ub, LM_lb, VM_ub, VM_lb]
         - demand -> stepwise current demand [#]
