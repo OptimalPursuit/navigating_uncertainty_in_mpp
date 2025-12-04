@@ -913,9 +913,9 @@ if __name__ == "__main__":
         t2 = tqdm(num_scenarios, desc="Scenarios", unit="scen", leave=False)
         for scen in t2:
             # Filter sub-tree for the number of scenarios
-            scen += int(stochastic_algorithm in {"mpc", "rolling_horizon", "myopic"})
+            scen_sub_tree = scen + int(stochastic_algorithm in {"mpc", "rolling_horizon", "myopic"})
             real_out_tree = stochastic_algorithm in {"mpc", "rolling_horizon", "myopic"}
-            demand_sub_tree = get_scenario_tree_indices(demand_tree, scen, real_out_tree=real_out_tree,)
+            demand_sub_tree = get_scenario_tree_indices(demand_tree, scen_sub_tree, real_out_tree=real_out_tree,)
 
             # Run the main logic and get results and variables
             result, var = main(env=env, demand=demand_sub_tree, scenarios_per_stage=scen, stages=stages,
