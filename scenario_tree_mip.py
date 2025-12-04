@@ -231,6 +231,9 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                    look_ahead:int=2, block_mpp:bool=False, strict_no_overstow:bool=False, real_out_tree:bool=False) -> None:
         """Function to build the scenario tree; with decisions and constraints for each node"""
         demand = copy.deepcopy(input_demand)
+        print("Demand in build_tree:")
+        print(demand.keys())
+        breakpoint()
 
         # todo: ensure demand realization from node 0 is properly handled
         #  Now non-anticipativity constraints are only added if demand histories are similar
@@ -836,14 +839,14 @@ if __name__ == "__main__":
     parser.add_argument("--teu", type=int, default=1000) #20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
+    parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=True)
     parser.add_argument("--scenarios", type=int, default=28) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=30)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
     parser.add_argument("--look_ahead", type=int, default=4)  # only for rolling horizon
-    parser.add_argument("--stochastic_algorithm", type=str, default="multi_stage") # rolling_horizon, myopic, multi_stage, mpc
+    parser.add_argument("--stochastic_algorithm", type=str, default="mpc") # rolling_horizon, myopic, multi_stage, mpc
     parser = parser.parse_args()
 
     # Load the configuration file
@@ -886,7 +889,7 @@ if __name__ == "__main__":
     # Precompute largest scenario tree
     stages = config.env.ports - 1  # Number of load ports (P-1)
     teu = config.env.teu
-    max_scenarios_per_stage = max(num_scenarios) if max(num_scenarios) > 28 else 28
+    max_scenarios_per_stage = max(num_scenarios) + 1 if max(num_scenarios) > 28 else 28
     # Number of scenarios per stage
     max_paths = max_scenarios_per_stage ** (stages-1) if not deterministic else 1
     node_list = precompute_node_list(stages, max_scenarios_per_stage, deterministic)
