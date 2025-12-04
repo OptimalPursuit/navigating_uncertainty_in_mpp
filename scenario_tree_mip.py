@@ -879,12 +879,7 @@ if __name__ == "__main__":
     if deterministic:
         num_scenarios = [1]
     elif scenario_range:
-        if stochastic_algorithm == "multi_stage":
-            num_scenarios = list(range(4, parser.scenarios + 1, 4))
-        elif stochastic_algorithm in ["mpc"]:
-            num_scenarios = [1, 3, 5, 10]
-        else:
-            raise ValueError("Scenario range only supported for multi_stage and mpc algorithms")
+        num_scenarios = list(range(4, parser.scenarios + 1, 4))
     else:
         num_scenarios = [parser.scenarios]
 
