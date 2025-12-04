@@ -834,7 +834,7 @@ if __name__ == "__main__":
     parser.add_argument("--ports", type=int, default=4)
     parser.add_argument("--teu", type=int, default=1000) #20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
+    parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=True)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=True)
     parser.add_argument("--scenarios", type=int, default=28) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=True)
@@ -842,7 +842,7 @@ if __name__ == "__main__":
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
     parser.add_argument("--look_ahead", type=int, default=4)  # only for rolling horizon
-    parser.add_argument("--stochastic_algorithm", type=str, default="mpc") # rolling_horizon, myopic, multi_stage, mpc
+    parser.add_argument("--stochastic_algorithm", type=str, default="multi_stage") # rolling_horizon, myopic, multi_stage, mpc
     parser = parser.parse_args()
 
     # Load the configuration file
@@ -904,8 +904,8 @@ if __name__ == "__main__":
     running_count = 0
 
     # setup folder
-    if not os.path.exists(f"{output_path}/{stochastic_algorithm}/"):
-        os.makedirs(f"{output_path}/{stochastic_algorithm}/")
+    if not os.path.exists(f"{output_path}/{stochastic_algorithm}/instances/"):
+        os.makedirs(f"{output_path}/{stochastic_algorithm}/instances/")
 
     t = tqdm(range(num_episodes), desc="Episodes", unit="ep")
     for x in t:
@@ -969,7 +969,7 @@ if __name__ == "__main__":
                 t2.set_description(f"Episodes (avg obj={avg_obj:.2f})")
 
             # Save results in json
-            with open(f"{output_path}/results_scenario_tree_teu{teu}_p{stages}_"
+            with open(f"{output_path}/{stochastic_algorithm}/instances/results_scenario_tree_teu{teu}_p{stages}_"
                       f"e{x}_s{scen}_alg{stochastic_algorithm}"
                       f"_gen{generalization}.json", "w") as json_file:
                 json.dump(result, json_file, indent=4)
