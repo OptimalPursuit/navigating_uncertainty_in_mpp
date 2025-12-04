@@ -10,7 +10,7 @@ LOG_FILE="output_files/output.log"
 
 # Run the Python script in the background with nohup, logging output to the specified file
 echo "Starting the script in the background..."
-nohup python3 "$SCRIPT_PATH" > "$LOG_FILE" 2>&1 &
+nohup python3 "$SCRIPT_PATH" "$@" > "$LOG_FILE" 2>&1 &
 
 # Capture the process ID of the last background command
 PID=$!
