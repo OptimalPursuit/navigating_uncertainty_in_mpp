@@ -21,16 +21,16 @@ env:
   bays: 10 #10, 20
   blocks: 2
   capacity:
-  - 500 # 50, 500
+  - 50 # 50, 500
   cargo_classes: 6
   customer_classes: 2
-  cv_demand: 0.5 #1.0 # todo: try different standard deviations of demand with Normal dist - 0.5, 1.0, 1.5 (RH gets closer to NA!)
+  cv_demand: 0.5 #1.0
   decks: 2
-  demand_uncertainty: true
-  demand_sparsity: 0.3
-  demand_perturbation: 0.15
+  demand_sparsity: 0.0
+  demand_perturbation: 0.2
   distribution: lognormal # normal, uniform, poisson, lognormal, fixed
   dirichlet_alpha: 0.3
+  duration_variable_revenue: False # only true AI2STOW
   env_name: mpp #block_mpp #mpp
   episode_order: standard
   generalization: false
@@ -40,15 +40,15 @@ env:
   iid_demand: true
   include_reefers: false
   limit_revenue: true
-  loading_discharge_region: true
+  loading_discharge_region: false
   long_crane_costs: 0.5
   normalize_obs: true
-  ports: 6
+  ports: 4
   seed: 42
   spot_percentage: 0.3
   stability_difference: 0.1
-  use_dirichlet_partition: true
-  utilization_rate_initial_demand: 1.1 #0.7, 0.9, 1.1., 1.3, 1.5
+  use_dirichlet_partition: false
+  utilization_rate_initial_demand: 1.1 #0.7, 0.9, 1.1., 1.3, 1.5 
   weight_classes: 3
 model:
   batch_size: 64

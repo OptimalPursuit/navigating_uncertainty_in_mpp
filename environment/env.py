@@ -76,11 +76,10 @@ class MasterPlanningEnv(EnvBase):
         ## Sets and Parameters:
         self._precompute_transport_sets()
         self._initialize_capacity(*kwargs.get("capacity"))
-        self.revenues_matrix = self._precompute_revenues()
+        self.revenues_matrix = self._precompute_revenues(duration_variable_revenue=kwargs.get("duration_variable_revenue", False))
         self._initialize_stability()
         self._initialize_step_parameters()
         self._initialize_constraints()
-
 
     def _make_spec(self, td:TensorDict = None) -> None:
         """Define the specs for observations, actions, rewards, and done flags."""
@@ -574,7 +573,7 @@ class MasterPlanningEnv(EnvBase):
         moves_idx = self.moves_idx[pol]
         return load_idx, disc_idx, moves_idx
 
-    def _precompute_revenues(self, reduce_long_revenue:float=0.3, duration_variable_revenue:bool=True) -> Tensor:
+    def _precompute_revenues(self, reduce_long_revenue:float=0.3, duration_variable_revenue:bool=False) -> Tensor:
         """Precompute matrix of revenues with shape [K, T]"""
         # Initialize revenues and pod_grid
         revenues = th.zeros((self.K, self.P, self.P), device=self.device, dtype=self.float_type) # Shape: [K, P, P]
