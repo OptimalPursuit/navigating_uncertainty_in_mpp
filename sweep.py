@@ -120,40 +120,40 @@ if __name__ == "__main__":
                         if f'lagrangian_multiplier_{i}' not in sweep_config:
                             raise ValueError(f"Missing lagrangian_multiplier_{i} in sweep configuration")
 
-            # Model hyperparameters
-            # config['model']['num_heads'] = sweep_config.num_heads
-            # config['model']['dropout_rate'] = sweep_config.dropout_rate
-            # config['model']['normalization'] = sweep_config.normalization
-            config['model']['hidden_dim'] = sweep_config.hidden_dim
-            config['model']['embed_dim'] = sweep_config.embed_dim
-            config['model']['num_encoder_layers'] = sweep_config.num_encoder_layers
-            config['model']['num_decoder_layers'] = sweep_config.num_decoder_layers
-            config['model']['batch_size'] = sweep_config.batch_size
-            config['model']['scale_max'] = sweep_config.scale_max
-            config['model']['temperature'] = sweep_config.temperature
-            config['model']['tau_sinkhorn'] = sweep_config.tau_sinkhorn
-            config['model']['iters_sinkhorn'] = sweep_config.iters_sinkhorn
-
-            # # PPO hyperparameters
-            # config['algorithm']['ppo_epochs'] = sweep_config.ppo_epochs
-            # config['algorithm']['mini_batch_size'] = sweep_config.mini_batch_size
-            # config['algorithm']['entropy_lambda'] = sweep_config.entropy_lambda
-
-            # # AM-PPO hyperparameters
-            config['algorithm']['feasibility_lambda'] = sweep_config.feasibility_lambda
-            config['training']['lr'] = sweep_config.lr
-            config['training']['projection_kwargs']['alpha'] = sweep_config.alpha
-            config['training']['projection_kwargs']['delta'] = sweep_config.delta
-            config['training']['projection_kwargs']['max_iter'] = sweep_config.max_iter
+            # # Model hyperparameters
+            # # config['model']['num_heads'] = sweep_config.num_heads
+            # # config['model']['dropout_rate'] = sweep_config.dropout_rate
+            # # config['model']['normalization'] = sweep_config.normalization
+            # config['model']['hidden_dim'] = sweep_config.hidden_dim
+            # config['model']['embed_dim'] = sweep_config.embed_dim
+            # config['model']['num_encoder_layers'] = sweep_config.num_encoder_layers
+            # config['model']['num_decoder_layers'] = sweep_config.num_decoder_layers
+            # config['model']['batch_size'] = sweep_config.batch_size
+            # config['model']['scale_max'] = sweep_config.scale_max
+            # config['model']['temperature'] = sweep_config.temperature
+            # config['model']['tau_sinkhorn'] = sweep_config.tau_sinkhorn
+            # config['model']['iters_sinkhorn'] = sweep_config.iters_sinkhorn
+            #
+            # # # PPO hyperparameters
+            # # config['algorithm']['ppo_epochs'] = sweep_config.ppo_epochs
+            # # config['algorithm']['mini_batch_size'] = sweep_config.mini_batch_size
+            # # config['algorithm']['entropy_lambda'] = sweep_config.entropy_lambda
+            #
+            # # # AM-PPO hyperparameters
+            # config['algorithm']['feasibility_lambda'] = sweep_config.feasibility_lambda
+            # config['training']['lr'] = sweep_config.lr
+            # config['training']['projection_kwargs']['alpha'] = sweep_config.alpha
+            # config['training']['projection_kwargs']['delta'] = sweep_config.delta
+            # config['training']['projection_kwargs']['max_iter'] = sweep_config.max_iter
             # config['training']['projection_kwargs']['scale'] = sweep_config.scale
             # config['training']['pd_lr'] = sweep_config.pd_lr
 
-            # # Algorithm hyperparameters
-            # for i in range(n_constraints):
-            #     config['algorithm'][f'lagrangian_multiplier_{i}'] = sweep_config[f'lagrangian_multiplier_{i}']
-            #     # Error handling for missing lagrangian multipliers
-            #     if f'lagrangian_multiplier_{i}' not in sweep_config:
-            #         raise ValueError(f"Missing lagrangian_multiplier_{i} in sweep configuration")
+            # Algorithm hyperparameters
+            for i in range(n_constraints):
+                config['algorithm'][f'lagrangian_multiplier_{i}'] = sweep_config[f'lagrangian_multiplier_{i}']
+                # Error handling for missing lagrangian multipliers
+                if f'lagrangian_multiplier_{i}' not in sweep_config:
+                    raise ValueError(f"Missing lagrangian_multiplier_{i} in sweep configuration")
 
 
             # Call your main() function
