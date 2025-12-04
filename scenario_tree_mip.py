@@ -876,11 +876,6 @@ if __name__ == "__main__":
     look_ahead = 1 if stochastic_algorithm == "myopic" else parser.look_ahead
     scenario_range = parser.scenario_range if not generalization else False
 
-    print(f"Stochastic algorithm: {stochastic_algorithm}, Deterministic: {deterministic}, "
-          f"Perfect information: {perfect_information}, Generalization: {generalization}",
-          f"Scenario range: {scenario_range}, Look-ahead: {look_ahead}",
-          f"Ports: {parser.ports}, TEU: {parser.teu}, Episodes: {num_episodes}", sep="\n")
-
     if deterministic:
         num_scenarios = [1]
     elif scenario_range:
