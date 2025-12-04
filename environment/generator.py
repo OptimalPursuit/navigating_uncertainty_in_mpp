@@ -72,7 +72,6 @@ class MPP_Generator(Generator):
         ])
         self.iid_demand = kwargs.get("iid_demand", True)
         self.generalization = kwargs.get("generalization", False)
-        self.demand_uncertainty = kwargs.get("demand_uncertainty", False)
         self.cv_demand = kwargs.get("cv_demand", 0.5)
         self.demand_sparsity = kwargs.get("demand_sparsity", 0.5)
         self.demand_perturbation = kwargs.get("demand_perturbation", 0.1)
