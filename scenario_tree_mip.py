@@ -13,6 +13,7 @@ import argparse
 from typing import List, Dict, Tuple, Optional, Any
 from tqdm.auto import tqdm
 import copy
+import time
 
 path = 'add path to cplex here'
 sys.path.append(path)
@@ -136,6 +137,10 @@ def onboard_groups(ports:int, pol:int, transport_indices:list) -> np.array:
 def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=3, max_paths:int=784, seed:int=42,
          perfect_information:bool=False, deterministic:bool=False, algorithm:str='multi_stage', warm_solution:bool=False,
          look_ahead:int=2, print_results:bool=False) -> Tuple[Dict, Dict]:
+
+    # Wallclock time:
+    t_start = time.perf_counter()
+
     # Scenario tree parameters
     M = 10 ** 3 # Big M
     num_nodes_per_stage = [1*scenarios_per_stage**stage for stage in range(stages)]
@@ -158,6 +163,13 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                 stage_nodes[s].append(n)
         else:
             raise ValueError(f"Unknown stochastic_algorithm: {stochastic_algorithm}")
+
+    # Choose a realized node for each stage (here: first node at that stage)
+    realized_node = {}
+    for s in range(stages):
+        if not stage_nodes[s]:
+            raise ValueError(f"No nodes at stage {s}")
+        realized_node[s] = 0
 
     # Build parent mapping: (stage, node) -> (stage-1, parent_node)
     parent = {}
@@ -245,7 +257,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         for stage in range(start_stage, start_stage + stages):
 
             # Get actual nodes at this stage
-            node_ids = stage_nodes[stage]
+            node_ids = stage_nodes[stage - start_stage]
             for node_id in node_ids:
                 # Crane intensity:
                 CI[stage, node_id] = mdl.continuous_var(name=f'CI_{start_stage}_{stage}_{node_id}', lb=0)
@@ -290,7 +302,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             prev_on_board, _, _ = onboard_groups(P, stage-1, transport_indices) if stage > 0 else ([], [], [])
 
             # Get actual nodes at this stage
-            node_ids = stage_nodes[stage]
+            node_ids = stage_nodes[stage - start_stage]
             for node_id in node_ids:
                 for (i, j) in load_moves:
                     for k in range(K):
@@ -480,21 +492,23 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             # Freeze previous solution x_{t-1} to current solution x_t
             if t > 0:
                 prev_stage = t - 1
+                prev_node = realized_node[prev_stage]
+                curr_node = realized_node[t]
                 for b in range(B):
                     for bl in range(BL):
                         for d in range(D):
                             for k in range(K):
-                                # All origins that existed up to previous stage
                                 for i in range(prev_stage + 1):
                                     for j in range(i + 1, P):
                                         if j == t:
-                                            # Everything with pod = current port must be discharged
                                             lb = ub = 0.0
                                         else:
-                                            val = rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j]
+                                            val = rolling_horizon_x[prev_stage, prev_node, b, d, bl, k, i, j]
                                             lb = ub = val
-                                        x[t, 0, b, d, bl, k, i, j].set_lb(lb)
-                                        x[t, 0, b, d, bl, k, i, j].set_ub(ub)
+                                        key = (t, curr_node, b, d, bl, k, i, j)
+                                        if key in x:
+                                            x[key].set_lb(lb)
+                                            x[key].set_ub(ub)
 
             # Build the scenario tree for the current horizon
             build_tree(rh_stages, demand, warm_solution, start_stage=t, look_ahead=rh_stages, block_mpp=block_mpp)
@@ -511,17 +525,17 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             if solution is None:
                 raise RuntimeError(f"No solution found at stage {t}")
 
-            # Apply the first-stage decision
             # Extract current stage decisions
-            rolling_horizon_CM[t, 0] = CM[(t, 0)].solution_value
+            node = realized_node[t]
+            rolling_horizon_CM[t, node] = CM[(t, node)].solution_value
             for b in range(B):
                 for bl in range(BL):
-                    rolling_horizon_HO[t, 0, b, bl] = HO[(t, 0, b, bl)].solution_value
+                    rolling_horizon_HO[t, node, b, bl] = HO[(t, node, b, bl)].solution_value
                     for d in range(D):
                         for k in range(K):
                             for i in range(t + 1):  # all origins so far
                                 for j in range(i + 1, P):  # all destinations
-                                    rolling_horizon_x[t, 0, b, d, bl, k, i, j] = x[(t, 0, b, d, bl, k, i, j)].solution_value
+                                    rolling_horizon_x[t, node, b, d, bl, k, i, j] = x[(t, node, b, d, bl, k, i, j)].solution_value
 
         # Compute objective over all current stage decisions
         objective_expr = final_objective(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_, stages)
@@ -588,20 +602,40 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         elif stochastic_algorithm in ["mpc", "rolling_horizon", "myopic"]:
             h_start = start_stage
             h_end = min(stages, h_start + look_ahead)
+            terms = []
 
-            objective = mdl.sum(
-                (1.0 / num_nodes_per_stage[s - h_start]) * (
-                        revenue_term(s, n, True)
-                        - ho_cost_term(s, n, True)
+            for s in range(h_start, h_end):
+                # local index within the receding horizon
+                h = s - h_start
+                node_ids = stage_nodes[h]
+
+                if h == 0:
+                    # Root of the prediction horizon: deterministic realization (scenario 0)
+                    if 0 not in node_ids:
+                        raise RuntimeError(f"Root node 0 not in stage_nodes[{h}] for stage {s}")
+                    n = 0
+                    terms.append(
+                        revenue_term(s, n, with_blocks=True)
+                        - ho_cost_term(s, n, with_blocks=True)
                         - cm_cost_term(s, n)
-                )
-                for s in range(h_start, h_end)
-                for n in (
-                    range(num_nodes_per_stage[s - h_start])  # stage == start
-                    if s == start_stage
-                    else range(1, num_nodes_per_stage[s - h_start] + 1)  # stage > start
-                )
-            )
+                    )
+                else:
+                    # Future stages: only planning scenarios (exclude realization 0)
+                    planning_nodes = [n for n in node_ids if n != 0]
+                    if not planning_nodes:
+                        continue
+
+                    p = 1.0 / len(planning_nodes)
+                    for n in planning_nodes:
+                        terms.append(
+                            p * (
+                                    revenue_term(s, n, with_blocks=True)
+                                    - ho_cost_term(s, n, with_blocks=True)
+                                    - cm_cost_term(s, n)
+                            )
+                        )
+
+            objective = mdl.sum(terms)
 
         else:
             raise ValueError(f"Invalid stochastic algorithm: {stochastic_algorithm}")
@@ -644,16 +678,19 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
     else:
         raise ValueError("Invalid stochastic algorithm")
 
+    elapsed = t_start - time.perf_counter()  # BUG, fix below
+
     # Print the solution # todo: fix this properly for mpp and block_mpp; now set to block_mpp
     if solution:
         if "objective_value" in solution:
             obj = solution.get("objective_value", None)
-            time = solution.get("time", None)
+            solver_time = solution.get("time", None)
             gap = solution.get("gap", None)
         else:
             obj = solution.objective_value
-            time = mdl.solve_details.time
+            solver_time = mdl.solve_details.time
             gap = mdl.solve_details.mip_relative_gap
+        wallclock_time = elapsed
 
         # Analyze the solution
         x_ = np.zeros((stages, max_paths, B, D, BL, K, P, P), dtype=float)
@@ -739,7 +776,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             "scenarios":scenarios_per_stage,
             # Solver results
             "obj":obj,
-            "time":time,
+            "solver_time":time,
+            "time":wallclock_time,
             "gap":gap,
             # Solution metrics
             "mean_load_per_port":mean_load_per_port.tolist(),
@@ -788,8 +826,8 @@ if __name__ == "__main__":
     parser.add_argument("--teu", type=int, default=1000) #20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=True)
-    parser.add_argument("--scenarios", type=int, default=12) # 20
+    parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
+    parser.add_argument("--scenarios", type=int, default=28) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=30)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
