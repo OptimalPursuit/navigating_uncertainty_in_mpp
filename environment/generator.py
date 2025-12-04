@@ -160,7 +160,7 @@ class MPP_Generator(Generator):
             bound = self._initialize_demand_bound_on_capacity(batch_size)
             e_x_init_demand, _ = self._generate_initial_moments(batch_size, bound, self.cv)
             batch_updates = th.zeros(batch_size, device=self.device).view(*batch_size, 1)
-            self.train_max_demand = self.demand_upper_bound(e_x_init_demand, self.cv_demand, sigmas=3.0) # Demand normalization (99.7%ile)
+            self.train_max_demand = self._get_ub_demand_normalization(e_x_init_demand)
         else:
             e_x_init_demand = td["observation", "init_expected_demand"].view(-1, self.T, self.K)
             batch_updates = td["observation", "batch_updates"].clone() + 1
@@ -285,6 +285,11 @@ class MPP_Generator(Generator):
     def demand_upper_bound(self, mu: th.Tensor, CV: float = 1.0, sigmas: float = 4.0) -> th.Tensor:
         sigma = mu * CV
         return mu + sigmas * sigma  # μ + 3σ
+
+    def _get_ub_demand_normalization(self, bound:th.Tensor, eps:float=1e-2) -> th.Tensor:
+        """Get upper bound for demand normalization"""
+        return (2 * bound).max()
+
 
 class UniformMPP_Generator(MPP_Generator):
     """Subclass for generating demand for stowage plans using uniform distribution."""
