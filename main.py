@@ -248,11 +248,9 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
 def parse_args():
     parser = argparse.ArgumentParser(description="Script with WandB integration.")
     # Environment parameters
-    parser.add_argument('--env_name', type=str, default='block_mpp', help="Name of the environment.")
+    parser.add_argument('--env_name', type=str, default='mpp', help="Name of the environment.")
     parser.add_argument('--ports', type=int, default=4, help="Number of ports in env.")
-    parser.add_argument('--bays', type=int, default=20, help="Number of bays in env.")
-    parser.add_argument('--capacity', type=list, default=[500], help="Capacity of each bay in TEU.")
-    parser.add_argument('--teu', type=int, default=20000, help="Random seed for reproducibility.")
+    parser.add_argument('--teu', type=int, default=1000, help="Random seed for reproducibility.")
     parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
     parser.add_argument('--ur', type=float, default=1.1)
     parser.add_argument('--cv', type=float, default=0.5)
@@ -266,15 +264,15 @@ def parse_args():
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
     parser.add_argument('--scale_max', type=float, default=9.459951968688712, help="Maximum value of policy scale.")
-    parser.add_argument('--use_mask_head', type=bool, default=True, help="Learn mask to optimize paired block stowage.")
+    parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--projection_type', type=str, default="None", help="Projection type.")   #'bound_convex_violation', help="Projection type.")
     parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.1, 'delta': 0.1, 'max_iter': 300,
-                                                                  'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
+                                                                  'slack_penalty': 1000, 'n_action': 20, 'n_constraints': 25},
                         help="Projection parameters.")
 
     # Run parameters
-    parser.add_argument('--testing_path', type=str, default='results/trained_models/AI2STOW', help="Path for testing results.")
-    parser.add_argument('--folder', type=str, default='SA_AM', help="Folder name for the run.")
+    parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
+    parser.add_argument('--folder', type=str, default='sac-pen', help="Folder name for the run.")
     parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
     return parser.parse_args()
@@ -314,8 +312,6 @@ if __name__ == "__main__":
     config.env.env_name = args.env_name
     config.env.ports = args.ports
     config.env.TEU = args.teu
-    config.env.bays = args.bays
-    config.env.capacity = args.capacity
     config.env.generalization = args.gen
     config.env.utilization_rate_initial_demand = args.ur
     config.env.cv_demand = args.cv
@@ -327,6 +323,7 @@ if __name__ == "__main__":
     config.model.decoder_type = args.decoder_type
     config.model.dyn_embed = args.dyn_embed
     config.model.scale_max = args.scale_max
+    config.model.use_mask_head = args.use_mask_head
     config.training.projection_type = args.projection_type
     # Run
     config.testing.path = args.testing_path
@@ -348,7 +345,7 @@ if __name__ == "__main__":
         elif almost_projection_type == "ws+pc+cp":
             config.training.projection_type = "convex_program"
             config.testing.folder = config.algorithm.type + "-ws+pc"
-        elif almost_projection_type == "fr":
+        elif almost_projection_type == "fr" or almost_projection_type == "pen":
             config.training.projection_type = "None"
         elif almost_projection_type == "pd":
             config.training.projection_type = "None"
