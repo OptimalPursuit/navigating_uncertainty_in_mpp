@@ -143,7 +143,7 @@ if __name__ == "__main__":
             #
             # # # AM-PPO hyperparameters
             # config['algorithm']['feasibility_lambda'] = sweep_config.feasibility_lambda
-            # config['training']['lr'] = sweep_config.lr
+            config['training']['lr'] = sweep_config.lr
             # config['training']['projection_kwargs']['alpha'] = sweep_config.alpha
             # config['training']['projection_kwargs']['delta'] = sweep_config.delta
             # config['training']['projection_kwargs']['max_iter'] = sweep_config.max_iter
