@@ -969,9 +969,9 @@ if __name__ == "__main__":
                 t2.set_description(f"Episodes (avg obj={avg_obj:.2f})")
 
             # Save results in json
-            with open(f"{output_path}/{stochastic_algorithm}/instances/results_scenario_tree_teu{teu}_p{stages}_"
-                      f"e{x}_s{scen}_alg{stochastic_algorithm}"
-                      f"_gen{generalization}.json", "w") as json_file:
+            with open(f"{output_path}/{stochastic_algorithm}/instances/"
+                      f"results_scenario_tree_teu{teu}_p{stages}_e{x}_s{scen}_alg{stochastic_algorithm}_"
+                      f"pi{perfect_information}_gen{generalization}.json", "w") as json_file:
                 json.dump(result, json_file, indent=4)
 
     print("==================================================")
