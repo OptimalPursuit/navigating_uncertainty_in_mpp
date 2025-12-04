@@ -88,23 +88,19 @@ def get_scenario_tree_indices(scenario_tree:Dict, num_scenarios:int, real_out_tr
     for (stage, node), value in scenario_tree.items():
         # Calculate the maximum number of nodes for this stage
         max_nodes = num_scenarios ** stage
-        # Add extra node for realized outcome if required
-        if real_out_tree:
-            max_nodes += 1
         # Include only nodes within the allowed range
         if node < max_nodes:
             filtered_tree[(stage, node)] = value
     return filtered_tree
 
 # Support functions
-def get_demand_history(stage:int, demand:np.array, num_nodes_per_stage:List) -> np.array:
+def get_demand_history(stage:int, demand:np.array, stage_nodes:Dict, real_out_tree:bool=True) -> np.array:
     """Get the demand history up to the given stage for the given scenario"""
     if stage > 0:
         demand_history = []
         for s in range(stage):
-            for node_id in range(num_nodes_per_stage[s]):
-                # Concatenate predicted demand history for the current scenario up to the given stage
-                demand_history.append(demand[s, node_id,].flatten())
+            for node_id in stage_nodes[s][1:]if real_out_tree else stage_nodes[s][:-1]:
+                demand_history.append(demand[s, node_id].flatten())
         return np.array(demand_history)
     else:
         # If there's no history (stage 0), return an empty array or some other initialization
@@ -126,6 +122,11 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
     # Scenario tree parameters
     M = 10 ** 3 # Big M
     num_nodes_per_stage = [1*scenarios_per_stage**stage for stage in range(stages)]
+
+    # Build mapping: stage -> list of node_ids
+    stage_nodes = {s: [] for s in range(stages)}
+    for (s, n) in node_list:
+        stage_nodes[s].append(n)
 
     # Problem parameters
     P = env.P
@@ -192,9 +193,14 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
     def initialize_vars_tree(stages:int, start_stage:int=0, block_mpp:bool=False, real_out_tree:bool=False) -> None:
         # Build variables for full scenario tree
         for stage in range(start_stage, start_stage + stages):
-            n = num_nodes_per_stage[stage - start_stage]
-            node_range = range(n + 1) if real_out_tree else range(n)
-            for node_id in node_range:
+
+            # Get actual nodes at this stage
+            node_ids = stage_nodes[stage]
+            if stochastic_algorithm == 'multi_stage' and stage > 0:
+                node_ids = stage_nodes[stage][:-1]  # Remove last node
+            elif stochastic_algorithm in ['mpc', 'rolling_horizon', 'myopic'] and stage > 0:
+                node_ids = stage_nodes[stage][1:] # Remove first node (realized outcome)
+            for node_id in node_ids:
                 # Crane intensity:
                 CI[stage, node_id] = mdl.continuous_var(name=f'CI_{start_stage}_{stage}_{node_id}', lb=0)
                 CI_target[stage, node_id] = mdl.continuous_var(name=f'CI_target_{start_stage}_{stage}_{node_id}', lb=0)
@@ -237,20 +243,14 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             on_board, port_moves, load_moves = onboard_groups(P, stage, transport_indices)
             prev_on_board, _, _ = onboard_groups(P, stage-1, transport_indices) if stage > 0 else ([], [], [])
 
-            # Scenario range
-            if stochastic_algorithm in ['rolling_horizon', 'myopic', 'mpc']:
-                n = num_nodes_per_stage[:look_ahead][stage - start_stage]
-                if stage == start_stage:
-                    node_range = range(n)
-                else:
-                    node_range = range(1, n + 1)
+            # Get actual nodes at this stage
+            node_ids = stage_nodes[stage]
+            if stochastic_algorithm == 'multi_stage' and stage > 0:
+                node_ids = stage_nodes[stage][:-1]  # Remove last node
+            elif stochastic_algorithm in ['mpc', 'rolling_horizon', 'myopic'] and stage > 0:
+                node_ids = stage_nodes[stage][1:] # Remove first node (realized outcome)
 
-            elif stochastic_algorithm == 'multi_stage':
-                n = num_nodes_per_stage[stage - start_stage]
-                node_range = range(n)
-            else:
-                raise ValueError(f'Unknown stochastic algorithm: {stochastic_algorithm}')
-            for node_id in node_range:
+            for node_id in node_ids:
                 for (i, j) in load_moves:
                     for k in range(K):
                         # Demand satisfaction
@@ -269,9 +269,13 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
                                 <= capacity[b, d, bl], ctname=f'capacity_{stage}_{node_id}_{b}_{d}_{bl}'
                             )
                             if not perfect_information and stochastic_algorithm not in ['rolling_horizon', 'myopic']:
-                                demand_history1 = get_demand_history(stage-start_stage, demand, num_nodes_per_stage)
-                                for node_id2 in range(node_id + 1, num_nodes_per_stage[stage-start_stage]):
-                                    demand_history2 = get_demand_history(stage-start_stage, demand, num_nodes_per_stage)
+                                demand_history1 = get_demand_history(stage - start_stage, demand, stage_nodes, real_out_tree=real_out_tree)
+                                # Loop only over REAL nodes in the same stage
+                                for node_id2 in node_ids:
+                                    if node_id2 <= node_id:
+                                        continue
+
+                                    demand_history2 = get_demand_history(stage - start_stage, demand, stage_nodes, real_out_tree=real_out_tree)
                                     if np.allclose(demand_history1, demand_history2, atol=1e-5):  # Use a tolerance if floats
                                         for k in range(K):
                                             for (i, j) in load_moves:
@@ -408,6 +412,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         rolling_horizon_x = {}
         rolling_horizon_HO = {}
         rolling_horizon_CM = {}
+        time = 0
+        gaps = []
 
         for t in range(stages):
             # Reuse the same model object, just clear it
@@ -457,6 +463,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
 
             # Solve the optimization problem
             solution = solve_model(mdl, objective)
+            time += mdl.solve_details.time
+            gaps.append(mdl.solve_details.mip_relative_gap)
 
             # Check if a solution was found
             if solution is None:
@@ -477,104 +485,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         # Compute objective over all current stage decisions
         objective_expr = final_objective(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_, stages)
         objective_value = mdl.solution.get_value(objective_expr)
-        return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective_value}
-
-
-    def build_rolling(stages: int,
-                                demand: np.array,
-                                look_ahead: int = 2,
-                                warm_solution: Optional[Dict] = None,
-                                block_tree:bool = False) -> Dict:
-        """
-        Rolling horizon wrapper around build_tree.
-        At each stage t:
-            - Build a 2-stage problem (current + next port scenarios)
-            - Solve and apply stage-0 decisions
-            - Move forward
-        """
-        rolling_horizon_x = {}
-        rolling_horizon_HO = {}
-        rolling_horizon_CM = {}
-        demand = copy.deepcopy(demand)
-
-        for t in range(stages):
-            mdl.clear()
-            on_boards.clear()
-            all_port_moves.clear()
-            all_load_moves.clear()
-
-            # Determine remaining horizon and RH window size
-            remaining = stages - t
-            rh_stages = min(look_ahead, remaining)  # adaptively shrink horizon
-
-            # Initialize variable tree for this RH window
-            initialize_vars_tree(stages=rh_stages, start_stage=t, block_mpp=block_tree)
-
-            # Freeze previous solution x_{t-1} to current solution x_t
-            if t > 0:
-                prev_stage = t - 1
-                for b in range(B):
-                    for bl in range(BL):
-                        for d in range(D):
-                            for k in range(K):
-                                # only fix x_{t-1} to x_t
-                                for i in range(prev_stage, prev_stage + 1):
-                                    for j in range(i + 1, P):
-                                        x[t, 0, b, d, bl, k, i, j].set_lb(rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
-                                        x[t, 0, b, d, bl, k, i, j].set_ub(rolling_horizon_x[prev_stage, 0, b, d, bl, k, i, j])
-                                        if j == t:
-                                            x[t, 0, b, d, bl, k, i, j].set_lb(0)
-                                            x[t, 0, b, d, bl, k, i, j].set_ub(0)
-
-            def _nodes_at(dct, s):
-                return sorted({n for (ss, n) in dct.keys() if ss == s})
-
-            # in build_rolling_block_mpp:
-            local_demand = copy.deepcopy(demand)
-            if t < stages - 1:
-                avail = _nodes_at(local_demand, t + 1)
-                realized_scen = 0 if deterministic else random.choice(avail)
-                local_demand[(t + 1, 0)] = demand[(t + 1, realized_scen)]  # remap realized → node 0
-
-            demand_window = {}
-            for offset in range(rh_stages):
-                s = t + offset
-                if offset == 0:
-                    demand_window[(s, 0)] = local_demand[(s, 0)]
-                else:
-                    for n in _nodes_at(local_demand, s):
-                        demand_window[(s, n)] = local_demand[(s, n)]
-
-            # Build constraints for this RH window
-            build_tree(
-                stages=rh_stages,
-                input_demand=demand_window,
-                warm_solution=warm_solution,
-                start_stage=t,
-                look_ahead=look_ahead,
-                block_mpp=True,
-            )
-
-            objective = objective_function(x, HO, CM, revenues_, start_stage=t)
-            sol = solve_model(mdl, objective)
-
-            if sol is None:
-                raise RuntimeError(f"No solution found at stage {t}")
-
-            # Extract current stage decisions
-            rolling_horizon_CM[t, 0] = CM[(t, 0)].solution_value
-            for b in range(B):
-                for bl in range(BL):
-                    rolling_horizon_HO[t, 0, b, bl] = HO[(t, 0, b, bl)].solution_value
-                    for d in range(D):
-                        for k in range(K):
-                            for j in range(t + 1, P):
-                                rolling_horizon_x[t, 0, b, d, bl, k, t, j] = x[(t, 0, b, d, bl, k, t, j)].solution_value
-
-        # Compute objective over all current stage decisions
-        objective_expr = final_objective(rolling_horizon_x, rolling_horizon_HO, rolling_horizon_CM, revenues_, stages)
-        objective_value = mdl.solution.get_value(objective_expr)
-        return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective_value}
+        return {"x": rolling_horizon_x, "HO": rolling_horizon_HO, "CM": rolling_horizon_CM, "objective_value": objective_value, "time": time, "gap": gaps}
 
     def final_objective(x: Dict, HO: Dict, CM: Dict, revenues: Any, stages: int) -> Any:
         """Compute total objective over all stored stage-0 decisions."""
@@ -662,7 +573,7 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
         mdl.parameters.mip.strategy.file = 3
         mdl.parameters.emphasis.memory = 1  # Prioritize memory savings over speed
         mdl.parameters.threads = 1  # Use only 1 thread to reduce memory usage
-        mdl.parameters.mip.tolerances.mipgap = 0.01  # 1% or 0.1%
+        mdl.parameters.mip.tolerances.mipgap = 0.001  # 1% or 0.1%
         mdl.set_time_limit(3600)  # 1 hour
         solution = mdl.solve(log_output=print_results)
         return solution
@@ -695,9 +606,13 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
     # Print the solution # todo: fix this properly for mpp and block_mpp; now set to block_mpp
     if solution:
         if "objective_value" in solution:
-            obj = solution["objective_value"]
+            obj = solution.get("objective_value", None)
+            time = solution.get("time", None)
+            gap = solution.get("gap", None)
         else:
             obj = solution.objective_value
+            time = mdl.solve_details.time
+            gap = mdl.solve_details.mip_relative_gap
 
         # Analyze the solution
         x_ = np.zeros((stages, max_paths, B, D, BL, K, P, P), dtype=float)
@@ -783,8 +698,8 @@ def main(env:nn.Module, demand:np.array, scenarios_per_stage:int=28, stages:int=
             "scenarios":scenarios_per_stage,
             # Solver results
             "obj":obj,
-            "time":mdl.solve_details.time,
-            "gap":mdl.solve_details.mip_relative_gap,
+            "time":time,
+            "gap":gap,
             # Solution metrics
             "mean_load_per_port":mean_load_per_port.tolist(),
             "mean_teu_load_per_port":mean_teu_load_per_port.tolist(),
@@ -839,7 +754,7 @@ if __name__ == "__main__":
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
     parser.add_argument("--look_ahead", type=int, default=4)  # only for rolling horizon
-    parser.add_argument("--stochastic_algorithm", type=str, default="mpc") # rolling_horizon, myopic, multi_stage, mpc
+    parser.add_argument("--stochastic_algorithm", type=str, default="multi_stage") # rolling_horizon, myopic, multi_stage, mpc
     parser = parser.parse_args()
 
     # Load the configuration file
@@ -882,7 +797,7 @@ if __name__ == "__main__":
     # Precompute largest scenario tree
     stages = config.env.ports - 1  # Number of load ports (P-1)
     teu = config.env.teu
-    max_scenarios_per_stage = max(num_scenarios) + 1 if max(num_scenarios) > 32 else 32 + 1
+    max_scenarios_per_stage = max(num_scenarios) + 1 if max(num_scenarios) > 28 else 28 + 1
     # Number of scenarios per stage
     max_paths = max_scenarios_per_stage ** (stages-1) if not deterministic else 1
     node_list = precompute_node_list(stages, max_scenarios_per_stage, deterministic)
@@ -921,7 +836,7 @@ if __name__ == "__main__":
             result, var = main(env=env, demand=demand_sub_tree, scenarios_per_stage=scen, stages=stages,
                                max_paths=max_paths, seed=seed, perfect_information=perfect_information,
                                deterministic=deterministic, algorithm=stochastic_algorithm, look_ahead=look_ahead,
-                               print_results=False)
+                               print_results=True)
             # log result as error (to show in .err file):
 
             # print total teu on board per port
