@@ -103,6 +103,7 @@ class MasterPlanningEnv(EnvBase):
             residual_lc_capacity=Unbounded(shape=(*batch_size, self.B - 1), dtype=self.float_type),
             agg_pol_location=Unbounded(shape=(*batch_size, self.B * self.D), dtype=self.float_type),
             agg_pod_location=Unbounded(shape=(*batch_size, self.B * self.D), dtype=self.float_type),
+            max_demand=Unbounded(shape=(*batch_size, 1), dtype=self.float_type),
             timestep=Unbounded(shape=(*batch_size, 1), dtype=th.int64),
             shape=batch_size,
         )
@@ -189,6 +190,7 @@ class MasterPlanningEnv(EnvBase):
             "observation": {
                 **flatten_values_td(next_state_dict, batch_size=batch_size),
                 "timestep": time,
+                "max_demand": td["observation", "max_demand"],
             },
             **action_state,
 
@@ -257,6 +259,7 @@ class MasterPlanningEnv(EnvBase):
             **demand_state,
             **flatten_values_td(vessel_state, batch_size=batch_size),
             "timestep": time,
+            "max_demand": self.capacity.sum().expand(*batch_size, 1) / self.teus.mean(),
         }, batch_size=batch_size, device=device,)
 
         # Init tds - full td
