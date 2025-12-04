@@ -48,7 +48,8 @@ class CargoEmbedding(nn.Module):
 
     def forward(self, td: TensorDict,) -> Tensor:
         cargo_parameters = self._combine_cargo_parameters(batch_size=td.shape)
-        max_demand = td["max_demand"]
+        max_demand = td["realized_demand"].max()
+        # max_demand = self.train_max_demand.view(1, -1) #td["realized_demand"].max() if self.train_max_demand == None else self.train_max_demand.view(1, -1)
         if td["expected_demand"].dim() == 2:
             expected_demand = td["expected_demand"] / max_demand
             std_demand = td["std_demand"] / max_demand
@@ -78,8 +79,8 @@ class CriticEmbedding(nn.Module):
 
     def normalize_obs(self, td:TensorDict) -> Tensor:
         batch_size = td.batch_size
-        max_demand = td["max_demand"]
         if self.env.name == "block_mpp":
+            max_demand = td["max_demand"]
             return torch.cat([
                 td["total_profit"] / (td["max_total_profit"]+1e-6),
                 (td["observed_demand"] / max_demand ).view(*batch_size, -1),
@@ -90,10 +91,11 @@ class CriticEmbedding(nn.Module):
                 td["agg_pol_location"] / self.env.P,
                 td["agg_pod_location"] / self.env.P,
                 td["action_mask"],
-            ], dim=-1)
+                ], dim=-1)
         else:
+            max_demand = td["realized_demand"].max() if self.train_max_demand is None else self.train_max_demand
             return torch.cat([
-                (td["observed_demand"] / max_demand ).view(*batch_size, -1),
+                (td["observed_demand"] / max_demand).view(*batch_size, -1),
                 (td["residual_capacity"] / self.env.capacity.view(1, -1)).view(*batch_size, -1),
                 (td["residual_lc_capacity"] / td["target_long_crane"].unsqueeze(0)).view(*batch_size, -1),
                 td["lcg"],
@@ -201,7 +203,10 @@ class DynamicSelfAttentionEmbedding(nn.Module):
 
     def forward(self, latent_state: Optional[Tensor], td: TensorDict) -> Tuple[Tensor, Tensor, Tensor]:
         """Embed the dynamic demand for MPP using self-attention"""
-        max_demand = td["max_demand"]
+        if self.env.name == "block_mpp":
+           max_demand = td["max_demand"]
+        else:
+            max_demand = td["realized_demand"].max() if self.train_max_demand is None else self.train_max_demand.view(1, -1)
         if td["observed_demand"].dim() == 2:
             observed_demand = td["observed_demand"] / max_demand
         else:
@@ -228,7 +233,11 @@ class DynamicEmbedding(nn.Module):
     def forward(self, latent_state: Optional[Tensor], td: TensorDict) -> Tuple[Tensor, Tensor, Tensor]:
         """Embed the dynamic demand for the MPP"""
         # Get relevant demand embeddings
-        max_demand = td["max_demand"]
+        if self.env.name == "block_mpp":
+           max_demand = td["max_demand"]
+        else:
+            max_demand = td["realized_demand"].max() if self.train_max_demand is None else self.train_max_demand.view(1, -1)
+
         if td["observed_demand"].dim() == 2:
             observed_demand = td["observed_demand"] / max_demand
         else:
