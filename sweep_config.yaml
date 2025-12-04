@@ -7,10 +7,10 @@ parameters:
   lr:
     min: 0.00001
     max: 0.001
-#  batch_size:
-#    values: [64, 128, 256]
-#  mini_batch_size:
-#    values: [0.125, 0.25, 0.5,] # 1.0 causes issue with sampling
+  batch_size:
+    values: [64, 128, 256]
+  mini_batch_size:
+    values: [0.125, 0.25, 0.5,] # 1.0 causes issue with sampling
 #  hidden_dim:
 #    values: [128, 256, 512]
 #  embed_dim:
