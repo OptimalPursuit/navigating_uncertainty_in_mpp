@@ -4,148 +4,148 @@ metric:
   goal: maximize
 run_cap: 100
 parameters:
-  lr:
-    min: 0.00001
-    max: 0.001
-  batch_size:
-    values: [64, 128, 256]
-  mini_batch_size:
-    values: [0.125, 0.25, 0.5,] # 1.0 causes issue with sampling
-  hidden_dim:
-    values: [128, 256, 512]
-  embed_dim:
-    values: [128, 256, ]
-  num_encoder_layers:
-    values: [2, 3, 4 ]
-  num_decoder_layers:
-    values: [2, 3, 4 ]
-  temperature:
-    min: 0.001
-    max: 1.0
-  scale_max:
-    min: 0.25
-    max: 10.0
-  alpha:
-    min: 0.0001
-    max: 0.1
-  delta:
+#  lr:
+#    min: 0.00001
+#    max: 0.001
+#  batch_size:
+#    values: [64, 128, 256]
+#  mini_batch_size:
+#    values: [0.125, 0.25, 0.5,] # 1.0 causes issue with sampling
+#  hidden_dim:
+#    values: [128, 256, 512]
+#  embed_dim:
+#    values: [128, 256, ]
+#  num_encoder_layers:
+#    values: [2, 3, 4 ]
+#  num_decoder_layers:
+#    values: [2, 3, 4 ]
+#  temperature:
+#    min: 0.001
+#    max: 1.0
+#  scale_max:
+#    min: 0.25
+#    max: 10.0
+#  alpha:
+#    min: 0.0001
+#    max: 0.1
+#  delta:
+#    min: 0.01
+#    max: 0.1
+#  max_iter:
+#    min: 50
+#    max: 500
+##  scale:
+##    min: 0.00001
+##    max: 0.001
+##  pd_lr:
+##    min: 0.00001
+##    max: 0.001
+#  feasibility_lambda:
+#    distribution: uniform
+#    min: 0.00001
+#    max: 1.0
+#  tau_sinkhorn:
+#    min: 0.1
+#    max: 1.0
+#  iters_sinkhorn:
+#    values: [10, 20, 50]
+  lagrangian_multiplier_0:
+    distribution: log_uniform_values
     min: 0.01
-    max: 0.1
-  max_iter:
-    min: 50
-    max: 500
-#  scale:
-#    min: 0.00001
-#    max: 0.001
-#  pd_lr:
-#    min: 0.00001
-#    max: 0.001
-  feasibility_lambda:
-    distribution: uniform
-    min: 0.00001
     max: 1.0
-  tau_sinkhorn:
-    min: 0.1
+  lagrangian_multiplier_1:
+    distribution: log_uniform_values
+    min: 0.01
     max: 1.0
-  iters_sinkhorn:
-    values: [10, 20, 50]
-#  lagrangian_multiplier_0:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_1:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_2:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_3:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_4:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_5:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_6:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_7:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_8:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_9:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_10:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_11:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_12:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_13:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_14:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_15:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_16:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_17:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_18:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_19:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_20:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_21:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_22:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_23:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
-#  lagrangian_multiplier_24:
-#    distribution: log_uniform_values
-#    min: 0.01
-#    max: 10.0
+  lagrangian_multiplier_2:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_3:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_4:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_5:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_6:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_7:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_8:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_9:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_10:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_11:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_12:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_13:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_14:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_15:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_16:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_17:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_18:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_19:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_20:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_21:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_22:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_23:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
+  lagrangian_multiplier_24:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 1.0
