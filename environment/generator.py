@@ -176,7 +176,7 @@ class MPP_Generator(Generator):
             dist = self._generalization_uniform_distribution(e_x, std_x)
 
         # Sample demand
-        demand = th.clamp(dist.sample(), min=0)
+        demand = th.clamp(dist.sample(), min=1)
 
         # Return demand matrix
         return TensorDict({"observation":
