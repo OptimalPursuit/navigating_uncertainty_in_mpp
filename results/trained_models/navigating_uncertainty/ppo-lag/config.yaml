@@ -1,0 +1,93 @@
+algorithm:
+  clip_range: 0.2
+  demand_lambda: 1.0
+  entropy_lambda: 0.010071090711145904
+  feasibility_lambda: 1.0
+  gae_lambda: 0.95
+  gamma: 0.99
+  max_grad_norm: 0.5
+  mini_batch_size: 0.5
+  ppo_epochs: 5
+  primal_dual: true
+  stability_lambda: 1.0
+  tau: 0.005
+  type: ppo
+  vf_lambda: 0.5
+env:
+  CI_target: 1.25
+  LCG_target: 0.95
+  TEU: 1000
+  VCG_target: 1.05
+  bays: 10
+  block_stowage_mask: false
+  blocks: 1
+  capacity:
+  - 50
+  cargo_classes: 6
+  customer_classes: 2
+  cv_demand: 0.5
+  decks: 2
+  demand_uncertainty: true
+  env_name: mpp
+  episode_order: standard
+  generalization: false
+  hatch_overstowage_costs: 0.333333
+  hatch_overstowage_mask: false
+  iid_demand: true
+  limit_revenue: true
+  long_crane_costs: 0.5
+  normalize_obs: true
+  perturbation: 0.2
+  ports: 4
+  seed: 42
+  spot_percentage: 0.3
+  stability_difference: 0.1
+  utilization_rate_initial_demand: 1.1
+  weight_classes: 3
+model:
+  batch_size: 64
+  critic_temperature: 1.0
+  decoder_type: attention
+  dropout_rate: 0.008972135903337364
+  dyn_embed: self_attention
+  embed_dim: 128
+  encoder_type: attention
+  hidden_dim: 512
+  init_dim: 8
+  logger: wandb
+  lr_end_factor: 0.5
+  normalization: layer
+  num_decoder_layers: 4
+  num_encoder_layers: 3
+  num_heads: 8
+  phase: train
+  scale_max: 1.931286785557626
+  tanh_clipping: 0
+  tanh_squashing: false
+  temperature: 0.11243639449117128
+testing:
+  feasibility_recovery: false
+  folder: ppo-pd
+  num_episodes: 30
+  path: results/trained_models/navigating_uncertainty
+training:
+  lr: 0.00014690714579803494
+  optimizer: Adam
+  pd_lr: 0.0002603935733738209
+  projection_kwargs:
+    alpha: 0.01
+    delta: 0.01
+    max_iter: 300
+    n_action: 20
+    n_constraints: 25
+    scale: 0.00025463040788043916
+    slack_penalty: 10000
+    use_early_stopping: true
+  projection_type: None
+  scale_max: 9.46
+  test_data_size: 5000
+  train_data_size: 7200000
+  val_data_size: 5000
+  validation_freq: 0.2
+  validation_patience: 2
+wandb_version: 1
