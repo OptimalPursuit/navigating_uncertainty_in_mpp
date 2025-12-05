@@ -273,7 +273,7 @@ def parse_args():
     # Run parameters
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='sac-pen', help="Folder name for the run.")
-    parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
+    parser.add_argument('--phase', type=str, default='test', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
     return parser.parse_args()
 
