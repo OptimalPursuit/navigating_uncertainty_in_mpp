@@ -58,6 +58,9 @@ class MasterPlanningEnv(EnvBase):
         self.CI_target = kwargs.get("CI_target")
         self.normalize_obs = kwargs.get("normalize_obs")
         self.limit_revenue = kwargs.get("limit_revenue", False)
+        self.normalize_constraints = kwargs.get("normalize_constraints", True)
+        print("Normalize constraints:", self.normalize_constraints)
+        breakpoint()
         self.block_stowage_mask = False # must be false for this env
 
         ## Init env
@@ -254,7 +257,7 @@ class MasterPlanningEnv(EnvBase):
         action_state["lhs_A"] = self.create_lhs_A(self.A_lhs, time).view(*batch_size, self.n_constraints, self.n_locations)
         action_state["rhs"] = self.create_rhs(
             vessel_state["utilization"].to(self.float_type), current_demand, self.swap_signs_stability,
-            self.A_rhs, self.n_constraints, self.n_demand, self.n_locations, batch_size, normalize=True)
+            self.A_rhs, self.n_constraints, self.n_demand, self.n_locations, batch_size, normalize=self.normalize_constraints)
 
         # Init tds
         initial_state = TensorDict({
@@ -465,7 +468,7 @@ class MasterPlanningEnv(EnvBase):
             action_state["lhs_A"] = self.create_lhs_A(lhs_input, time).view(*batch_size, self.n_constraints, locations_shape)
             action_state["rhs"] = self.create_rhs(
                 next_state_dict["utilization"], current_demand, swap_sign_stability,
-                rhs_input, self.n_constraints, self.n_demand, locations_shape, batch_size, normalize=True)
+                rhs_input, self.n_constraints, self.n_demand, locations_shape, batch_size, normalize=self.normalize_constraints)
 
         # Update action state
         action_state["clip_max"] = self._compute_clip_max(next_state_dict["residual_capacity"], current_demand, batch_size, step)
@@ -671,7 +674,7 @@ class MasterPlanningEnv(EnvBase):
             overstowage = compute_hatch_overstowage(vessel_state["utilization"], moves, ac_transport, block)
             ho_costs = overstowage.sum(dim=-1, keepdim=True) * self.ho_costs
             # Compute crane move costs
-            cm_costs = compute_long_crane_excess_cost(vessel_state["long_crane_moves_discharge"], vessel_state["target_long_crane"], self.cm_costs)            
+            cm_costs = compute_long_crane_excess_cost(vessel_state["long_crane_moves_discharge"], vessel_state["target_long_crane"], self.cm_costs)
             cost = ho_costs + cm_costs
             profit -= cost
         else:
@@ -901,7 +904,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         action_state["lhs_A"] = self.create_lhs_A(self.block_A_lhs, time).view(*batch_size, self.n_constraints, self.n_block_locations)
         action_state["rhs"] = self.create_rhs(
             vessel_state["utilization"].to(self.float_type), current_demand, self.swap_signs_block_stability,
-            self.block_A_rhs, self.n_constraints, self.n_demand, self.n_block_locations, batch_size, normalize=True)
+            self.block_A_rhs, self.n_constraints, self.n_demand, self.n_block_locations, batch_size, normalize=self.normalize_constraints)
         if self.block_stowage_mask:
             action_mask = generate_POD_mask(realized_demand[..., tau, :] @ self.teus, vessel_state["residual_capacity"],
                                             self.capacity, pod_locations, pod, batch_size)

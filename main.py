@@ -275,6 +275,7 @@ def parse_args():
     parser.add_argument('--folder', type=str, default='sac-pen', help="Folder name for the run.")
     parser.add_argument('--phase', type=str, default='test', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
+    parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
     return parser.parse_args()
 
 def deep_update(base, updates):
@@ -316,6 +317,7 @@ if __name__ == "__main__":
     config.env.utilization_rate_initial_demand = args.ur
     config.env.cv_demand = args.cv
     config.env.block_stowage_mask = args.block_stowage_mask
+    config.env.normalize_constraints = args.normalize_constraints
     # Algorithm
     config.algorithm.feasibility_lambda = args.feasibility_lambda
     # Model
