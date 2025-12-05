@@ -817,7 +817,7 @@ if __name__ == "__main__":
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--scenarios", type=int, default=28) # 20
+    parser.add_argument("--scenarios", type=int, default=4) # 20
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=30)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
@@ -881,9 +881,14 @@ if __name__ == "__main__":
     running_count = 0
 
     # setup folder
-    if not os.path.exists(f"{output_path}/{stochastic_algorithm}/instances/"):
-        os.makedirs(f"{output_path}/{stochastic_algorithm}/instances/")
+    if stochastic_algorithm == "multi_stage":
+        stochastic_algorithm_path = stochastic_algorithm + ("_pi" if perfect_information else "_na")
+    else:
+        stochastic_algorithm_path = stochastic_algorithm
+    if not os.path.exists(f"{output_path}/{stochastic_algorithm_path}/instances/"):
+        os.makedirs(f"{output_path}/{stochastic_algorithm_path}/instances/")
 
+    # Main loop over episodes and scenarios
     t = tqdm(range(num_episodes), desc="Episodes", unit="ep")
     for x in t:
         # Create the environment on cpu
@@ -947,8 +952,8 @@ if __name__ == "__main__":
                 t2.set_description(f"Episodes (avg obj={avg_obj:.2f})")
 
             # Save results in json
-            with open(f"{output_path}/{stochastic_algorithm}/instances/"
-                      f"results_scenario_tree_teu{teu}_p{stages}_e{x}_s{scen}_alg{stochastic_algorithm}_"
+            with open(f"{output_path}/{stochastic_algorithm_path}/instances/"
+                      f"results_scenario_tree_teu{teu}_p{stages}_e{x}_s{scen}_alg{stochastic_algorithm_path}_"
                       f"pi{perfect_information}_gen{generalization}.json", "w") as json_file:
                 json.dump(result, json_file, indent=4)
 
