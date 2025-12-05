@@ -59,8 +59,6 @@ class MasterPlanningEnv(EnvBase):
         self.normalize_obs = kwargs.get("normalize_obs")
         self.limit_revenue = kwargs.get("limit_revenue", False)
         self.normalize_constraints = kwargs.get("normalize_constraints", True)
-        print("Normalize constraints:", self.normalize_constraints)
-        breakpoint()
         self.block_stowage_mask = False # must be false for this env
 
         ## Init env
