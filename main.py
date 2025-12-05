@@ -347,7 +347,7 @@ if __name__ == "__main__":
             config.testing.folder = config.algorithm.type + "-ws+pc"
         elif almost_projection_type == "fr" or almost_projection_type == "pen":
             config.training.projection_type = "None"
-        elif almost_projection_type == "pd":
+        elif almost_projection_type == "pd" or almost_projection_type == "lag":
             config.training.projection_type = "None"
             config.algorithm.primal_dual = True
         elif almost_projection_type == "cp":
