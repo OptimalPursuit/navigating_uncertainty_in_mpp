@@ -19,3 +19,4 @@
 /scripts/
 
 *.pyc
+/results/trained_models/navigating_uncertainty/old/
