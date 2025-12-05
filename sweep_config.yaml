@@ -52,100 +52,100 @@ parameters:
   lagrangian_multiplier_0:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_1:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_2:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_3:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_4:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_5:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_6:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_7:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_8:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_9:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_10:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_11:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_12:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_13:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_14:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_15:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_16:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_17:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_18:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_19:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_20:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_21:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_22:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_23:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
   lagrangian_multiplier_24:
     distribution: log_uniform_values
     min: 0.01
-    max: 1.0
+    max: 10.0
