@@ -62,7 +62,7 @@ for e in range(episodes):
     with open(json_path, 'r') as file:
         x = json.load(file)
         obj.append(x["obj"])
-        time.append(x["time"])
+        time.append(abs(x["time"])) # ensure non-negative time
         total_load.append(np.sum(x["mean_load_per_port"], axis=-1))
         total_demand.append(np.sum(x["mean_demand"], axis=-1))
         total_revenue.append(np.sum(x["mean_revenue"], axis=-1))
