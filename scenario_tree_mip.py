@@ -808,6 +808,10 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
     if stochastic_algorithm == "multi_stage":
         initialize_vars_tree(stages, block_mpp=block_mpp)
         build_tree(stages, demand, warm_solution, block_mpp=block_mpp)
+        # --- Diagnostic: count non-anticipativity constraints
+        na_count = sum(1 for c in mdl.iter_constraints() if 'non_anticipation' in c.name)
+        print(f"Non-anticipativity constraints added: {na_count}")
+
         objective = objective_function(x, HO, CM, revenues_)
         solution = solve_model(mdl, objective)
     elif stochastic_algorithm == "mpc":
@@ -997,13 +1001,13 @@ if __name__ == "__main__":
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--scenarios", type=int, default=8)
+    parser.add_argument("--scenarios", type=int, default=12)
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=30)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
     parser.add_argument("--look_ahead", type=int, default=4)
-    parser.add_argument("--stochastic_algorithm", type=str, default="mpc") # rolling_horizon, myopic, multi_stage, mpc
+    parser.add_argument("--stochastic_algorithm", type=str, default="multi_stage") # rolling_horizon, myopic, multi_stage, mpc
     parser = parser.parse_args()
 
     # Load the configuration file
@@ -1039,7 +1043,9 @@ if __name__ == "__main__":
     if deterministic:
         num_scenarios = [1]
     elif scenario_range:
-        num_scenarios = list(range(4, parser.scenarios + 1, 4))
+        # todo: make this more general
+        num_scenarios = [5, 10, 20] #40, 80]
+        # num_scenarios = list(range(4, parser.scenarios + 1, 4))
     else:
         num_scenarios = [parser.scenarios]
 
