@@ -447,84 +447,84 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                             mixing[stage, node_id, bay, block] = \
                                 mdl.binary_var(name=f'mixing_{start_stage}_{stage}_{node_id}_{bay}_{block}')
 
-    # def add_non_anticipativity(stage, node_ids, load_moves, demand, parent):
-    #     # Only for multistage stochastic program, and only from stage 1 onwards
-    #     if perfect_information or stochastic_algorithm not in ["multi_stage", "mpc"] or stage == 0:
-    #         return
-    #
-    #     for idx1, n1 in enumerate(node_ids):
-    #         h1 = get_demand_history(stage, n1, demand, parent)
-    #         for n2 in node_ids[idx1 + 1:]:
-    #             h2 = get_demand_history(stage, n2, demand, parent)
-    #             if np.allclose(h1, h2, atol=1e-5):
-    #                 for b in range(B):
-    #                     for bl in range(BL):
-    #                         for d in range(D):
-    #                             for k in range(K):
-    #                                 for (i, j) in load_moves:
-    #                                     mdl.add_constraint(
-    #                                         x[stage, n1, b, d, bl, k, i, j]
-    #                                         == x[stage, n2, b, d, bl, k, i, j],
-    #                                         ctname=(f'non_anticipation_{stage}_{n1}_{n2}_'
-    #                                                 f'{b}_{d}_{bl}_{k}_{i}_{j}')
-    #                                     )
-
-    def add_non_anticipativity(stage: int,
-                               node_ids: List[int],
-                               load_moves: List[Tuple[int, int]],
-                               parent: Dict[Tuple[int, int], Optional[Tuple[int, int]]]
-                               ) -> None:
-        """
-        Enforce non-anticipativity at a given stage.
-
-        For all nodes at this stage that share the same history (same ancestor chain up to stage-1), we impose:
-            x[stage, n1, ...] == x[stage, n2, ...]
-        for all (i, j) in load_moves (TR^+(p) in the formulation).
-
-        This implements:
-            \tilde u^{b,d,φ}_{tr,k} = \tilde u^{b,d,φ'}_{tr,k}
-        whenever q^{φ}_{[p-1]} = q^{φ'}_{[p-1]}.
-        """
-        # Only for genuine multi-stage problems with partial information,
-        # and only from stage 1 onwards (no history at stage 0).
+    def add_non_anticipativity(stage, node_ids, load_moves, demand, parent):
+        # Only for multistage stochastic program, and only from stage 1 onwards
         if perfect_information or stochastic_algorithm not in ["multi_stage", "mpc"] or stage == 0:
             return
 
-        # Group nodes by their "information set" = full ancestor chain up to stage-1.
-        info_sets: Dict[Tuple[Tuple[int, int], ...], List[int]] = defaultdict(list)
+        for idx1, n1 in enumerate(node_ids):
+            h1 = get_demand_history(stage, n1, demand, parent)
+            for n2 in node_ids[idx1 + 1:]:
+                h2 = get_demand_history(stage, n2, demand, parent)
+                if np.allclose(h1, h2, atol=1e-5):
+                    for b in range(B):
+                        for bl in range(BL):
+                            for d in range(D):
+                                for k in range(K):
+                                    for (i, j) in load_moves:
+                                        mdl.add_constraint(
+                                            x[stage, n1, b, d, bl, k, i, j]
+                                            == x[stage, n2, b, d, bl, k, i, j],
+                                            ctname=(f'non_anticipation_{stage}_{n1}_{n2}_'
+                                                    f'{b}_{d}_{bl}_{k}_{i}_{j}')
+                                        )
 
-        for node_id in node_ids:
-            s_cur, n_cur = stage, node_id
-            ancestors = []
-
-            # Walk back to the root, collecting (stage, node) pairs of ancestors.
-            while s_cur > 0:
-                s_prev, n_prev = parent[(s_cur, n_cur)]
-                ancestors.append((s_prev, n_prev))
-                s_cur, n_cur = s_prev, n_prev
-
-            # History is the ordered tuple of ancestors from stage 0 up to stage-1.
-            info_key = tuple(reversed(ancestors))
-            info_sets[info_key].append(node_id)
-
-        # For each information set with more than one node, enforce equality of x.
-        for info_key, nodes in info_sets.items():
-            if len(nodes) <= 1:
-                continue
-
-            base = nodes[0]
-            for other in nodes[1:]:
-                for b in range(B):
-                    for bl in range(BL):
-                        for d in range(D):
-                            for k in range(K):
-                                for (i, j) in load_moves:
-                                    mdl.add_constraint(
-                                        x[stage, base, b, d, bl, k, i, j] ==
-                                        x[stage, other, b, d, bl, k, i, j],
-                                        ctname=(f'non_anticipation_{stage}_{base}_{other}_'
-                                                f'{b}_{d}_{bl}_{k}_{i}_{j}')
-                                    )
+    # def add_non_anticipativity(stage: int,
+    #                            node_ids: List[int],
+    #                            load_moves: List[Tuple[int, int]],
+    #                            parent: Dict[Tuple[int, int], Optional[Tuple[int, int]]]
+    #                            ) -> None:
+    #     """
+    #     Enforce non-anticipativity at a given stage.
+    #
+    #     For all nodes at this stage that share the same history (same ancestor chain up to stage-1), we impose:
+    #         x[stage, n1, ...] == x[stage, n2, ...]
+    #     for all (i, j) in load_moves (TR^+(p) in the formulation).
+    #
+    #     This implements:
+    #         \tilde u^{b,d,φ}_{tr,k} = \tilde u^{b,d,φ'}_{tr,k}
+    #     whenever q^{φ}_{[p-1]} = q^{φ'}_{[p-1]}.
+    #     """
+    #     # Only for genuine multi-stage problems with partial information,
+    #     # and only from stage 1 onwards (no history at stage 0).
+    #     if perfect_information or stochastic_algorithm not in ["multi_stage", "mpc"] or stage == 0:
+    #         return
+    #
+    #     # Group nodes by their "information set" = full ancestor chain up to stage-1.
+    #     info_sets: Dict[Tuple[Tuple[int, int], ...], List[int]] = defaultdict(list)
+    #
+    #     for node_id in node_ids:
+    #         s_cur, n_cur = stage, node_id
+    #         ancestors = []
+    #
+    #         # Walk back to the root, collecting (stage, node) pairs of ancestors.
+    #         while s_cur > 0:
+    #             s_prev, n_prev = parent[(s_cur, n_cur)]
+    #             ancestors.append((s_prev, n_prev))
+    #             s_cur, n_cur = s_prev, n_prev
+    #
+    #         # History is the ordered tuple of ancestors from stage 0 up to stage-1.
+    #         info_key = tuple(reversed(ancestors))
+    #         info_sets[info_key].append(node_id)
+    #
+    #     # For each information set with more than one node, enforce equality of x.
+    #     for info_key, nodes in info_sets.items():
+    #         if len(nodes) <= 1:
+    #             continue
+    #
+    #         base = nodes[0]
+    #         for other in nodes[1:]:
+    #             for b in range(B):
+    #                 for bl in range(BL):
+    #                     for d in range(D):
+    #                         for k in range(K):
+    #                             for (i, j) in load_moves:
+    #                                 mdl.add_constraint(
+    #                                     x[stage, base, b, d, bl, k, i, j] ==
+    #                                     x[stage, other, b, d, bl, k, i, j],
+    #                                     ctname=(f'non_anticipation_{stage}_{base}_{other}_'
+    #                                             f'{b}_{d}_{bl}_{k}_{i}_{j}')
+    #                                 )
 
     def build_tree(stages: int,
                    input_demand: np.array,
