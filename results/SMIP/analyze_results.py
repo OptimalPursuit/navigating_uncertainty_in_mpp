@@ -6,15 +6,15 @@ import argparse
 # Set up argument parser
 parser = argparse.ArgumentParser(description="Scenario Tree Evaluation Parameters")
 
-parser.add_argument('--s', type=int, default=28, help='scenarios')
+parser.add_argument('--s', type=int, default=80, help='scenarios')
 parser.add_argument('--p', type=int, default=3, help='Planning horizon or number of periods (p)')
 parser.add_argument('--episodes', type=int, default=30, help='Number of episodes to evaluate')
-parser.add_argument('--perfect_information', type=bool, default=True)
-parser.add_argument('--gen', type=bool, default=False)
+parser.add_argument('--perfect_information', type=bool, default=False)
+parser.add_argument('--gen', type=bool, default=True)
 parser.add_argument('--cv', type=float, default=0.5, help='Coefficient of variation (cv)')
 parser.add_argument('--teu', type=int, default=1000, help='TEU value')
 parser.add_argument('--block_mpp', type=bool, default=False,)
-parser.add_argument('--stochastic_algorithm', type=str, default="multi_stage", help='Stochastic algorithm type')
+parser.add_argument('--stochastic_algorithm', type=str, default="multi_stage_na", help='Stochastic algorithm type')
 args = parser.parse_args()
 
 # Access arguments like variables
