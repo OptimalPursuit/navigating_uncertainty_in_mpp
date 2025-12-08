@@ -20,3 +20,4 @@
 
 *.pyc
 /results/trained_models/navigating_uncertainty/old/
+/results/SMIP/navigating_uncertainty/teu1k/multi_stage_na/old_instances/
