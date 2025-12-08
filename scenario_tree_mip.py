@@ -1125,8 +1125,8 @@ if __name__ == "__main__":
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--scenarios", type=int, default=28)
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--num_episodes", type=int, default=30)
-    parser.add_argument("--start_episode", type=int, default=0)
+    parser.add_argument("--num_episodes", type=int, default=5)
+    parser.add_argument("--start_episode", type=int, default=4)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
     parser.add_argument("--look_ahead", type=int, default=4)
@@ -1202,7 +1202,7 @@ if __name__ == "__main__":
 
     # Main loop over episodes and scenarios
     start_ep = parser.start_episode
-    t = tqdm(range(start_ep, num_episodes), desc="Episodes", unit="ep")
+    t = tqdm(range(start_ep, start_ep+num_episodes), desc="Episodes", unit="ep")
     for x in t:
         # Create the environment on cpu
         seed = config.env.seed + x + 1
