@@ -690,8 +690,8 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                 #     mdl.sum(mixing[stage, node_id, b, bl,] for b in range(B) for bl in range(BL)) <= int(BL * B * bay_mix)
                 # )
 
-            # add_non_anticipativity(stage, sn[stage], load_moves, demand, parent)
-            add_non_anticipativity(stage, sn[stage], load_moves, parent)
+            add_non_anticipativity(stage, sn[stage], load_moves, demand, parent)
+            # add_non_anticipativity(stage, sn[stage], load_moves, parent)
 
         # Add mip start
         if warm_solution:
