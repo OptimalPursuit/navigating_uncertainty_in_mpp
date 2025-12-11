@@ -18,7 +18,7 @@ if __name__ == "__main__":
     parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
     parser.add_argument('--ur', type=float, default=1.1)
     parser.add_argument('--cv', type=float, default=0.5)
-    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=True, help="Block stowage mask.")
+    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=False, help="Block stowage mask.")
 
     # Algorithm parameters
     parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
@@ -27,18 +27,33 @@ if __name__ == "__main__":
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
+<<<<<<< HEAD
     parser.add_argument('--projection_type', type=str, default='None', help="Projection type.")
     parser.add_argument('--scale_max', type=float, default=9.46, help="Maximum scale for the model.") # PPO=1.93, SAC=9.46
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
+=======
+    parser.add_argument('--scale_max', type=float, default=9.46, help="Maximum scale for the model.") # PPO=1.93, SAC=9.46
+    parser.add_argument('--use_mask_head', type=bool, default=True, help="Learn mask to optimize paired block stowage.")
+    parser.add_argument('--projection_type', type=str, default='bound_convex_violation', help="Projection type.")
+    parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.1, 'delta': 0.1, 'max_iter': 300,
+                                                                  'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
+                        help="Projection kwargs.")
+>>>>>>> 2f3e1015abb2773aa1c24806c45ab8ae6489dc67
 
     # Run parameters
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
     parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
+<<<<<<< HEAD
     parser.add_argument("--path", type=str, default="results/trained_models/navigating_uncertainty",
                         help="Path to the directory containing the config.yaml and sweep_config.yaml files.")
     parser.add_argument("--folder", type=str, default="sac-pen",
                         help="Folder to save the sweep configuration and results.")
+=======
+    parser.add_argument("--path", type=str, default="results/trained_models/AI2STOW_JOURNAL_VERSION", help="Path to the directory containing the config.yaml and sweep_config.yaml files.")
+    parser.add_argument("--folder", type=str, default="sac-vp", help="Folder to save the sweep configuration and results.")
+>>>>>>> 2f3e1015abb2773aa1c24806c45ab8ae6489dc67
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
+    parser.add_argument('--normalize_constraints', type=bool, default=True, help="Normalize constraints.")
     args = parser.parse_args()
 
     def train():
@@ -114,14 +129,13 @@ if __name__ == "__main__":
                     config['training']['pd_lr'] = sweep_config.pd_lr
                     config['algorithm']['feasibility_lambda'] = 1.0
                 elif almost_projection_type == "fr":
-                    # config['algorithm']['feasibility_lambda'] = sweep_config.feasibility_lambda
-                    config['algorithm']['feasibility_lambda'] = 1.0
+                    config['algorithm']['feasibility_lambda'] = sweep_config.feasibility_lambda
                     for i in range(n_constraints):
-                        config['algorithm'][f'lagrangian_multiplier_{i}'] = sweep_config[f'lagrangian_multiplier_{i}']
                         # Error handling for missing lagrangian multipliers
                         if f'lagrangian_multiplier_{i}' not in sweep_config:
                             raise ValueError(f"Missing lagrangian_multiplier_{i} in sweep configuration")
 
+<<<<<<< HEAD
             # # Model hyperparameters
             # # config['model']['num_heads'] = sweep_config.num_heads
             # # config['model']['dropout_rate'] = sweep_config.dropout_rate
@@ -156,7 +170,20 @@ if __name__ == "__main__":
                 # Error handling for missing lagrangian multipliers
                 if f'lagrangian_multiplier_{i}' not in sweep_config:
                     raise ValueError(f"Missing lagrangian_multiplier_{i} in sweep configuration")
+=======
+                        config['algorithm'][f'lagrangian_multiplier_{i}'] = sweep_config[f'lagrangian_multiplier_{i}']
+>>>>>>> 2f3e1015abb2773aa1c24806c45ab8ae6489dc67
 
+            # Dynamic code to check if keys exist in sweep_config and update config accordingly
+            for key in sweep_config.keys():
+                if key in config['env']:
+                    config['env'][key] = sweep_config[key]
+                elif key in config['model']:
+                    config['model'][key] = sweep_config[key]
+                elif key in config['algorithm']:
+                    config['algorithm'][key] = sweep_config[key]
+                elif key in config['training']:
+                    config['training'][key] = sweep_config[key]
 
             # Call your main() function
             model = main(config)
@@ -182,6 +209,12 @@ if __name__ == "__main__":
     # Load the sweep configuration from YAML
     with open('sweep_config.yaml') as file:
         sweep_config = yaml.safe_load(file)
+
+    # Create lagrangian multipliers in sweep_config for each constraint
+    n_constraints = args.projection_kwargs['n_constraints']
+    for i in range(n_constraints):
+        if f'lagrangian_multiplier_{i}' not in sweep_config['parameters']:
+            sweep_config['parameters'][f'lagrangian_multiplier_{i}'] = sweep_config['parameters'][f'default_lagrangian_multiplier']
 
     # Initialize the sweep with W&B
     if args.sweep:
