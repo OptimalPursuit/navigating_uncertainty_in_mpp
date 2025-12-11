@@ -116,13 +116,13 @@ if __name__ == "__main__":
                     config['training']['pd_lr'] = sweep_config.pd_lr
                     config['algorithm']['feasibility_lambda'] = 1.0
                 elif almost_projection_type == "fr":
-                    # config['algorithm']['feasibility_lambda'] = sweep_config.feasibility_lambda
-                    config['algorithm']['feasibility_lambda'] = 1.0
+                    config['algorithm']['feasibility_lambda'] = sweep_config.feasibility_lambda
                     for i in range(n_constraints):
-                        config['algorithm'][f'lagrangian_multiplier_{i}'] = sweep_config[f'lagrangian_multiplier_{i}']
                         # Error handling for missing lagrangian multipliers
                         if f'lagrangian_multiplier_{i}' not in sweep_config:
                             raise ValueError(f"Missing lagrangian_multiplier_{i} in sweep configuration")
+
+                        config['algorithm'][f'lagrangian_multiplier_{i}'] = sweep_config[f'lagrangian_multiplier_{i}']
 
             # Dynamic code to check if keys exist in sweep_config and update config accordingly
             for key in sweep_config.keys():
@@ -159,6 +159,12 @@ if __name__ == "__main__":
     # Load the sweep configuration from YAML
     with open('sweep_config.yaml') as file:
         sweep_config = yaml.safe_load(file)
+
+    # Create lagrangian multipliers in sweep_config for each constraint
+    n_constraints = args.projection_kwargs['n_constraints']
+    for i in range(n_constraints):
+        if f'lagrangian_multiplier_{i}' not in sweep_config['parameters']:
+            sweep_config['parameters'][f'lagrangian_multiplier_{i}'] = sweep_config['parameters'][f'default_lagrangian_multiplier']
 
     # Initialize the sweep with W&B
     if args.sweep:
