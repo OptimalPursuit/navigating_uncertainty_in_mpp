@@ -161,10 +161,11 @@ if __name__ == "__main__":
         sweep_config = yaml.safe_load(file)
 
     # Create lagrangian multipliers in sweep_config for each constraint
-    n_constraints = args.projection_kwargs['n_constraints']
-    for i in range(n_constraints):
-        if f'lagrangian_multiplier_{i}' not in sweep_config['parameters']:
-            sweep_config['parameters'][f'lagrangian_multiplier_{i}'] = sweep_config['parameters'][f'default_lagrangian_multiplier']
+    if 'default_lagrangian_multiplier' in sweep_config['parameters']:
+        n_constraints = args.projection_kwargs['n_constraints']
+        for i in range(n_constraints):
+            if f'lagrangian_multiplier_{i}' not in sweep_config['parameters']:
+                sweep_config['parameters'][f'lagrangian_multiplier_{i}'] = sweep_config['parameters'][f'default_lagrangian_multiplier']
 
     # Initialize the sweep with W&B
     if args.sweep:
