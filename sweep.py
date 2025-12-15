@@ -77,52 +77,48 @@ if __name__ == "__main__":
             config.testing.feasibility_recovery = args.feasibility_recovery
             n_constraints = config.training.projection_kwargs.n_constraints
 
-            if config.env.env_name == "mpp":
-                # todo: remove?
-                config.algorithm.type, almost_projection_type = config.testing.folder.split("-")
-                if almost_projection_type == "vp" or almost_projection_type == "fr+vp":
-                    config.training.projection_type = "linear_violation"
-                elif almost_projection_type == "bvp" or almost_projection_type == "fr+bvp":
-                    config.training.projection_type = "bound_convex_violation"
-                elif almost_projection_type == "ws+pc" or almost_projection_type == "fr+ws+pc":
-                    config.training.projection_type = "weighted_scaling_policy_clipping"
-                elif almost_projection_type == "vp+cp":
-                    config.training.projection_type = "convex_program"
-                    config.testing.folder = config.algorithm.type + "-vp"
-                elif almost_projection_type == "ws+pc+cp":
-                    config.training.projection_type = "convex_program"
-                    config.testing.folder = config.algorithm.type + "-ws+pc"
-                elif almost_projection_type == "fr" or almost_projection_type == "pen":
-                    config.training.projection_type = "None"
-                elif almost_projection_type == "pd":
-                    config.training.projection_type = "None"
-                    config.algorithm.primal_dual = True
-                elif almost_projection_type == "cp":
-                    config.training.projection_type = "convex_program"
-                else:
-                    raise ValueError(f"Unsupported projection type: {almost_projection_type}")
-                print(f"Running with folder: {config.testing.folder}, "
-                      f"algorithm type: {config.algorithm.type},"
-                      f"generalization: {config.env.generalization},"
-                      f"projection type: {config.training.projection_type}")
+
+            config.algorithm.type, almost_projection_type = config.testing.folder.split("-")
+            if almost_projection_type == "vp" or almost_projection_type == "fr+vp":
+                config.training.projection_type = "linear_violation"
+            elif almost_projection_type == "bvp" or almost_projection_type == "fr+bvp":
+                config.training.projection_type = "bound_convex_violation"
+            elif almost_projection_type == "ws+pc" or almost_projection_type == "fr+ws+pc":
+                config.training.projection_type = "weighted_scaling_policy_clipping"
+            elif almost_projection_type == "vp+cp":
+                config.training.projection_type = "convex_program"
+                config.testing.folder = config.algorithm.type + "-vp"
+            elif almost_projection_type == "ws+pc+cp":
+                config.training.projection_type = "convex_program"
+                config.testing.folder = config.algorithm.type + "-ws+pc"
+            elif almost_projection_type == "fr" or almost_projection_type == "pen":
+                config.training.projection_type = "None"
+            elif almost_projection_type == "pd":
+                config.training.projection_type = "None"
+                config.algorithm.primal_dual = True
+            elif almost_projection_type == "cp":
+                config.training.projection_type = "convex_program"
+            else:
+                raise ValueError(f"Unsupported projection type: {almost_projection_type}")
+            print(f"Running with folder: {config.testing.folder}, "
+                  f"algorithm type: {config.algorithm.type},"
+                  f"generalization: {config.env.generalization},"
+                  f"projection type: {config.training.projection_type}")
 
             # Initialize W&B
             wandb.init(config=config)
             sweep_config = wandb.config
 
-            if config.env.env_name == "mpp":
-                # todo: remove?
-                if almost_projection_type == "pd":
-                    config['training']['pd_lr'] = sweep_config.pd_lr
-                    config['algorithm']['feasibility_lambda'] = 1.0
-                elif almost_projection_type == "fr":
-                    config['algorithm']['feasibility_lambda'] = sweep_config.feasibility_lambda
-                    for i in range(n_constraints):
-                        # Error handling for missing lagrangian multipliers
-                        if f'lagrangian_multiplier_{i}' not in sweep_config:
-                            raise ValueError(f"Missing lagrangian_multiplier_{i} in sweep configuration")
-
-                        config['algorithm'][f'lagrangian_multiplier_{i}'] = sweep_config[f'lagrangian_multiplier_{i}']
+            if almost_projection_type == "pd":
+                config['training']['pd_lr'] = sweep_config.pd_lr
+                config['algorithm']['feasibility_lambda'] = 1.0
+            elif almost_projection_type == "fr":
+                config['algorithm']['feasibility_lambda'] = sweep_config.feasibility_lambda
+                for i in range(n_constraints):
+                    # Error handling for missing lagrangian multipliers
+                    if f'lagrangian_multiplier_{i}' not in sweep_config:
+                        raise ValueError(f"Missing lagrangian_multiplier_{i} in sweep configuration")
+                    config['algorithm'][f'lagrangian_multiplier_{i}'] = sweep_config[f'lagrangian_multiplier_{i}']
 
             # Dynamic code to check if keys exist in sweep_config and update config accordingly
             for key in sweep_config.keys():

@@ -16,7 +16,7 @@ algorithm:
 env:
   CI_target: 1.25
   LCG_target: 0.95
-  TEU: 1000 # 20000, 1000
+  TEU: 20000 # 20000, 1000
   VCG_target: 1.05
   bays: 10 #10, 20
   blocks: 2
@@ -31,7 +31,7 @@ env:
   distribution: lognormal # normal, uniform, poisson, lognormal, fixed
   dirichlet_alpha: 0.3
   duration_variable_revenue: False # only true AI2STOW
-  env_name: mpp #block_mpp #mpp
+  env_name: block_mpp #block_mpp #mpp
   episode_order: standard
   generalization: false
   hatch_overstowage_costs: 0.333333
@@ -73,8 +73,8 @@ model:
   temperature: 0.11243639449117128
   use_mask_head: true
   use_preload_mask: false
-#  tau_sinkhorn: 0.5
-#  iters_sinkhorn: 20
+  tau_sinkhorn: 0.5
+  iters_sinkhorn: 50
 testing:
   feasibility_recovery: false
   folder: 'sac-pd' #'sac-ws+pc' #'SA_AM'   # todo: has dependency on main.py (make sure arguments have this role); set to SA_AM for AI2STOW
