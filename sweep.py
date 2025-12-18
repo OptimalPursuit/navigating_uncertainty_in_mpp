@@ -40,7 +40,7 @@ if __name__ == "__main__":
     parser.add_argument("--path", type=str, default="results/trained_models/AI2STOW_JOURNAL_VERSION", help="Path to the directory containing the config.yaml and sweep_config.yaml files.")
     parser.add_argument("--folder", type=str, default="sac-vp", help="Folder to save the sweep configuration and results.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
-    parser.add_argument('--normalize_constraints', type=bool, default=True, help="Normalize constraints.")
+    parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
     args = parser.parse_args()
 
     def train():
