@@ -225,7 +225,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             lagrangian_multiplier=lagrangian_multiplier,
             env_tau=train_env.tau,
             env_k=train_env.k,
-            steps=train_env.steps,
+            env_steps=train_env.steps,
         )
     elif kwargs["algorithm"]["type"] == "ppo":
         loss_module = FeasibilityClipPPOLoss(
@@ -240,7 +240,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             lagrangian_multiplier=lagrangian_multiplier,
             env_tau=train_env.tau,
             env_k=train_env.k,
-            steps=train_env.steps,
+            env_steps=train_env.steps,
         )
     elif kwargs["algorithm"]["type"] == "ddpg":
         # Create the DDPG loss module
