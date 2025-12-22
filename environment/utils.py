@@ -182,8 +182,8 @@ def compute_pol_pod_locations(utilization: th.Tensor, transform_tau_to_pol, tran
     trans_pod_util = util @ transform_tau_to_pod
 
     if differentiable:
-        pol_locations = th.sigmoid((trans_pol_util).sum(dim=-2) / eps)
-        pod_locations = th.sigmoid((trans_pod_util).sum(dim=-2) / eps)
+        pol_locations = (trans_pol_util - eps).sum(dim=-2).clamp(min=0.0, max=1.0)
+        pod_locations = (trans_pod_util - eps).sum(dim=-2).clamp(min=0.0, max=1.0)
     else:
         pol_locations = (trans_pol_util).sum(dim=-2) > eps
         pod_locations = (trans_pod_util).sum(dim=-2) > eps
