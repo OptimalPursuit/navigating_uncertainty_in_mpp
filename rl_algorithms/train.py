@@ -223,9 +223,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             min_alpha=1e-2, #[1e-2, 1e-3]
             max_alpha=1.0, #[1.0, 10]
             lagrangian_multiplier=lagrangian_multiplier,
-            env_tau=train_env.tau,
-            env_k=train_env.k,
-            env_steps=train_env.steps,
+            env_init=vars(train_env)   # dict of instance attributes
         )
     elif kwargs["algorithm"]["type"] == "ppo":
         loss_module = FeasibilityClipPPOLoss(
@@ -238,9 +236,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             loss_critic_type="smooth_l1",
             normalize_advantage=True,
             lagrangian_multiplier=lagrangian_multiplier,
-            env_tau=train_env.tau,
-            env_k=train_env.k,
-            env_steps=train_env.steps,
+            env_init=vars(train_env)   # dict of instance attributes
         )
     elif kwargs["algorithm"]["type"] == "ddpg":
         # Create the DDPG loss module
@@ -399,7 +395,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             **train_performance,
         }
         log["lagrangian_multiplier"] = loss_out["lagrangian_multiplier"].mean().item() if loss_out.get("lagrangian_multiplier") is not None else 0.0
-        log["pod_violation"] = loss_out["pod_violation"].sum(dim=(1, 2)).mean().item() if train_env.name == "block_mpp" else 0.0
+        log["pod_violation"] = loss_out["pod_violation"].sum(dim=(1, 2, 3)).mean().item() if train_env.name == "block_mpp" else 0.0
         pbar.update(1)
         # Log metrics
         pbar.set_description(
@@ -480,6 +476,9 @@ def get_performance_metrics(subdata:Dict, td:TensorDict, env:nn.Module) -> Dict:
             "mean_std[x]_demand": subdata["observation", "std_demand"][:, 0, :].std(dim=-1).mean(),
         }
     if "excess_POD_violation" in subdata["observation"]:
+        print(subdata["observation", "excess_POD_violation"].shape)
+        breakpoint()
+
         out["excess_POD_violation"] = subdata["observation", "excess_POD_violation"].sum(dim=(1)).mean().item()
     return out
 
