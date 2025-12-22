@@ -796,13 +796,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
 
         # Compute long crane moves & od-pairs
         vessel_state["long_crane_moves_load"] = compute_long_crane(vessel_state["utilization"], moves, self.T, block=True)
-        vessel_state["pol_locations"], vessel_state["pod_locations"] = \
-            compute_pol_pod_locations(vessel_state["utilization"], self.transform_tau_to_pol, self.transform_tau_to_pod)
-        vessel_state["agg_pol_location"], vessel_state["agg_pod_location"] = \
-            aggregate_pol_pod_location(vessel_state["pol_locations"], vessel_state["pod_locations"], self.float_type, block=True)
-
-        # Compute unique number of pods at each bay,block
-        vessel_state["excess_pod_locations"] = th.clamp((vessel_state["pod_locations"].sum(dim=-3) > 0).sum(dim=-1) - 1, min=0.0)
+        vessel_state = compute_POD_violation(vessel_state, self.transform_tau_to_pol, self.transform_tau_to_pod, self.float_type)
 
         # Compute total loaded
         sum_action = action_state["action"].sum(dim=(-3, -2, -1)).unsqueeze(-1)
