@@ -254,7 +254,7 @@ def parse_args():
     parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
     parser.add_argument('--ur', type=float, default=1.1)
     parser.add_argument('--cv', type=float, default=0.5)
-    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=True, help="Block stowage mask.")
+    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=False, help="Block stowage mask.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
     # Generator parameters
     parser.add_argument('--demand_sparsity', type=int, default=0.3, help="Sparsity level of demand.")
