@@ -663,7 +663,7 @@ class MasterPlanningEnv(EnvBase):
             return torch.clamp(sum_action, min=self.zero, max=demand_state["current_demand"]) * rev
         return sum_action * rev
 
-    def _compute_cost(self, revenue:Tensor, vessel_state:TensorDict, moves:Tensor,
+    def _compute_cost(self, revenue:Tensor, vessel_state:Dict, moves:Tensor,
                       ac_transport:Tensor, step:Tensor, block:bool=False) -> Tuple[Tensor, Tensor]:
         """Compute profit based on revenue and cost, where cost = overstowage costs + excess_crane_moves costs.
         Costs are based on utilization, long crane moves and target long crane"""
