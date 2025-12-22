@@ -171,18 +171,22 @@ def compute_long_crane_excess_cost(lc_moves:th.Tensor, target_long_crane:th.Tens
     lc_excess = th.clamp(lc_moves - target_long_crane.view(-1, 1), min=0)
     return lc_excess.sum(dim=-1, keepdim=True) * cm_costs
 
-def compute_pol_pod_locations(utilization: th.Tensor, transform_tau_to_pol, transform_tau_to_pod, eps:float=1e-2) -> Tuple[th.Tensor, th.Tensor]:
+def compute_pol_pod_locations(utilization: th.Tensor, transform_tau_to_pol, transform_tau_to_pod, eps:float=1e-2,
+                              differentiable:bool=False) -> Tuple[th.Tensor, th.Tensor]:
     """Compute POL and POD locations based on utilization"""
-    if utilization.dim() == 4:
-        util = utilization.permute(0, 1, 3, 2)
-    elif utilization.dim() == 5:
-        util = utilization.permute(0, 1, 2, 4, 3)
-    elif utilization.dim() == 6:
-        util = utilization.permute(0, 1, 2, 3, 5, 4)
-    else:
+    util = utilization.transpose(-1, -2)
+    if util.dim() < 4 or util.dim() > 7:
         raise ValueError("Utilization tensor has wrong dimensions.")
-    pol_locations = (util @ transform_tau_to_pol).sum(dim=-2) > eps
-    pod_locations = (util @ transform_tau_to_pod).sum(dim=-2) > eps
+
+    trans_pol_util = util @ transform_tau_to_pol
+    trans_pod_util = util @ transform_tau_to_pod
+
+    if differentiable:
+        pol_locations = th.sigmoid((trans_pol_util).sum(dim=-2) / eps)
+        pod_locations = th.sigmoid((trans_pod_util).sum(dim=-2) / eps)
+    else:
+        pol_locations = (trans_pol_util).sum(dim=-2) > eps
+        pod_locations = (trans_pod_util).sum(dim=-2) > eps
     return pol_locations, pod_locations
 
 def generate_POD_mask(tr_demand_teu: th.Tensor, residual_capacity: th.Tensor, capacity: th.Tensor,
