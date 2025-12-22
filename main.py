@@ -250,36 +250,49 @@ def parse_args():
     # Environment parameters
     parser.add_argument('--env_name', type=str, default='block_mpp', help="Name of the environment.")
     parser.add_argument('--ports', type=int, default=4, help="Number of ports in env.")
-    parser.add_argument('--teu', type=int, default=20000, help="Random seed for reproducibility.")
+    parser.add_argument('--teu', type=int, default=20000, help="TEU capacity of the ship.")
     parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
     parser.add_argument('--ur', type=float, default=1.1)
     parser.add_argument('--cv', type=float, default=0.5)
-    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=False, help="Block stowage mask.")
+    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=True, help="Block stowage mask.")
+    parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
+    # Generator parameters
+    parser.add_argument('--demand_sparsity', type=int, default=0.3, help="Sparsity level of demand.")
+    parser.add_argument('--demand_perturbation', type=float, default=0.2, help="Perturbation level of demand.")
+    parser.add_argument('--duration_variable_revenue', type=lambda x: x == 'True', default=True, help="Variable revenue parameter over duration.")
+    parser.add_argument('--loading_discharge_region', type=lambda x: x == 'True', default=True, help="Use loading/discharge regions in generator.")
+    parser.add_argument('--use_dirichlet_partition', type=lambda x: x == 'True', default=True, help="Use Dirichlet partition for demand generation.")
+    parser.add_argument('--dirichlet_alpha', type=float, default=0.3, help="Alpha parameter for Dirichlet distribution.")
+    parser.add_argument('--spot_percentage', type=float, default=0.3, help="Percentage of spot demand.")
 
     # Algorithm parameters
-    parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236
-                                    , help="Lambda for feasibility.")
+    parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
 
     # Model parameters
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
+    parser.add_argument('--temperature', type=int, default=0.2, help="Temperature of policy.")
     parser.add_argument('--scale_max', type=float, default=9.459951968688712, help="Maximum value of policy scale.")
     parser.add_argument('--use_mask_head', type=bool, default=True, help="Learn mask to optimize paired block stowage.")
+    parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--projection_type', type=str, default="violation_projection", help="Projection type.")   #'bound_convex_violation', help="Projection type.")
     parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.01, 'delta': 0.01, 'max_iter': 300,
                                                                   'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
                         help="Projection parameters.")
-    parser.add_argument('--primal_dual', type=lambda x: x == 'True', default=False, help="Enable primal-dual method.")
-    parser.add_argument('--tau_sinkhorn', type=float, default=0.5, help="Slack penalty for projection.")
-    parser.add_argument('--iters_sinkhorn', type=float, default=50.0, help="Slack penalty for projection.")
+    parser.add_argument('--primal_dual', type=lambda x: x == 'True', default=True, help="Enable primal-dual method.")
+    parser.add_argument('--tau_sinkhorn', type=float, default=1.0, help="Slack penalty for projection.")
+    parser.add_argument('--iters_sinkhorn', type=float, default=50, help="Slack penalty for projection.")
 
     # Run parameters
+    # lr: 0.00014690714579803494
+    # pd_lr: 0.000034690714579803494
+    parser.add_argument('--learning_rate', type=float, default=0.00005, help="Learning rate for the optimizer.")
+    parser.add_argument('--pd_learning_rate', type=float, default=0.00003, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='sac-vp', help="Folder name for the run.")
     parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
-    parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
     return parser.parse_args()
 
 def deep_update(base, updates):
@@ -322,6 +335,15 @@ if __name__ == "__main__":
     config.env.cv_demand = args.cv
     config.env.block_stowage_mask = args.block_stowage_mask
     config.env.normalize_constraints = args.normalize_constraints
+    # Generator
+    config.env.demand_sparsity = args.demand_sparsity
+    config.env.demand_perturbation = args.demand_perturbation
+    config.env.duration_variable_revenue = args.duration_variable_revenue
+    config.env.loading_discharge_region = args.loading_discharge_region
+    config.env.use_dirichlet_partition = args.use_dirichlet_partition
+    config.env.dirichlet_alpha = args.dirichlet_alpha
+    config.env.spot_percentage = args.spot_percentage
+
     # Algorithm
     config.algorithm.feasibility_lambda = args.feasibility_lambda
     config.algorithm.primal_dual = args.primal_dual
@@ -329,11 +351,15 @@ if __name__ == "__main__":
     config.model.encoder_type = args.encoder_type
     config.model.decoder_type = args.decoder_type
     config.model.dyn_embed = args.dyn_embed
+    config.model.temperature = args.temperature
     config.model.scale_max = args.scale_max
     config.model.use_mask_head = args.use_mask_head
+    config.model.use_preload_mask = args.use_preload_mask
     config.model.tau_sinkhorn = args.tau_sinkhorn
     config.model.iters_sinkhorn = args.iters_sinkhorn
     # Run
+    config.training.learning_rate = args.learning_rate
+    config.training.pd_learning_rate = args.pd_learning_rate
     config.training.projection_type = args.projection_type
     config.testing.path = args.testing_path
     config.testing.folder = args.folder
