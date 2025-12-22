@@ -122,7 +122,7 @@ class AttentionDecoderWithCache(nn.Module):
         # Hyperparameters for mask head
         self.alpha = kwargs.get("alpha", 5.0)
         self.beta = kwargs.get("beta", 1.0)
-        self.M = kwargs.get("M", 500.0)
+        self.L = kwargs.get("L", 10.0)
         self.tau_sinkhorn = kwargs.get("tau_sinkhorn", 1.0)
         self.iters_sinkhorn = kwargs.get("iters_sinkhorn", 10)
 
@@ -261,25 +261,66 @@ class AttentionDecoderWithCache(nn.Module):
 
         # === Predict POD mask based on top-k sinkhorn ===
         if self.use_mask_head:
-            # 1. Predict mask logits (learnable)
-            y_hat = self.mask_head(combined_output)  # [B, T, A]
-            mask_logits = self.alpha * y_hat  # sharpen if needed
-            mask_probs = torch.sigmoid(mask_logits)  # learnable soft mask
 
-            # 2. Structured sparsity: soft top-k
-            n_needed = td["locations_needed"]
-            y_topk = self.soft_topk_sinkhorn(mask_probs, n_needed)  # differentiable sparse mask
+            # todo: add simulated annealing of tau_sinkhorn during training
 
-            # 3. Apply hard constraints AFTER learning
+            logits = self.mask_head(combined_output)  # [B,T,K]
+            B, T, K = logits.shape
+            N = B * T
+
+            # feasibility
             if self.use_preload_mask:
-                preload_mask = td["preload_mask"].view_as(y_topk)  # binary feasibility mask
-                mask_soft = preload_mask * y_topk  # continuous in [0,1]
-                mask_hard = preload_mask * (y_topk > 0.5).float()  # discrete {0,1}
+                feasible = td["preload_mask"].bool().view_as(logits)
             else:
-                mask_soft = y_topk  # continuous in [0,1]
-                mask_hard = (y_topk > 0.5).float()  # discrete {0,1}
+                feasible = torch.ones_like(logits, dtype=torch.bool)
 
-            mask_final = mask_soft + (mask_hard - mask_soft).detach() # STE trick
+            logits = logits.masked_fill(~feasible, -1e9)
+
+            # k: [B] or [B,T]
+            k = td["locations_needed"].squeeze(-1)
+            if k.ndim == 1:
+                k_bt = k[:, None].expand(B, T)
+            else:
+                k_bt = k
+            k_flat = k_bt.reshape(N).long()
+
+            # stabilize logits (optional but often necessary in RL)
+            logits = logits.clamp(-self.L, self.L)
+
+            # soft probs
+            p = torch.sigmoid(logits / self.tau_sinkhorn)  # tau_sinkhorn is really sigmoid temperature here
+            mask_soft = p
+
+            # hard (note: p>0.5 <=> logits>0, independent of tau)
+            hard = (logits > 0).to(p.dtype)
+
+            # hard cap: prune only if >k
+            hard_flat = hard.reshape(N, K)
+            logits_flat = logits.reshape(N, K)
+            feas_flat = feasible.reshape(N, K)
+
+            row_on = hard_flat.sum(dim=-1).long()
+            over = row_on > k_flat
+
+            feas_count = feas_flat.sum(dim=-1).long()
+            k_eff = torch.minimum(k_flat, feas_count)
+            k_max = int(k_eff.max().item()) if k_eff.numel() else 0
+
+            if k_max > 0 and over.any():
+                active_scores = logits_flat.masked_fill(hard_flat == 0, -1e9)
+                top_idx = active_scores.topk(k_max, dim=-1).indices  # [N,k_max]
+                pos = torch.arange(k_max, device=logits.device)[None, :]
+                keep = (pos < k_eff[:, None])
+
+                capped = torch.zeros_like(hard_flat)
+                capped.scatter_(1, top_idx, keep.to(capped.dtype))
+                hard_flat = torch.where(over[:, None], capped, hard_flat)
+
+            mask_hard = hard_flat.reshape(B, T, K)
+
+            # STE
+            mask_final = mask_hard - mask_soft.detach() + mask_soft
+            return mean.squeeze(), std.clamp(min=1e-3).squeeze(), mask_final.squeeze()
 
             # print("--------------------------------")
             # print("y_hat:", y_hat.mean().item())
@@ -292,14 +333,7 @@ class AttentionDecoderWithCache(nn.Module):
             # print("mask_soft:", mask_soft.sum().item() / mask_soft.numel())
             # print("mask_hard:", mask_hard.sum().item() / mask_hard.numel())
             # print("mask_final:", mask_final.sum().item() / mask_final.numel())
-
-            # 4. DO NOT TOUCH mean or std
-            # SAC distribution must be clean and fully learnable
-            # mean, std remain unchanged here
-
-            # 5. Return mask for post-sampling application
-            # (the caller should do: final_action = action * mask_final)
-            return mean.squeeze(), std.clamp(min=1e-3).squeeze(), mask_final.squeeze()
+            # return mean.squeeze(), std.clamp(min=1e-3).squeeze(), mask_final.squeeze()
         else:
             # Apply the action mask to the mean and std logits
             mask = td.get("action_mask", None)
@@ -389,3 +423,11 @@ class MLPDecoderWithCache(nn.Module):
         if self.scale_max is not None:
             std = std.clamp(max=self.scale_max)
         return mean, std
+
+def hard_sigmoid_ste(x: Tensor, threshold: float = 0.0, tau: float = 0.1) -> Tensor:
+    # soft in (0,1)
+    y_soft = torch.sigmoid((x - threshold) / tau)
+    # hard in {0,1}
+    y_hard = (y_soft > 0.5).to(x.dtype)
+    # forward uses hard; backward uses soft gradients
+    return y_hard + (y_soft - y_soft.detach())
