@@ -370,6 +370,16 @@ def compute_violation(action:th.Tensor, lhs_A:th.Tensor, rhs:th.Tensor, ) -> th.
     output = th.clamp(lhs-rhs, min=0)
     return output
 
+def compute_POD_violation(vessel_state:Dict, transform_tau_to_pol:th.Tensor, transform_tau_to_pod:th.Tensor, float_type:th.float) -> Dict:
+    vessel_state["pol_locations"], vessel_state["pod_locations"] = \
+        compute_pol_pod_locations(vessel_state["utilization"], transform_tau_to_pol, transform_tau_to_pod)
+    vessel_state["agg_pol_location"], vessel_state["agg_pod_location"] = \
+        aggregate_pol_pod_location(vessel_state["pol_locations"], vessel_state["pod_locations"], float_type, block=True)
+
+    # Compute unique number of pods at each bay,block
+    vessel_state["excess_pod_locations"] = th.clamp((vessel_state["pod_locations"].sum(dim=-3) > 0).sum(dim=-1) - 1, min=0.0)
+    return vessel_state
+
 def flatten_values_td(td: TensorDict, batch_size:Tuple[int, ...]) -> TensorDict:
     return td.apply(lambda x: x.view(*batch_size, -1))
 
