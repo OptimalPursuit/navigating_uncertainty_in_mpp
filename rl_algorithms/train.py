@@ -201,6 +201,8 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     train_env = make_env(env_kwargs=kwargs["env"], batch_size=[batch_size], device=device)
     n_step = train_env.T * train_env.K
     n_constraints = train_env.n_constraints
+    train_env._initialize_step_parameters() # Ensure step parameters are initialized
+
     if f"lagrangian_multiplier_0" in kwargs["algorithm"]:
         lagrangian_multiplier = torch.tensor([
             kwargs["algorithm"][f"lagrangian_multiplier_{i}"] for i in range(n_constraints)], device=device)
@@ -221,6 +223,9 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             min_alpha=1e-2, #[1e-2, 1e-3]
             max_alpha=1.0, #[1.0, 10]
             lagrangian_multiplier=lagrangian_multiplier,
+            env_tau=train_env.tau,
+            env_k=train_env.k,
+            steps=train_env.steps,
         )
     elif kwargs["algorithm"]["type"] == "ppo":
         loss_module = FeasibilityClipPPOLoss(
@@ -233,6 +238,9 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             loss_critic_type="smooth_l1",
             normalize_advantage=True,
             lagrangian_multiplier=lagrangian_multiplier,
+            env_tau=train_env.tau,
+            env_k=train_env.k,
+            steps=train_env.steps,
         )
     elif kwargs["algorithm"]["type"] == "ddpg":
         # Create the DDPG loss module
