@@ -73,7 +73,7 @@ def loss_feasibility(td:TensorDictBase, action:Tensor, lagrange_multiplier:Optio
     # Environment parameters
     lhs_A = td.get("lhs_A")
     rhs = td.get("rhs")
-    # excess_pod_locations = td["observation"].get("excess_pod_locations", None)
+    # real_excess_pod_locations = td["observation"].get("excess_pod_locations", None)
     utilization = td["observation"].get("utilization", None)
     env_init = kwargs.get("env_init", None)
     transform_tau_to_pol = env_init.get("transform_tau_to_pol", None)
@@ -102,7 +102,7 @@ def loss_feasibility(td:TensorDictBase, action:Tensor, lagrange_multiplier:Optio
     mass = pod_locations.sum(dim=-3)
     soft_any = th.clamp(mass, 0.0, 1.0)
     excess_pod_locations = th.relu(soft_any.sum(dim=-1) - 1.0)
-    print("excess_pod_locations:", excess_pod_locations.requires_grad)
+    # print("excess_pod_locations:", excess_pod_locations.sum(), "real:", real_excess_pod_locations.sum())
 
     # Debugging prints - should be differentiable
     # print("action:", action.requires_grad)
