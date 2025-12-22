@@ -10,7 +10,7 @@ import math
 from torch import Tensor
 from dataclasses import dataclass
 from functools import wraps
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Callable
 from tensordict import (
     TensorDict,
     TensorDictBase,
@@ -44,6 +44,7 @@ from torchrl.objectives.sac import SACLoss, _delezify, compute_log_prob
 # Custom
 from environment.utils import *
 from rl_algorithms.utils import *
+from models.decoder import hard_sigmoid_ste
 
 def weight_violations(violations, lagrange_multiplier):
     """ Weight violations by the lagrange multiplier of lm.dim()\in{3,4}."""
@@ -67,31 +68,92 @@ def weight_violations(violations, lagrange_multiplier):
 
 
 def loss_feasibility(td:TensorDictBase, action:Tensor, lagrange_multiplier:Optional[Tensor]=None,
-                     aggregate_feasibility:str="sum",) -> Tuple[Tensor, Dict[str, Tensor]]:
+                     aggregate_feasibility:str="sum", **kwargs) -> Tuple[Tensor, Dict[str, Tensor]]:
     """ Compute feasibility loss based on the action and the lagrange multiplier."""
+    # Environment parameters
     lhs_A = td.get("lhs_A")
     rhs = td.get("rhs")
-    excess_pod_locations = td["observation"].get("excess_pod_locations", None)
-    if excess_pod_locations is not None:
-        excess_pod_locations /= excess_pod_locations.shape[1] * excess_pod_locations.shape[2]  # normalize by steps and num locations
+    # excess_pod_locations = td["observation"].get("excess_pod_locations", None)
+    utilization = td["observation"].get("utilization", None)
+    env_init = kwargs.get("env_init", None)
+    transform_tau_to_pol = env_init.get("transform_tau_to_pol", None)
+    transform_tau_to_pod = env_init.get("transform_tau_to_pod", None)
+    bays = env_init.get("B", None)
+    blocks = env_init.get("BL", None)
+    decks = env_init.get("D", None)
+    transports = env_init.get("T", None)
+    cargo_types = env_init.get("K", None)
+    time = transports * cargo_types
+
+    # Violations
     violations = compute_violation(action, lhs_A, rhs)
     weighted_violations = weight_violations(violations, lagrange_multiplier)
 
-    # Get aggregation dimensions
-    sum_dims = [-x for x in range(1, violations.dim())]
-    if aggregate_feasibility == "sum":
-        agg_fn = lambda x: x.sum(dim=sum_dims).mean()
-    elif aggregate_feasibility == "mean":
-        agg_fn = lambda x: x.mean()
-    else:
-        raise ValueError(f"Unknown aggregation method: {aggregate_feasibility}")
+    # Excess pod locations computation
+    # Broadcast action over identity matrix to add to utilization
+    utilization = utilization.reshape(*action.shape, -1)
+    I = torch.eye(time, device=action.device, dtype=action.dtype)
+    utilization = utilization + action[..., None] * I[None, :, None, :]
+
+    # Get excess pod locations from utilization
+    # todo: test if smooth operations work well
+    utilization = utilization.reshape(*action.shape[:-1], bays, blocks, decks, transports, cargo_types)
+    _, pod_locations = compute_pol_pod_locations(utilization, transform_tau_to_pol, transform_tau_to_pod, differentiable=True)
+    mass = pod_locations.sum(dim=-3)
+    soft_any = th.clamp(mass, 0.0, 1.0)
+    excess_pod_locations = th.relu(soft_any.sum(dim=-1) - 1.0)
+    print("excess_pod_locations:", excess_pod_locations.requires_grad)
+
+    # Debugging prints - should be differentiable
+    # print("action:", action.requires_grad)
+    # print("utilization:", utilization.requires_grad)
+    # print("pod_locations:", pod_locations.requires_grad)
+    # print("excess_pod_locations:", excess_pod_locations.requires_grad)
 
     # Compute loss from weighted violations
+    agg_fn = make_feasibility_aggregator(aggregate_feasibility, ndims=violations.ndim)
     loss = agg_fn(weighted_violations)
     convex_violations = agg_fn(violations)
-    pod_violations = agg_fn(excess_pod_locations) if excess_pod_locations is not None else torch.tensor(0.0, device=loss.device)
+    pod_agg_fn = make_feasibility_aggregator(aggregate_feasibility, ndims=excess_pod_locations.ndim)
+    pod_violations = pod_agg_fn(excess_pod_locations) if excess_pod_locations is not None else torch.tensor(0.0, device=loss.device)
     loss += pod_violations
     return loss, {"total_convex_violations":convex_violations, "total_pod_violations":pod_violations, "violations":violations, "pod_violations":excess_pod_locations}
+
+
+def make_feasibility_aggregator(
+    aggregate_feasibility: str,
+    ndims: int,
+) -> Callable[[th.Tensor], th.Tensor]:
+    """
+    Returns an aggregation function that maps a tensor -> scalar.
+
+    Aggregation behavior:
+      - "sum": sum over all dims except dim 0, then mean over dim 0
+      - "mean": global mean over all elements
+
+    ndims must match the tensor rank you will pass to the returned function.
+    """
+    if ndims < 1:
+        raise ValueError(f"ndims must be >= 1, got {ndims}")
+
+    sum_dims = tuple(range(1, ndims))  # sum all but batch dim 0
+
+    if aggregate_feasibility == "sum":
+        def agg_fn(x: th.Tensor) -> th.Tensor:
+            if x.dim() != ndims:
+                raise ValueError(f"Expected tensor with dim={ndims}, got {x.dim()}")
+            return x.sum(dim=sum_dims).mean()
+        return agg_fn
+
+    if aggregate_feasibility == "mean":
+        def agg_fn(x: th.Tensor) -> th.Tensor:
+            if x.dim() != ndims:
+                raise ValueError(f"Expected tensor with dim={ndims}, got {x.dim()}")
+            return x.mean()
+        return agg_fn
+
+    raise ValueError(f"Unknown aggregation method: {aggregate_feasibility}")
+
 
 
 class FeasibilitySACLoss(SACLoss):
@@ -161,6 +223,7 @@ class FeasibilitySACLoss(SACLoss):
         separate_losses: bool = True,
         reduction: str = None,
         lagrangian_multiplier: torch.Tensor = None,
+        **kwargs,
     ) -> None:
         super().__init__(
             actor_network=actor_network,
@@ -183,6 +246,7 @@ class FeasibilitySACLoss(SACLoss):
             reduction=reduction,
         )
         self.register_buffer("lagrangian_multiplier", lagrangian_multiplier)
+        self._env_init = kwargs.get("env_init", None)
 
     def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
         """Computes SAC loss with feasibility constraints."""
@@ -197,7 +261,7 @@ class FeasibilitySACLoss(SACLoss):
         if "lhs_A" not in tensordict or "rhs" not in tensordict:
             raise ValueError("Feasibility loss requires 'lhs_A' and 'rhs' in tensordict.")
         lagrangian_multiplier = metadata_actor.get("lagrangian_multiplier", self.lagrangian_multiplier)
-        feasibility_loss, violation_dict = loss_feasibility(tensordict, action, lagrangian_multiplier)
+        feasibility_loss, violation_dict = loss_feasibility(tensordict, action, lagrangian_multiplier, env_init=self._env_init,)
 
         # Alpha loss
         loss_alpha = self._alpha_loss(metadata_actor["log_prob"])
@@ -372,6 +436,7 @@ class FeasibilityClipPPOLoss(PPOLoss):
             device = None
         self.register_buffer("clip_epsilon", torch.tensor(clip_epsilon, device=device))
         self.register_buffer("lagrangian_multiplier", lagrangian_multiplier)
+        self._env_init = kwargs.get("env_init", None)
 
     @property
     def _clip_bounds(self) -> Tuple[Tensor, Tensor]:
@@ -455,7 +520,7 @@ class FeasibilityClipPPOLoss(PPOLoss):
         if "lhs_A" not in tensordict or "rhs" not in tensordict:
             raise ValueError("Feasibility loss requires 'lhs_A' and 'rhs' in tensordict.")
         lagrangian_multiplier = tensordict.get("lagrangian_multiplier", self.lagrangian_multiplier)
-        feasibility_loss, violation_dict = loss_feasibility(tensordict, loc, lagrangian_multiplier)
+        feasibility_loss, violation_dict = loss_feasibility(tensordict, loc, lagrangian_multiplier, env_init=self._env_init,)
         td_out.set("loss_feasibility", feasibility_loss)
         td_out.set("violation", violation_dict["violations"])
         td_out.set("total_violation", violation_dict["total_convex_violations"])
