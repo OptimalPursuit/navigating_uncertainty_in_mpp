@@ -516,6 +516,7 @@ class MasterPlanningEnv(EnvBase):
             torch.clamp(rhs[..., n_demand:n_locations + n_demand] + self.capacity.view(1, -1),
                         min=th.zeros_like(self.capacity.view(1, -1)), max=self.capacity.view(1, -1))
         if normalize:
+            # todo: wrong normalization, if changes the ratios between constraints
             rhs[..., 0] /= (self.capacity.sum() * self.teus.mean())
             rhs[..., n_demand:n_locations + n_demand] /= self.total_capacity
             rhs[..., n_demand+n_locations:n_demand + n_locations + self.n_stability,] /= ((self.total_capacity / self.teus.mean()))
