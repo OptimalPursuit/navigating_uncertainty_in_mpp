@@ -9,9 +9,12 @@ from tensordict import TensorDict
 from tensordict.nn import TensorDictModule, TensorDictSequential
 from typing import Dict, Tuple, Optional, List, Union
 
+
+
 # Torch
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 # TorchRL
 from torchrl.envs import EnvBase
@@ -187,6 +190,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     vf_lambda = kwargs["algorithm"]["vf_lambda"]
     feasibility_lambda = kwargs["algorithm"]["feasibility_lambda"]
     entropy_lambda = kwargs["algorithm"]["entropy_lambda"]
+    mask_lambda = kwargs["algorithm"].get("mask_lambda", 1.0) # todo: add to config
     clip_epsilon = kwargs["algorithm"]["clip_range"]
     max_grad_norm = kwargs["algorithm"]["max_grad_norm"]
     tau = kwargs["algorithm"]["tau"]
@@ -328,8 +332,12 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
                     alpha_optim.zero_grad()
 
                 # Compute actor loss
-                actor_loss = loss_out["loss_actor"] + feasibility_lambda * loss_out["loss_feasibility"]
-                actor_loss.backward(retain_graph=primal_dual)
+                if "loss_feasibility" in loss_out:
+                    loss_out["loss_actor"] = loss_out["loss_actor"] + feasibility_lambda * loss_out["loss_feasibility"]
+                if "loss_mask" in loss_out:
+                    loss_out["loss_actor"] = loss_out["loss_actor"] + mask_lambda * loss_out["loss_mask"]
+
+                loss_out["loss_actor"].backward(retain_graph=primal_dual)
 
                 # Compute primal-dual loss if applicable
                 if kwargs["algorithm"]["primal_dual"]:
@@ -351,8 +359,11 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
                 for _ in range(num_epochs):
                     # Compute loss
                     loss_out = loss_module(subdata.to(device))
-                    loss_out["total_loss"] = loss_out["loss_objective"] + loss_out["loss_critic"] + \
-                                             loss_out["loss_entropy"] + feasibility_lambda * (loss_out["loss_feasibility"])
+                    loss_out["total_loss"] = loss_out["loss_objective"] + loss_out["loss_critic"] + loss_out["loss_entropy"]
+                    if "loss_feasibility" in loss_out:
+                        loss_out["total_loss"] = loss_out["total_loss"] + feasibility_lambda * loss_out["loss_feasibility"]
+                    if "loss_mask" in loss_out:
+                        loss_out["total_loss"] = loss_out["total_loss"] + mask_lambda * loss_out["loss_mask"]
 
                     # Actor update
                     actor_critic_optim.zero_grad()
