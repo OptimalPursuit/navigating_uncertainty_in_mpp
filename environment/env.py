@@ -447,6 +447,7 @@ class MasterPlanningEnv(EnvBase):
 
         if block:
             out["excess_pod_locations"] = vessel_state["excess_pod_locations"]
+            out["pod_locations"] = vessel_state["pod_locations"]
             out["locations_needed"] = vessel_state["locations_needed"]
             out["action_mask"] = action_mask
         return out
@@ -786,10 +787,10 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # Available locations based on pre-loading utilization
         empty_locations = self._empty_locations(vessel_state["utilization"], batch_size)
         POD_available_locations = self._available_locations_PODs_preload_utilization(vessel_state["utilization"], pod)
-        if self.block_stowage_mask:
-            preload_mask = th.zeros(*batch_size, self.n_block_locations, device=self.device, dtype=torch.bool)
-        else:
-            preload_mask = empty_locations & POD_available_locations
+        # if self.block_stowage_mask:
+        #     preload_mask = th.zeros(*batch_size, self.n_block_locations, device=self.device, dtype=torch.bool)
+        # else:
+        preload_mask = empty_locations & POD_available_locations
 
         # Update utilization
         vessel_state["utilization"] = update_state_loading(action_state["action"], vessel_state["utilization"], tau, k, )
@@ -879,6 +880,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
                                                         self.capacity, self.B, self.CI_target).view(*batch_size, 1)
         vessel_state["residual_lc_capacity"] = vessel_state["target_long_crane"].repeat(1, self.B - 1)
         vessel_state["long_crane_moves_discharge"] = th.zeros_like(vessel_state["residual_lc_capacity"])
+        vessel_state["pod_locations"] = th.zeros(*batch_size, self.B, self.D, self.BL, self.P, dtype=th.bool, device=device)
         vessel_state["agg_pol_location"] = th.zeros(self.action_spec.shape, dtype=self.float_type, device=device)
         vessel_state["agg_pod_location"] = th.zeros_like(vessel_state["agg_pol_location"])
         vessel_state["lcg"] = th.ones_like(time, dtype=self.float_type)
@@ -950,6 +952,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
             vcg=Unbounded(shape=(*batch_size, 1), dtype=self.float_type),
             residual_capacity=Unbounded(shape=(*batch_size, self.n_block_locations),  dtype=self.float_type),
             residual_lc_capacity=Unbounded(shape=(*batch_size, self.B - 1), dtype=self.float_type),
+            pod_locations=Unbounded(shape=(*batch_size, self.n_block_locations * self.P), dtype=th.bool),
             agg_pol_location=Unbounded(shape=(*batch_size, self.n_block_locations), dtype=self.float_type),
             agg_pod_location=Unbounded(shape=(*batch_size, self.n_block_locations), dtype=self.float_type),
             # Misc
