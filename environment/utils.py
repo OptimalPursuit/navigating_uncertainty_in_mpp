@@ -369,9 +369,9 @@ def generate_POD_mask(
     return out.reshape(*batch_dims, -1)
 
 def compute_valid_labels_all_actions(
-    residual_capacity: th.Tensor,   # [N,B,D,BL]
-    pod_locations: th.Tensor,        # [N,B,D,BL,P] (binary or amounts)
-    pod: th.Tensor,                  # [N] int64 POD id per sample
+    residual_capacity: th.Tensor,   # [batch_size,B,D,BL]
+    pod_locations: th.Tensor,        # [batch_size,B,D,BL,P] (binary or amounts)
+    pod: th.Tensor,                  # [batch_size] int64 POD id per sample
     *,
     max_other_share: float = 0.0,
     delta: float = 1e-3,
@@ -387,39 +387,39 @@ def compute_valid_labels_all_actions(
         where post_action_other_share = other_amt / (total_amt + delta)
 
     Returns:
-      y: [N,B,D,BL] bool
+      y: [batch_size,B,D,BL] bool
     """
-    # todo: shaping here is clunky
-    N, B, D, BL = residual_capacity.shape
-    _, _, _, _, P = pod_locations.shape
-    device = residual_capacity.device
+    # Dimensions
+    batch_size, B, D, BL = residual_capacity.shape
+    P = pod_locations.shape[-1]
 
-    # Aggregate to block-level amounts across decks
-    # pod_amt_block: [N,B,BL,P]
-    pod_amt_block = pod_locations.sum(dim=2)
-    total_amt = pod_amt_block.sum(dim=-1)  # [N,B,BL]
+    # Collapse decks -> block totals: how much of each POD is already in each (bay, block)
+    pod_amt_block = pod_locations.sum(dim=2)           # [batch_size,B,BL,P]
+    total_amt = pod_amt_block.sum(dim=-1)              # [batch_size,B,BL] total cargo in block (all PODs)
 
-    # Gather current-POD amount per (N,B,BL)
-    # cur_amt[n,b,bl] = pod_amt_block[n,b,bl,pod[n]]
-    pod_idx = pod.view(N, 1, 1, 1).expand(N, B, BL, 1)
-    cur_amt = th.gather(pod_amt_block, dim=-1, index=pod_idx).squeeze(-1)  # [N,B,BL]
+    # Current-POD amount in each block (index into last dim with pod[n])
+    pod_idx = pod.view(batch_size, 1, 1, 1).expand(batch_size, B, BL, 1)
+    cur_amt = th.gather(pod_amt_block, dim=-1, index=pod_idx).squeeze(-1)  # [batch_size,B,BL]
 
+    # Split block cargo into "current POD" vs "other PODs"
     other_amt = total_amt - cur_amt
-    block_empty = total_amt <= 0
-    block_has_cur = cur_amt > 0
+    block_empty = total_amt <= 0                        # no cargo in block
+    block_has_cur = cur_amt > 0                         # block already contains current POD
 
-    # Broadcast to deck dimension to label each (b,d,bl) action
-    total_bd = total_amt.unsqueeze(2).expand(N, B, D, BL)
-    other_bd = other_amt.unsqueeze(2).expand(N, B, D, BL)
-    empty_bd = block_empty.unsqueeze(2).expand(N, B, D, BL)
-    has_cur_bd = block_has_cur.unsqueeze(2).expand(N, B, D, BL)
+    # Expand block-level quantities back to [B,D,BL] so every deck slot in a block shares the same mixing label
+    total_bd = total_amt.unsqueeze(2).expand(batch_size, B, D, BL)
+    other_bd = other_amt.unsqueeze(2).expand(batch_size, B, D, BL)
+    empty_bd = block_empty.unsqueeze(2).expand(batch_size, B, D, BL)
+    has_cur_bd = block_has_cur.unsqueeze(2).expand(batch_size, B, D, BL)
 
-    # Post-action mixing if we place delta of current POD in this block
+    # Mixing after placing `delta` of current POD into that block (other stays same, total increases by delta)
     post_other_share = other_bd / (total_bd + delta + eps)
     mix_ok_post = post_other_share <= (max_other_share + 1e-7)
 
+    # Location-level feasibility: there must be at least `delta` free capacity in that slot
     has_space = residual_capacity >= delta
 
+    # Final label per action/location (bay, deck, block)
     y = has_space & (empty_bd | (has_cur_bd & mix_ok_post))
     return y
 
