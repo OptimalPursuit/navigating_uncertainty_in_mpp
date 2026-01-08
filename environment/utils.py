@@ -191,232 +191,188 @@ def compute_pol_pod_locations(utilization: th.Tensor, transform_tau_to_pol, tran
 
 def generate_POD_mask(
     tr_demand_teu: th.Tensor,
-    residual_capacity: th.Tensor,    # [B,D,BL] or [*batch,B,D,BL]
-    capacity: th.Tensor,             # [B,D,BL] or [*batch,B,D,BL]
-    pod_locations: th.Tensor,         # [B,D,BL,P] or [*batch,B,D,BL,P]
+    residual_capacity: th.Tensor,     # [B,D,BL] or [*batch,B,D,BL]
+    capacity: th.Tensor,              # [B,D,BL] or [*batch,B,D,BL]
+    pod_locations: th.Tensor,          # [B,D,BL,P] or [*batch,B,D,BL,P] (indicator or amount)
     pod: int,
     batch_size: tuple = (),
     *,
-    max_other_share: float = 0.0,    # 0.0 => strict no-mix; 0.1 => allow up to 10% "other POD" share in a block
-    oversubscribe: float = 1.2,      # open ~20% extra blocks beyond the minimum needed to cover demand
+    POD_mix_in_block: float = 0.0,     # allowed noncurrent share in a block
+    oversubscribe: float = 1.2,        # open ~20% extra blocks beyond minimum needed to cover demand
     eps: float = 1e-9,
 ) -> th.Tensor:
     """
-    Build an action mask for loading the current POD into a vessel discretized as [Bay, Deck, Block].
+    Action mask for placing current POD into [Bay,Deck,Block]. Output is flattened to [*batch, B*D*BL].
+    It creates a mask that prevents POD violations, but also controls opening of new blocks based on demand.
 
-    Output:
-        Boolean mask over all actions, flattened to shape [*batch, B*D*BL].
-
-    Enforced stowage rules (block stowage / POD purity):
-      (R1) Location feasibility: can only load where residual_capacity > 0.
-      (R2) Block POD compatibility:
-            - If a block is non-empty, you may load into it ONLY if:
-                (a) the block already contains the current POD, AND
-                (b) the share of "other POD" already in that block <= max_other_share.
-            - If a block is empty, it is compatible, but opening it is controlled by (R3).
-      (R3) Controlled opening of new blocks:
-            - Among empty, openable blocks, randomly select a minimal set whose total capacity
-              covers the demand (tr_demand_teu), then oversubscribe slightly.
-
-    Notes:
-      - All "block-level" decisions treat a block as the set of all decks at (bay, block).
-      - pod_locations may be binary or amount-valued. If binary, shares are "slot shares";
-        if amount-valued (e.g., TEU), shares are TEU shares.
+    Rules:
+      (1) Slot must have space: residual_capacity > 0.
+      (2) Block POD rule (deck-collapsed):
+            - empty block is compatible (but may be blocked by opening rule),
+            - non-empty block is compatible only if it already contains current POD and
+              noncurrent share in that block <= POD_mix_in_block.
+      (3) Opening rule for empty blocks: among empty+openable blocks, select enough blocks to cover near-term demand.
     """
-    # --------------------------------------------------------------------------
-    # Shapes / indexing
-    # --------------------------------------------------------------------------
-    # pod_locations last dims are always [B, D, BL, P], with optional leading batch dims.
+    # --- shapes / batch handling ---
     B, D, BL, P = pod_locations.shape[-4:]
     device = pod_locations.device
     if not (0 <= pod < P):
         raise ValueError(f"pod={pod} out of range for P={P}")
 
-    # --------------------------------------------------------------------------
-    # Batch handling: support either
-    #   - unbatched inputs + explicit batch_size, or
-    #   - already-batched pod_locations (batch_size ignored)
-    # --------------------------------------------------------------------------
     has_batch = (pod_locations.dim() > 4)
     batch_dims = pod_locations.shape[:-4] if has_batch else batch_size
 
     def _expand_to_batch(x: th.Tensor, target_shape: tuple) -> th.Tensor:
-        """
-        Expand x to target_shape by adding leading batch dims if needed.
-        Assumes x is either already target_shape, or unbatched with matching trailing dims.
-        """
+        # If unbatched, add a leading batch dim and expand; otherwise rely on expand/broadcast.
         if x.shape == target_shape:
             return x
-        # If x matches the trailing (non-batch) dims, add a leading batch dim and expand.
         if x.shape == target_shape[-len(x.shape):]:
             return x.unsqueeze(0).expand(*target_shape)
-        # Otherwise rely on PyTorch broadcasting rules (will raise if incompatible).
         return x.expand(*target_shape)
 
-    # Expected fully-batched shapes
     bc_shape = (*batch_dims, B, D, BL)
     pl_shape = (*batch_dims, B, D, BL, P)
-
     residual_capacity = _expand_to_batch(residual_capacity, bc_shape)
     capacity = _expand_to_batch(capacity, bc_shape)
     pod_locations = _expand_to_batch(pod_locations, pl_shape)
 
-    # --------------------------------------------------------------------------
-    # (R1) Location feasibility: only locations with remaining space are loadable
-    # --------------------------------------------------------------------------
-    loc_has_space = residual_capacity > 0  # [*batch, B, D, BL]
+    # --- (1) per-location feasibility ---
+    loc_has_space = residual_capacity > 0  # [*batch,B,D,BL]
 
-    # --------------------------------------------------------------------------
-    # Compute block-level POD composition by collapsing decks:
-    #   pod_amt_block[b, bl, p] = total amount of POD p currently in (bay=b, block=bl) across all decks
-    # --------------------------------------------------------------------------
-    pod_amt_block = pod_locations.sum(dim=-3)          # sum over deck D -> [*batch, B, BL, P]
-    total_amt_block = pod_amt_block.sum(dim=-1)        # total amount (all PODs) -> [*batch, B, BL]
-    cur_amt_block = pod_amt_block[..., pod]            # amount of current POD -> [*batch, B, BL]
-    other_amt_block = total_amt_block - cur_amt_block  # amount of "non-current" POD -> [*batch, B, BL]
+    # --- block-level POD composition (sum over decks) ---
+    # If pod_locations is binary, these are "location counts"; if amount-valued, they are "amount totals".
+    pod_count_block = pod_locations.sum(dim=-3)                 # [*batch,B,BL,P]
+    total_count_block = pod_count_block.sum(dim=-1)             # [*batch,B,BL]
+    cur_count_block = pod_count_block[..., pod]                 # [*batch,B,BL]
+    noncur_count_block = total_count_block - cur_count_block    # [*batch,B,BL]
 
     # Block occupancy flags
-    block_empty = total_amt_block <= 0                 # block has no cargo at all
-    block_has_cur = cur_amt_block > 0                  # block already contains the current POD
+    block_empty = total_count_block <= 0                        # no POD present in block
+    block_has_cur = cur_count_block > 0                         # current POD present in block
 
-    # Fraction of existing cargo in the block that is NOT the current POD
-    other_share = other_amt_block / (total_amt_block + eps)  # safe even when block is empty
-    block_mix_ok = other_share <= (max_other_share + 1e-7)
+    # Noncurrent share among what is already in the block (safe due to eps)
+    noncur_share_block = noncur_count_block / (total_count_block + eps)
+    noncur_share_ok = noncur_share_block <= (POD_mix_in_block + 1e-7)
 
-    # --------------------------------------------------------------------------
-    # (R2) Block POD compatibility
-    #   - empty blocks are compatible in principle
-    #   - non-empty blocks are compatible only if they already contain this POD AND are not "too mixed"
-    # --------------------------------------------------------------------------
-    block_allowed_for_pod = block_empty | (block_has_cur & block_mix_ok)  # [*batch, B, BL]
+    # --- (2) block compatibility rule for current POD ---
+    block_allowed_for_pod = block_empty | (block_has_cur & noncur_share_ok)  # [*batch,B,BL]
 
-    # Expand block-level predicates back to full grid [*batch, B, D, BL]
+    # Expand block rules to every bay-deck inside the block
     block_empty_bd = block_empty.unsqueeze(-2).expand(*batch_dims, B, D, BL)
     block_has_cur_bd = block_has_cur.unsqueeze(-2).expand(*batch_dims, B, D, BL)
     block_allowed_bd = block_allowed_for_pod.unsqueeze(-2).expand(*batch_dims, B, D, BL)
 
-    # --------------------------------------------------------------------------
-    # (R3) Decide which empty blocks are allowed to be "opened" this step.
-    # Goal: allow opening enough empty blocks to accommodate near-term demand (tr_demand_teu).
-    # --------------------------------------------------------------------------
-    total_residual = residual_capacity.sum(dim=(-1, -2, -3))      # total residual TEU over entire vessel -> [*batch]
-    capacity_to_fill = th.minimum(total_residual, tr_demand_teu)  # clamp demand by remaining space -> [*batch]
+    # --- (3) opening rule: allow only a subset of empty blocks to be used this step ---
+    # Demand capped by total remaining residual space
+    total_residual_teu = residual_capacity.sum(dim=(-1, -2, -3))          # [*batch]
+    demand_to_cover_teu = th.minimum(total_residual_teu, tr_demand_teu)   # [*batch]
 
-    # Aggregate per-block residual/capacity across decks (block is the decision unit)
-    block_residual = residual_capacity.sum(dim=-2)  # [*batch, B, BL]
-    block_capacity = capacity.sum(dim=-2)           # [*batch, B, BL]
+    # Per-block residual/capacity across decks (block is the unit that gets "opened")
+    block_residual_teu = residual_capacity.sum(dim=-2)  # [*batch,B,BL]
+    block_capacity_teu = capacity.sum(dim=-2)           # [*batch,B,BL]
 
-    # A block is "openable" if it is empty and has any residual capacity
-    block_can_open = block_empty & (block_residual > 0)  # [*batch, B, BL]
+    # A block can be opened only if it's empty and has some residual capacity
+    block_openable = block_empty & (block_residual_teu > 0)  # [*batch,B,BL]
 
-    # --------------------------------------------------------------------------
-    # Randomized opening policy, mirrored across bays for symmetry:
-    # - score openable blocks randomly
-    # - sort by score
-    # - take the smallest prefix whose cumulative capacity >= capacity_to_fill
-    # - oversubscribe to give the policy extra degrees of freedom
-    # --------------------------------------------------------------------------
+    # Random mirrored scores across bays (symmetry); non-openable blocks get score 0.
     half_B = B // 2 + (B % 2)
     rand_half = th.rand((*batch_dims, half_B, BL), device=device)
-    rand_full = th.cat([rand_half, rand_half.flip(dims=[-2])], dim=-2)  # [*batch, B, BL]
+    rand_full = th.cat([rand_half, rand_half.flip(dims=[-2])], dim=-2)
+    rand_full = rand_full * block_openable.to(rand_full.dtype)
 
-    # Only openable blocks contribute scores (others get score 0 and drop to the end)
-    rand_full = rand_full * block_can_open.to(rand_full.dtype)
-
-    # Flatten (bay, block) for global top-k selection per batch element
-    scores = rand_full.reshape(*batch_dims, -1)                  # [*batch, B*BL]
-    sorted_idx = scores.argsort(dim=-1, descending=True)         # indices into flattened (B*BL)
-
+    # Select top-scoring blocks until cumulative capacity covers demand (then oversubscribe)
+    scores_flat = rand_full.reshape(*batch_dims, -1)                    # [*batch,B*BL]
+    sorted_idx = scores_flat.argsort(dim=-1, descending=True)
     # Gather capacities in sorted order and compute cumulative capacity
-    caps_flat = block_capacity.reshape(*batch_dims, -1)          # [*batch, B*BL]
-    sorted_caps = th.gather(caps_flat, dim=-1, index=sorted_idx) # [*batch, B*BL]
+    cap_flat = block_capacity_teu.reshape(*batch_dims, -1)
+    sorted_caps = th.gather(cap_flat, dim=-1, index=sorted_idx)
     csum = sorted_caps.cumsum(dim=-1)
-
-    # Find minimal k such that cumulative capacity >= capacity_to_fill
-    enough = csum >= capacity_to_fill.unsqueeze(-1)
+    # Find minimal k with cumulative capacity >= demand_to_cover_teu
+    enough = csum >= demand_to_cover_teu.unsqueeze(-1)
     any_enough = enough.any(dim=-1)
-    first_enough = enough.int().argmax(dim=-1)                   # 0 if never true OR true at first
-    k_min = th.where(any_enough, first_enough + 1, th.full_like(first_enough, scores.shape[-1]))
+    first_enough = enough.int().argmax(dim=-1)
+    k_min = th.where(any_enough, first_enough + 1, th.full_like(first_enough, scores_flat.shape[-1]))
 
-    # If demand is zero, open nothing; else oversubscribe slightly above the minimum
+    # If demand is zero, open nothing; else open ceil(k_min * oversubscribe) blocks.
     k = th.where(
-        capacity_to_fill > 0,
+        demand_to_cover_teu > 0,
         th.ceil(k_min.to(th.float32) * oversubscribe).to(th.long),
         th.zeros_like(k_min),
     )
-
-    # Build selection mask over flattened blocks: select the top-k indices in sorted order
-    ar = th.arange(scores.shape[-1], device=device).expand(*batch_dims, -1)
+    # Build selection mask over flattened blocks: select top-k in sorted order
+    ar = th.arange(scores_flat.shape[-1], device=device).expand(*batch_dims, -1)
     topk_mask = ar < k.unsqueeze(-1)
+    # Scatter to get final selection mask over flattened blocks
+    open_sel_flat = th.zeros_like(scores_flat, dtype=th.bool)
+    open_sel_flat.scatter_(-1, sorted_idx, topk_mask)
+    # Reshape selection back to [*batch,B,BL] and expand over decks
+    open_selected_block = open_sel_flat.view(*batch_dims, B, BL)                 # [*batch,B,BL]
+    open_selected_bd = open_selected_block.unsqueeze(-2).expand(*batch_dims, B, D, BL)
 
-    sel_flat = th.zeros_like(scores, dtype=th.bool)
-    sel_flat.scatter_(-1, sorted_idx, topk_mask)
-
-    # Reshape selection back to [*batch, B, BL], then expand over deck dimension
-    blk_selected = sel_flat.view(*batch_dims, B, BL)                           # [*batch, B, BL]
-    blk_selected_bd = blk_selected.unsqueeze(-2).expand(*batch_dims, B, D, BL) # [*batch, B, D, BL]
-
-    # --------------------------------------------------------------------------
-    # Final action availability:
-    # - Existing blocks containing current POD are always usable (subject to mix threshold)
-    # - Empty blocks are usable only if selected for opening this step
-    # - Always require location-level capacity
-    # --------------------------------------------------------------------------
-    allowed_existing = block_has_cur_bd
-    allowed_new = block_empty_bd & blk_selected_bd
-
-    out = loc_has_space & block_allowed_bd & (allowed_existing | allowed_new)  # [*batch, B, D, BL]
+    # --- final availability: must have space AND satisfy block rule AND (existing or opened-empty) ---
+    # Final output mask
+    # todo: check logic here!
+    allow_in_new_block = block_empty_bd & open_selected_bd
+    out = loc_has_space & block_allowed_bd & (block_has_cur_bd | allow_in_new_block)
+    breakpoint()
     return out.reshape(*batch_dims, -1)
 
-def compute_valid_labels_all_actions(
+def compute_targets_to_prevent_POD_violations(
     residual_capacity: th.Tensor,   # [batch_size,B,D,BL]
     pod_locations: th.Tensor,        # [batch_size,B,D,BL,P] (binary or amounts)
     pod: th.Tensor,                  # [batch_size] int64 POD id per sample
+    B: int,
     *,
-    max_other_share: float = 0.0,
+    D: int = 2,
+    POD_mix_in_block: float = 0.0,
     delta: float = 1e-3,
-    eps: float = 1e-9,
+    eps: float = 1e-7,
 ) -> th.Tensor:
     """
-    Vectorized labels y for all actions in each state.
+    Target y for all valid actions for paired block stowage (PBS) with control over POD mix in blocks.
+    It essentially gives a mask that prevents POD violations.
 
-    Rule encoded (matches your earlier hard-mask semantics):
-      - Must have space at location: residual_capacity >= delta
-      - Block is valid for this POD if:
-          block_empty OR (block_has_current_POD AND post_action_other_share <= max_other_share)
-        where post_action_other_share = other_amt / (total_amt + delta)
-
+    PBS is enforced by:
+      - Available TEU capacity:     residual_capacity >= delta
+      - Block available for POD:    block empty OR
+                                    (block with current POD AND noncurrent POD share <= allowed POD mix in blocks)
     Returns:
       y: [batch_size,B,D,BL] bool
     """
     # Dimensions
-    batch_size, B, D, BL = residual_capacity.shape
-    P = pod_locations.shape[-1]
+    batch_size, action_shape = residual_capacity.shape[0], residual_capacity.shape[-1]
+    steps = residual_capacity.shape[1] if residual_capacity.dim() >= 3 else 1
+    BL = action_shape // (B * D)
+    P = pod_locations.shape[-1] // action_shape
 
-    # Collapse decks -> block totals: how much of each POD is already in each (bay, block)
-    pod_amt_block = pod_locations.sum(dim=2)           # [batch_size,B,BL,P]
-    total_amt = pod_amt_block.sum(dim=-1)              # [batch_size,B,BL] total cargo in block (all PODs)
+    # Resize inputs
+    residual_capacity = residual_capacity.view(batch_size, steps, B, D, BL)
+    pod_locations = pod_locations.view(batch_size, steps, B, D, BL, P)
 
-    # Current-POD amount in each block (index into last dim with pod[n])
-    pod_idx = pod.view(batch_size, 1, 1, 1).expand(batch_size, B, BL, 1)
-    cur_amt = th.gather(pod_amt_block, dim=-1, index=pod_idx).squeeze(-1)  # [batch_size,B,BL]
+    # Collapse decks -> how many PODs are in each (bay, block)
+    pod_count_block = pod_locations.sum(dim=-3)           # [batch_size,B,BL,P]
+    total_count = pod_count_block.sum(dim=-1)              # [batch_size,B,BL] total PODs in blocks
 
-    # Split block cargo into "current POD" vs "other PODs"
-    other_amt = total_amt - cur_amt
-    block_empty = total_amt <= 0                        # no cargo in block
-    block_has_cur = cur_amt > 0                         # block already contains current POD
+    # Current-POD count in each block
+    pod_idx = pod.view(batch_size, steps, 1, 1, 1).expand(batch_size, steps, B, BL, 1)
+    cur_count = th.gather(pod_count_block, dim=-1, index=pod_idx).squeeze(-1)  # [batch_size,B,BL]
 
-    # Expand block-level quantities back to [B,D,BL] so every deck slot in a block shares the same mixing label
-    total_bd = total_amt.unsqueeze(2).expand(batch_size, B, D, BL)
-    other_bd = other_amt.unsqueeze(2).expand(batch_size, B, D, BL)
-    empty_bd = block_empty.unsqueeze(2).expand(batch_size, B, D, BL)
-    has_cur_bd = block_has_cur.unsqueeze(2).expand(batch_size, B, D, BL)
+    # Split block cargo into "current POD" vs "noncurrent PODs"
+    noncur_count = total_count - cur_count
+    block_empty = total_count <= 0                        # no cargo in block
+    block_has_cur = cur_count > 0                         # block already contains current POD
 
-    # Mixing after placing `delta` of current POD into that block (other stays same, total increases by delta)
-    post_other_share = other_bd / (total_bd + delta + eps)
-    mix_ok_post = post_other_share <= (max_other_share + 1e-7)
+    # Expand block-level quantities back to [B,D,BL]
+    total_bd = total_count.unsqueeze(-2).expand(batch_size, steps, B, D, BL)
+    noncur_bd = noncur_count.unsqueeze(-2).expand(batch_size, steps, B, D, BL)
+    empty_bd = block_empty.unsqueeze(-2).expand(batch_size, steps, B, D, BL)
+    has_cur_bd = block_has_cur.unsqueeze(-2).expand(batch_size, steps, B, D, BL)
 
-    # Location-level feasibility: there must be at least `delta` free capacity in that slot
+    # Compute noncurrent POD share after placing `delta` of current POD, then check against allowed mix
+    noncur_share = noncur_bd / (total_bd + delta + eps)
+    mix_ok_post = noncur_share <= (POD_mix_in_block + eps)
+
+    # There must be at least `delta` free capacity in that location
     has_space = residual_capacity >= delta
 
     # Final label per action/location (bay, deck, block)
