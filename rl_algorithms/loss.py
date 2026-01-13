@@ -154,7 +154,156 @@ def make_feasibility_aggregator(
 
     raise ValueError(f"Unknown aggregation method: {aggregate_feasibility}")
 
+def extract_mask_supervision_tensors(
+    td: TensorDictBase,
+    *,
+    mask_logits_key: str = "mask",
+    feasible_key: Tuple[str, str] = ("observation", "preload_mask"),
+    residual_key: Tuple[str, str] = ("observation", "residual_capacity"),
+    podloc_key: Tuple[str, str] = ("observation", "pod_locations"),
+    pod_key_candidates: Tuple[Tuple[str, ...], ...] = (("observation", "pod"), ("pod",)),
+) -> Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Returns:
+      mask_logits: [B,T,K] or [B,K]
+      feasible:    same shape as mask_logits (bool) or None
+      residual_capacity_grid: [B,T,Bay,Deck,Block]
+      pod_locations_grid:     [B,T,Bay,Deck,Block,P]
+      pod: [B,T] or [B]
+    """
+    mask_logits = td.get(mask_logits_key, None)
+    if mask_logits is None:
+        raise KeyError(f"Missing {mask_logits_key} in tensordict. "
+                       f"Ensure actor writes td['{mask_logits_key}']=mask_logits during forward().")
 
+    feasible = td.get(feasible_key, None)
+    residual_capacity = td.get(residual_key, None)
+    pod_locations = td.get(podloc_key, None)
+
+    if residual_capacity is None:
+        raise KeyError(f"Missing {residual_key} in tensordict.")
+    if pod_locations is None:
+        raise KeyError(f"Missing {podloc_key} in tensordict.")
+
+    pod = None
+    for k in pod_key_candidates:
+        if td.get(k, None) is not None:
+            pod = td.get(k)
+            break
+    if pod is None:
+        raise KeyError(f"Missing pod key. Tried {pod_key_candidates}.")
+    return mask_logits, feasible, residual_capacity, pod_locations, pod.long()
+
+def add_mask_bce_loss(
+    td: TensorDictBase,
+    *,
+    w_pos: float = 1.0,
+    w_neg: float = 10.0,
+    mask_logits_key: str = "mask",
+    feasible_key: Tuple[str, str] = ("observation", "preload_mask"),
+    residual_key: Tuple[str, str] = ("observation", "residual_capacity"),
+    podloc_key: Tuple[str, str] = ("observation", "pod_locations"),
+    pod_key_candidates: Tuple[Tuple[str, ...], ...] = (("observation", "pod"), ("pod",)),
+    symmterical: bool = False,
+    # one-sided / subset selection knobs (used when symmterical=False)
+    lam_illegal: float = 1.0,  # penalize opening illegal actions (y==0)
+    lam_sparse: float = 0.001,  # penalize opening too many legal actions (y==1)
+    lam_cover: float = 0.1,  # prevent all-zero collapse (expects mask_logits is [B,T,K])
+    K_min: float = 1.0,  # expected minimum opens among legal per (B,T)
+    tau: float = 1.0,  # sigmoid temperature for sparse/cover terms
+) -> torch.Tensor:
+    """
+    Computes BCE supervision for a learned action mask: targets are post-action validity labels from the checker.
+    If `feasible` is not true environment feasibility, set it to None or pass a correct feasibility key to avoid bias.
+    - td: TensorDict with necessary keys
+    - mask_logits_key: key for the predicted mask logits
+    - y : target labels from checker
+
+    """
+    mask_logits, feasible, residual_capacity, pod_locations, pod = extract_mask_supervision_tensors(
+        td,
+        mask_logits_key=mask_logits_key,
+        feasible_key=feasible_key,
+        residual_key=residual_key,
+        podloc_key=podloc_key,
+        pod_key_candidates=pod_key_candidates,
+    )
+
+    # Normalize shapes to [B,T,K] (and pod to [B,T])
+    if mask_logits.dim() == 2:
+        mask_logits = mask_logits.unsqueeze(1)
+    if feasible is not None and feasible.dim() == 2:
+        feasible = feasible.unsqueeze(1)
+    if pod.dim() == 1:
+        pod = pod[:, None].expand(mask_logits.shape[0], mask_logits.shape[1])
+
+    # Post-action validity labels on grid -> flatten to [B,T,K]
+    # y target are labels that prevents POD-violations
+    B = td["observation"]["long_crane_moves_discharge"].shape[-1] + 1
+    y_grid = compute_targets_to_prevent_POD_violations(
+        residual_capacity,
+        pod_locations,
+        pod,
+        B,
+    ).view_as(residual_capacity)
+    y = y_grid.reshape_as(mask_logits).float()
+
+    # Optionally exclude infeasible entries from the supervised loss
+    if feasible is not None:
+        y = y.masked_fill(~feasible, 0.0)
+        mask_logits = mask_logits.masked_fill(~feasible, 0.0)
+
+
+    if symmterical:
+        # Weighted BCE loss with symmetrical weights on positives and negatives
+        weight = torch.where(
+            y > 0.5,
+            torch.tensor(w_pos, device=y.device),
+            torch.tensor(w_neg, device=y.device),
+        )
+        return F.binary_cross_entropy_with_logits(mask_logits, y, weight=weight)
+
+    # --- one-sided + subset selection (y is an upper bound) ---
+    # valid entries to supervise
+    if feasible is None:
+        valid = torch.ones_like(y, dtype=torch.bool)
+    else:
+        valid = feasible.bool()
+
+    y_bool = (y > 0.5)
+    illegal = (~y_bool) & valid
+    legal = y_bool & valid
+
+    # (A) Safety: penalize opening illegal actions (false positives)
+    # For y==0, BCE-with-logits term is softplus(logit). Minimizing pushes logits -> -inf (closed).
+    if illegal.any():
+        L_illegal = F.softplus(mask_logits[illegal]).mean()
+    else:
+        L_illegal = mask_logits.new_tensor(0.0)
+
+    # Convert to probabilities (for sparse/cover)
+    p_open = torch.sigmoid(mask_logits / tau)
+
+    # (B) Sparsity: prefer subset within legal set (discourage opening everything legal)
+    if lam_sparse != 0.0:
+        if legal.any():
+            L_sparse = p_open[legal].mean()
+        else:
+            L_sparse = mask_logits.new_tensor(0.0)
+    else:
+        L_sparse = mask_logits.new_tensor(0.0)
+
+    # (C) Coverage floor: avoid collapse to all-zeros (optional)
+    # Enforce at least K_min opens in expectation per (B,T).
+    if lam_cover != 0.0:
+        BT = mask_logits.shape[0] * mask_logits.shape[1]
+        p_legal = (p_open * legal.to(p_open.dtype)).reshape(BT, -1)
+        mass = p_legal.sum(dim=-1)  # [B*T]
+        L_cover = F.relu(K_min - mass).mean()
+    else:
+        L_cover = mask_logits.new_tensor(0.0)
+
+    return lam_illegal * L_illegal + lam_sparse * L_sparse + lam_cover * L_cover
 
 class FeasibilitySACLoss(SACLoss):
     """TorchRL implementation of the SAC loss with feasibility constraints.
@@ -262,6 +411,7 @@ class FeasibilitySACLoss(SACLoss):
             raise ValueError("Feasibility loss requires 'lhs_A' and 'rhs' in tensordict.")
         lagrangian_multiplier = metadata_actor.get("lagrangian_multiplier", self.lagrangian_multiplier)
         feasibility_loss, violation_dict = loss_feasibility(tensordict, action, lagrangian_multiplier, env_init=self._env_init,)
+        loss_mask = add_mask_bce_loss(tensordict,)
 
         # Alpha loss
         loss_alpha = self._alpha_loss(metadata_actor["log_prob"])
@@ -275,6 +425,7 @@ class FeasibilitySACLoss(SACLoss):
             "alpha": self._alpha,
             "entropy": entropy.detach().mean(),
             "loss_feasibility": feasibility_loss,
+            "loss_mask": loss_mask,
             "violation": violation_dict["violations"],
             "total_violation": violation_dict["total_convex_violations"],
             "pod_violation": violation_dict["pod_violations"],
@@ -521,7 +672,9 @@ class FeasibilityClipPPOLoss(PPOLoss):
             raise ValueError("Feasibility loss requires 'lhs_A' and 'rhs' in tensordict.")
         lagrangian_multiplier = tensordict.get("lagrangian_multiplier", self.lagrangian_multiplier)
         feasibility_loss, violation_dict = loss_feasibility(tensordict, loc, lagrangian_multiplier, env_init=self._env_init,)
+        loss_mask = add_mask_bce_loss(tensordict,)
         td_out.set("loss_feasibility", feasibility_loss)
+        td_out.set("loss_mask", loss_mask)
         td_out.set("violation", violation_dict["violations"])
         td_out.set("total_violation", violation_dict["total_convex_violations"])
         td_out.set("pod_violation", violation_dict["pod_violations"])
