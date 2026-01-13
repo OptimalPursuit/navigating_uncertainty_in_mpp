@@ -126,6 +126,13 @@ class AttentionDecoderWithCache(nn.Module):
         self.tau_sinkhorn = kwargs.get("tau_sinkhorn", 1.0)
         self.iters_sinkhorn = kwargs.get("iters_sinkhorn", 10)
 
+        # Shield threshold in probability space. Tune on validation to control unsafe "false positives".
+        self.mask_prob_threshold = kwargs.get("mask_prob_threshold", 0.5)
+        # Optional: keep your existing k-pruning behavior (not a safety constraint; it's a search/pruning heuristic).
+        self.mask_use_k_pruning = kwargs.get("mask_use_k_pruning", False)
+        # Temperature for sigmoid -> calibrates how sharp p_valid is (you can reuse tau_sinkhorn)
+        self.mask_sigmoid_temp = kwargs.get("mask_sigmoid_temp", self.tau_sinkhorn)
+
     def _compute_q(self, cached: PrecomputedCache, td: TensorDict) -> Tensor:
         """Compute query of static and context embedding for the attention mechanism."""
         node_embeds_cache = cached.init_embeddings
@@ -260,67 +267,138 @@ class AttentionDecoderWithCache(nn.Module):
             std = std.clamp(max=self.scale_max)
 
         # === Predict POD mask based on top-k sinkhorn ===
+        # === Learned action mask (Option A) ===
         if self.use_mask_head:
+            # Shield logits: higher => "more valid" for (state, action)
+            # Shape: [B, T, K] where K == action_dim
+            mask_logits = self.mask_head(combined_output)
 
-            # todo: add simulated annealing of tau_sinkhorn during training
+            B_, T_, K_ = mask_logits.shape
+            N_ = B_ * T_
 
-            logits = self.mask_head(combined_output)  # [B,T,K]
-            B, T, K = logits.shape
-            N = B * T
-
-            # feasibility
+            # Hard feasibility (physics / external constraints). Never learn this.
             if self.use_preload_mask:
-                feasible = td["preload_mask"].bool().view_as(logits)
+                feasible = td["preload_mask"].bool().view_as(mask_logits)  # [B,T,K]
             else:
-                feasible = torch.ones_like(logits, dtype=torch.bool)
+                feasible = torch.ones_like(mask_logits, dtype=torch.bool)
 
-            logits = logits.masked_fill(~feasible, -1e9)
+            # Make infeasible actions impossible
+            mask_logits = mask_logits.masked_fill(~feasible, -1e9)
 
-            # k: [B] or [B,T]
-            k = td["locations_needed"].squeeze(-1)
-            if k.ndim == 1:
-                k_bt = k[:, None].expand(B, T)
-            else:
-                k_bt = k
-            k_flat = k_bt.reshape(N).long()
+            # Convert to probability of validity
+            p_valid = torch.sigmoid(mask_logits / self.mask_sigmoid_temp)  # [B,T,K]
 
-            # stabilize logits (optional but often necessary in RL)
-            logits = logits.clamp(-self.L, self.L)
+            # Hard mask decision (valid vs invalid)
+            valid = (p_valid >= self.mask_prob_threshold) & feasible  # [B,T,K]
 
-            # soft probs
-            p = torch.sigmoid(logits / self.tau_sinkhorn)  # tau_sinkhorn is really sigmoid temperature here
-            mask_soft = p
+            # Ensure each row has at least one available action (avoid dead-ends due to thresholding)
+            valid_flat = valid.view(N_, K_)  # [N,K]
+            feas_flat = feasible.view(N_, K_)  # [N,K]
+            logits_flat = mask_logits.view(N_, K_)  # [N,K]
 
-            # hard (note: p>0.5 <=> logits>0, independent of tau)
-            hard = (logits > 0).to(p.dtype)
+            none_valid = valid_flat.sum(dim=-1) == 0
+            if none_valid.any():
+                # Fall back to best feasible action by mask logits
+                top1 = logits_flat.masked_fill(~feas_flat, -1e9).argmax(dim=-1)  # [N]
+                valid_flat[none_valid] = False
+                valid_flat[none_valid, top1[none_valid]] = True
 
-            # hard cap: prune only if >k
-            hard_flat = hard.reshape(N, K)
-            logits_flat = logits.reshape(N, K)
-            feas_flat = feasible.reshape(N, K)
+            # Optional: cap how many actions are left "on" per row using td["locations_needed"]
+            # NOTE: this is pruning (search/control), not feasibility.
+            if self.mask_use_k_pruning and ("locations_needed" in td.keys()):
+                k = td["locations_needed"].squeeze(-1)
+                if k.ndim == 1:
+                    k_bt = k[:, None].expand(B_, T_)
+                else:
+                    k_bt = k
+                k_flat = k_bt.reshape(N_).long()
 
-            row_on = hard_flat.sum(dim=-1).long()
-            over = row_on > k_flat
+                # Only consider currently valid actions for pruning
+                scores = logits_flat.masked_fill(~valid_flat, -1e9)
 
-            feas_count = feas_flat.sum(dim=-1).long()
-            k_eff = torch.minimum(k_flat, feas_count)
-            k_max = int(k_eff.max().item()) if k_eff.numel() else 0
+                on = valid_flat.sum(dim=-1).long()
+                over = on > k_flat
 
-            if k_max > 0 and over.any():
-                active_scores = logits_flat.masked_fill(hard_flat == 0, -1e9)
-                top_idx = active_scores.topk(k_max, dim=-1).indices  # [N,k_max]
-                pos = torch.arange(k_max, device=logits.device)[None, :]
-                keep = (pos < k_eff[:, None])
+                # If k > number of feasible/valid actions, clamp it
+                k_eff = torch.minimum(k_flat, on)
+                k_max = int(k_eff.max().item()) if k_eff.numel() else 0
 
-                capped = torch.zeros_like(hard_flat)
-                capped.scatter_(1, top_idx, keep.to(capped.dtype))
-                hard_flat = torch.where(over[:, None], capped, hard_flat)
+                if k_max > 0 and over.any():
+                    top_idx = scores.topk(k_max, dim=-1).indices  # [N,k_max]
+                    pos = torch.arange(k_max, device=mask_logits.device)[None, :]
+                    keep = (pos < k_eff[:, None])
 
-            mask_hard = hard_flat.reshape(B, T, K)
+                    capped = torch.zeros_like(valid_flat)
+                    capped.scatter_(1, top_idx, keep)
+                    valid_flat = torch.where(over[:, None], capped, valid_flat)
 
-            # STE
-            mask_final = mask_hard - mask_soft.detach() + mask_soft
+            mask_hard = valid_flat.view(B_, T_, K_).to(p_valid.dtype)  # {0,1}
+
+            # Straight-through estimator (so the mask head can be trained end-to-end if you want);
+            # for pure supervised mask training, you can just return mask_hard and train from logits separately.
+            mask_final = mask_hard - p_valid.detach() + p_valid
+
             return mean.squeeze(), std.clamp(min=1e-3).squeeze(), mask_final.squeeze()
+
+        # if self.use_mask_head:
+        #     # todo: add simulated annealing of tau_sinkhorn during training
+        #     logits = self.mask_head(combined_output)  # [B,T,K]
+        #     B, T, K = logits.shape
+        #     N = B * T
+        # 
+        #     # feasibility
+        #     if self.use_preload_mask:
+        #         feasible = td["preload_mask"].bool().view_as(logits)
+        #     else:
+        #         feasible = torch.ones_like(logits, dtype=torch.bool)
+        # 
+        #     logits = logits.masked_fill(~feasible, -1e9)
+        # 
+        #     # k: [B] or [B,T]
+        #     k = td["locations_needed"].squeeze(-1)
+        #     if k.ndim == 1:
+        #         k_bt = k[:, None].expand(B, T)
+        #     else:
+        #         k_bt = k
+        #     k_flat = k_bt.reshape(N).long()
+        # 
+        #     # stabilize logits (optional but often necessary in RL)
+        #     logits = logits.clamp(-self.L, self.L)
+        # 
+        #     # soft probs
+        #     p = torch.sigmoid(logits / self.tau_sinkhorn)  # tau_sinkhorn is really sigmoid temperature here
+        #     mask_soft = p
+        # 
+        #     # hard (note: p>0.5 <=> logits>0, independent of tau)
+        #     hard = (logits > 0).to(p.dtype)
+        # 
+        #     # hard cap: prune only if >k
+        #     hard_flat = hard.reshape(N, K)
+        #     logits_flat = logits.reshape(N, K)
+        #     feas_flat = feasible.reshape(N, K)
+        # 
+        #     row_on = hard_flat.sum(dim=-1).long()
+        #     over = row_on > k_flat
+        # 
+        #     feas_count = feas_flat.sum(dim=-1).long()
+        #     k_eff = torch.minimum(k_flat, feas_count)
+        #     k_max = int(k_eff.max().item()) if k_eff.numel() else 0
+        # 
+        #     if k_max > 0 and over.any():
+        #         active_scores = logits_flat.masked_fill(hard_flat == 0, -1e9)
+        #         top_idx = active_scores.topk(k_max, dim=-1).indices  # [N,k_max]
+        #         pos = torch.arange(k_max, device=logits.device)[None, :]
+        #         keep = (pos < k_eff[:, None])
+        # 
+        #         capped = torch.zeros_like(hard_flat)
+        #         capped.scatter_(1, top_idx, keep.to(capped.dtype))
+        #         hard_flat = torch.where(over[:, None], capped, hard_flat)
+        # 
+        #     mask_hard = hard_flat.reshape(B, T, K)
+        # 
+        #     # STE
+        #     mask_final = mask_hard - mask_soft.detach() + mask_soft
+        #     return mean.squeeze(), std.clamp(min=1e-3).squeeze(), mask_final.squeeze()
 
             # print("--------------------------------")
             # print("y_hat:", y_hat.mean().item())
