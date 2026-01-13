@@ -194,6 +194,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     clip_epsilon = kwargs["algorithm"]["clip_range"]
     max_grad_norm = kwargs["algorithm"]["max_grad_norm"]
     tau = kwargs["algorithm"]["tau"]
+    mask_loss = kwargs["model"]["use_mask_head"]
     # Training hyperparameters
     train_data_size = kwargs["training"]["train_data_size"]
     validation_freq = kwargs["training"]["validation_freq"]
@@ -227,7 +228,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             min_alpha=1e-2, #[1e-2, 1e-3]
             max_alpha=1.0, #[1.0, 10]
             lagrangian_multiplier=lagrangian_multiplier,
-            env_init=vars(train_env)   # dict of instance attributes
+            env_init=vars(train_env),   # dict of instance attributes
         )
     elif kwargs["algorithm"]["type"] == "ppo":
         loss_module = FeasibilityClipPPOLoss(
@@ -240,7 +241,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             loss_critic_type="smooth_l1",
             normalize_advantage=True,
             lagrangian_multiplier=lagrangian_multiplier,
-            env_init=vars(train_env)   # dict of instance attributes
+            env_init=vars(train_env),   # dict of instance attributes
         )
     elif kwargs["algorithm"]["type"] == "ddpg":
         # Create the DDPG loss module
@@ -334,7 +335,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
                 # Compute actor loss
                 if "loss_feasibility" in loss_out:
                     loss_out["loss_actor"] = loss_out["loss_actor"] + feasibility_lambda * loss_out["loss_feasibility"]
-                if "loss_mask" in loss_out:
+                if "loss_mask" in loss_out and mask_loss:
                     loss_out["loss_actor"] = loss_out["loss_actor"] + mask_lambda * loss_out["loss_mask"]
 
                 loss_out["loss_actor"].backward(retain_graph=primal_dual)
@@ -362,7 +363,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
                     loss_out["total_loss"] = loss_out["loss_objective"] + loss_out["loss_critic"] + loss_out["loss_entropy"]
                     if "loss_feasibility" in loss_out:
                         loss_out["total_loss"] = loss_out["total_loss"] + feasibility_lambda * loss_out["loss_feasibility"]
-                    if "loss_mask" in loss_out:
+                    if "loss_mask" in loss_out and mask_loss:
                         loss_out["total_loss"] = loss_out["total_loss"] + mask_lambda * loss_out["loss_mask"]
 
                     # Actor update
@@ -487,9 +488,6 @@ def get_performance_metrics(subdata:Dict, td:TensorDict, env:nn.Module) -> Dict:
             "mean_std[x]_demand": subdata["observation", "std_demand"][:, 0, :].std(dim=-1).mean(),
         }
     if "excess_POD_violation" in subdata["observation"]:
-        print(subdata["observation", "excess_POD_violation"].shape)
-        breakpoint()
-
         out["excess_POD_violation"] = subdata["observation", "excess_POD_violation"].sum(dim=(1)).mean().item()
     return out
 
