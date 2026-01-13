@@ -311,10 +311,8 @@ def generate_POD_mask(
 
     # --- final availability: must have space AND satisfy block rule AND (existing or opened-empty) ---
     # Final output mask
-    # todo: check logic here!
     allow_in_new_block = block_empty_bd & open_selected_bd
     out = loc_has_space & block_allowed_bd & (block_has_cur_bd | allow_in_new_block)
-    breakpoint()
     return out.reshape(*batch_dims, -1)
 
 def compute_targets_to_prevent_POD_violations(
@@ -370,13 +368,13 @@ def compute_targets_to_prevent_POD_violations(
 
     # Compute noncurrent POD share after placing `delta` of current POD, then check against allowed mix
     noncur_share = noncur_bd / (total_bd + delta + eps)
-    mix_ok_post = noncur_share <= (POD_mix_in_block + eps)
+    mix_allowed_post = noncur_share <= (POD_mix_in_block + eps)
 
     # There must be at least `delta` free capacity in that location
     has_space = residual_capacity >= delta
 
     # Final label per action/location (bay, deck, block)
-    y = has_space & (empty_bd | (has_cur_bd & mix_ok_post))
+    y = has_space & (empty_bd | (has_cur_bd & mix_allowed_post))
     return y
 
 
