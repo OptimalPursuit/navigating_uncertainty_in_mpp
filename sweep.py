@@ -18,7 +18,6 @@ if __name__ == "__main__":
     parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
     parser.add_argument('--ur', type=float, default=1.1)
     parser.add_argument('--cv', type=float, default=0.5)
-    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=False, help="Block stowage mask.")
 
     # Algorithm parameters
     parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
@@ -28,11 +27,14 @@ if __name__ == "__main__":
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
     parser.add_argument('--scale_max', type=float, default=9.46, help="Maximum scale for the model.") # PPO=1.93, SAC=9.46
-    parser.add_argument('--use_mask_head', type=bool, default=True, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--projection_type', type=str, default='bound_convex_violation', help="Projection type.")
     parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.1, 'delta': 0.1, 'max_iter': 300,
                                                                   'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
                         help="Projection kwargs.")
+    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=True, help="Block stowage mask.")
+    parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
+    parser.add_argument('--use_preload_mask', type=bool, default=True, help="Use preloaded mask for paired block stowage.")
+    parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
 
     # Run parameters
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
@@ -40,7 +42,6 @@ if __name__ == "__main__":
     parser.add_argument("--path", type=str, default="results/trained_models/AI2STOW_JOURNAL_VERSION", help="Path to the directory containing the config.yaml and sweep_config.yaml files.")
     parser.add_argument("--folder", type=str, default="sac-vp", help="Folder to save the sweep configuration and results.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
-    parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
     args = parser.parse_args()
 
     def train():
@@ -61,7 +62,6 @@ if __name__ == "__main__":
             config.env.generalization = args.gen
             config.env.utilization_rate_initial_demand = args.ur
             config.env.cv_demand = args.cv
-            config.env.block_stowage_mask = args.block_stowage_mask
             # Algorithm
             config.algorithm.feasibility_lambda = args.feasibility_lambda
             # Model
@@ -70,7 +70,11 @@ if __name__ == "__main__":
             config.model.dyn_embed = args.dyn_embed
             config.model.scale_max = args.scale_max
             config.training.projection_type = args.projection_type
+            config.env.block_stowage_mask = args.block_stowage_mask
             config.model.use_mask_head = args.use_mask_head
+            config.model.use_preload_mask = args.use_preload_mask
+            config.training.normalize_constraints = args.normalize_constraints
+
             # Run
             config.testing.folder = args.folder
             config.model.phase = args.phase
