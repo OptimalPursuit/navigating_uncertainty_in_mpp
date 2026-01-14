@@ -33,7 +33,7 @@ if __name__ == "__main__":
                         help="Projection kwargs.")
     parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=True, help="Block stowage mask.")
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
-    parser.add_argument('--use_preload_mask', type=bool, default=True, help="Use preloaded mask for paired block stowage.")
+    parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
 
     # Run parameters

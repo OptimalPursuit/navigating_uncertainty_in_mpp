@@ -274,7 +274,7 @@ def parse_args():
     parser.add_argument('--scale_max', type=float, default=9.459951968688712, help="Maximum value of policy scale.")
     parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=True, help="Block stowage mask.")
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
-    parser.add_argument('--use_preload_mask', type=bool, default=True, help="Use preloaded mask for paired block stowage.")
+    parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
     parser.add_argument('--projection_type', type=str, default="violation_projection", help="Projection type.")   #'bound_convex_violation', help="Projection type.")
     parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.01, 'delta': 0.01, 'max_iter': 300,
