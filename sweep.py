@@ -9,6 +9,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sweep", nargs="?", default=None, const=None,
                         help="Provide a sweep name to resume an existing sweep, or leave empty to create a new sweep.")
+    parser.add_argument('--runs_per_agent', type=int, default=100, help="Number of runs per agent.")
     # Environment parameters
     parser.add_argument('--env_name', type=str, default='block_mpp', help="Name of the environment.")
     parser.add_argument('--ports', type=int, default=4, help="Number of ports in env.")
@@ -20,8 +21,7 @@ if __name__ == "__main__":
     parser.add_argument('--cv', type=float, default=0.5)
 
     # Algorithm parameters
-    parser.add_argument('--feasibility_lambda', type=float, default=0.0 #0.2828168389831236
-                        , help="Lambda for feasibility.")
+    parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
 
     # Model parameters
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
@@ -81,7 +81,6 @@ if __name__ == "__main__":
             config.model.phase = args.phase
             config.testing.feasibility_recovery = args.feasibility_recovery
             n_constraints = config.training.projection_kwargs.n_constraints
-
 
             config.algorithm.type, almost_projection_type = config.testing.folder.split("-")
             if almost_projection_type == "vp" or almost_projection_type == "fr+vp":
@@ -175,4 +174,4 @@ if __name__ == "__main__":
         sweep_id = wandb.sweep(sweep=sweep_config, project="mpp_ppo")
 
     # Start the sweep agent, which runs the 'train' function with different hyperparameters
-    wandb.agent(sweep_id, function=train, project="mpp_ppo", entity="stowage_planning_research")
+    wandb.agent(sweep_id, function=train, project="mpp_ppo", entity="stowage_planning_research", count=args.runs_per_agent)
