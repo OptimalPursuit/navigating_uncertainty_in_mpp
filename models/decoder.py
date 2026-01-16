@@ -269,9 +269,9 @@ class AttentionDecoderWithCache(nn.Module):
         if not self.use_mask_head:
             # Apply the action mask to the mean and std logits
             mask = td.get("action_mask", None)
-            if mask is not None:
-                mean = torch.where(mask, mean.squeeze(), 1e-6)
-                std = torch.where(mask, std.squeeze(), 1e-6)
+            # if mask is not None:
+            #     mean = torch.where(mask, mean.squeeze(), 1e-6)
+            #     std = torch.where(mask, std.squeeze(), 1e-6)
             return mean.squeeze(), std.squeeze(), mask
         # === Predict POD mask based on top-k sinkhorn ===
         # === Learned action mask (Option A) ===
