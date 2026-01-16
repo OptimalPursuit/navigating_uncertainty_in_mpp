@@ -1,5 +1,5 @@
 # Datatypes
-from typing import Optional, Tuple, Dict, Union, Sequence
+from typing import Optional, Tuple, Dict, Union, Sequence, Callable
 from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from tensordict.utils import NestedKey
@@ -8,7 +8,7 @@ from tensordict.utils import NestedKey
 import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
-from torch.distributions import Distribution, TransformedDistribution
+from torch.distributions import Distribution, TransformedDistribution, Normal, Independent
 
 # TorchRL
 from torchrl.modules import ProbabilisticActor
@@ -250,76 +250,9 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         # This is appropriate for our projection functions, as the actions are transformed globally rather than per element
         return logprob_ # Apply reduction for loss computations. Shape: [Batch]
 
-    # def forward(self, *args, **kwargs,) -> TensorDict:
-    #     if "action" in kwargs:
-    #         out = args[0]
-    #     else:
-    #         out = super().forward(*args, **kwargs)
-    #
-    #     # todo: clean this up later
-    #
-    #     # Raise error for projection layers without log prob adaptation implementations
-    #     if self.projection_type not in ["linear_violation", "linear_violation_policy_clipping", "inner_convex_violation",
-    #                                     "bound_convex_violation", "weighted_scaling_policy_clipping", "none",
-    #                                     "quadratic_program", "convex_program", "convex_program_policy_clipping"]:
-    #         raise ValueError(f"Log prob adaptation for projection type \'{self.projection_type}\' not supported.")
-    #
-    #     # Get distribution
-    #     dist = self.get_dist(out)
-    #     out["unprojected_action"] = out["action"].clone()
-    #     if out["mask"] is not None:
-    #         out["unprojected_masked_action"] = out["unprojected_action"] * out["mask"]
-    #     else:
-    #         out["unprojected_masked_action"] = out["unprojected_action"]
-    #     out["action"] = out["unprojected_masked_action"] / out["observation", "max_demand"]
-    #
-    #     # Get log probabilities
-    #     if self.projection_type in ["policy_clipping", "weighted_scaling_policy_clipping"]:
-    #         # Apply log_prob adjustment of clipping based on https://arxiv.org/pdf/1802.07564v2.pdf
-    #         self.clipped_gaussian.mean = out["loc"]
-    #         self.clipped_gaussian.var = out["scale"]
-    #         self.clipped_gaussian.low = out["clip_min"]
-    #         self.clipped_gaussian.high = out["clip_max"]
-    #         out["log_prob"] = self.clipped_gaussian.log_prob(out["unprojected_action"])
-    #     else:
-    #         out["log_prob"] = self.get_logprobs(out["unprojected_action"], dist)
-    #
-    #     # Mask out the action
-    #     if "action_mask" in out["observation"]:
-    #         out["action"] = torch.where(out["observation", "action_mask"], out["action"], 0)
-    #
-    #     # # Pre-compute upper bound for weighted_scaling
-    #     timestep_idx = out["observation", "timestep"].squeeze(0)
-    #     out["ub"] = out["observation", "realized_demand"].gather(-1, timestep_idx.unsqueeze(-1)).squeeze(-1)
-    #
-    #     # Projection and log probs adjustment
-    #     out["action"] = self.handle_action_projection(out)
-    #     out["observation", "env_action"] = out["action"] * out["observation", "max_demand"]
-    #     jacobian = self.handle_jacobian_adjustment(out)
-    #     out["log_prob"] = self.jacobian_adaptation(out["log_prob"], jacobian=jacobian).clamp(min=-50)
-    #
-    #     # Mask out the action again; after projection
-    #     if "action_mask" in out["observation"]:
-    #         out["action"] = torch.where(out["observation", "action_mask"], out["action"],  1e-6)
-    #         out["log_prob"] = torch.where(out["observation", "action_mask"], out["log_prob"], torch.tensor(-100, device=out["log_prob"].device))
-    #
-    #     if "preload_mask" in out["observation"]:
-    #         hard_mask = out["observation", "preload_mask"].float()
-    #         out["sample_log_prob"] = (out["log_prob"].clamp(min=-20, max=1) * hard_mask).sum(dim=-1)
-    #         return out
-    #
-    #     # Get sample log probabilities for loss computations
-    #     out["sample_log_prob"] = out["log_prob"].sum(dim=-1)
-    #     return out
-
 
     def forward(self, *args, **kwargs,) -> TensorDict:
-        if "action" in kwargs:
-            out = args[0]
-        else:
-            out = super().forward(*args, **kwargs)
-
-        # todo: clean this up later
+        out = args[0] if "action" in kwargs else super().forward(*args, **kwargs)
 
         # Raise error for projection layers without log prob adaptation implementations
         if self.projection_type not in ["linear_violation", "linear_violation_policy_clipping", "inner_convex_violation",
@@ -341,34 +274,126 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         else:
             out["log_prob"] = self.get_logprobs(out["action"], dist)
 
-        # # Pre-compute upper bound for weighted_scaling
+        # Pre-compute upper bound for weighted_scaling
         timestep_idx = out["observation", "timestep"].squeeze(0)
         out["ub"] = out["observation", "realized_demand"].gather(-1, timestep_idx.unsqueeze(-1)).squeeze(-1)
 
-        # compute jacobian using raw action
-        raw_action = out["action"].clone()
-        out["raw_action"] = raw_action
-        out["action"] = raw_action
+        # Store raw action before projection
+        raw = out["action"].clone()
+        out["raw_action"] = raw
 
-        if "action_mask" not in out["observation"]:
-            jacobian = self.handle_jacobian_adjustment(out)
-            out["log_prob"] = self.jacobian_adaptation(out["log_prob"], jacobian=jacobian).clamp(min=-50)
-        out["sample_log_prob"] = out["log_prob"].sum(-1)
+        # compute jacobian using active raw action
+        if ("action_mask" in out["observation"]):
+            # todo: check if this is generally effective
+            out["log_prob"], out["sample_log_prob"] = self.masked_subspace_logprobs(
+                out, raw,
+                clamp_min=-50.0,
+            )
 
-        # project once for env execution
+        # project once before env execution
+        out["action"] = raw
         proj_action = self.handle_action_projection(out)
         out["action"] = proj_action
         out["observation", "env_action"] = proj_action
-
         return out
 
-        # # Projection and log probs adjustment
-        # jacobian = self.handle_jacobian_adjustment(out)
-        # out["log_prob"] = self.jacobian_adaptation(out["log_prob"], jacobian=jacobian).clamp(min=-50)
-        # out["action"] = self.handle_action_projection(out)
-        #
-        # # Get sample log probabilities for loss computations
-        # out["sample_log_prob"] = out["log_prob"].sum(dim=-1)
-        # # Out
-        # out["observation", "env_action"] = out["action"]
-        # return out
+    @staticmethod
+    def _expand_mask(mask: Tensor, batch_shape: torch.Size, N: int) -> Tensor:
+        # mask: [N] or [B,N] or [B,T,N] -> [*batch_shape, N]
+        if mask.dim() == 1:
+            mask = mask.view((1,) * len(batch_shape) + (N,))
+        else:
+            missing = (len(batch_shape) + 1) - mask.dim()
+            if missing > 0:
+                mask = mask.view((1,) * missing + tuple(mask.shape))
+        return mask.expand(*batch_shape, N)
+
+    @staticmethod
+    def _expand_Ab(A: Tensor, b: Tensor, batch_shape: torch.Size, N: int) -> Tuple[Tensor, Tensor]:
+        # A: [B,m,N] or [B,T,m,N] -> [*batch_shape, m, N]
+        # b: [B,m]   or [B,T,m]   -> [*batch_shape, m]
+        m = A.shape[-2]
+
+        missing_A = (len(batch_shape) + 2) - A.dim()
+        if missing_A > 0:
+            A = A.view((1,) * missing_A + tuple(A.shape))
+        A = A.expand(*batch_shape, m, N)
+
+        missing_b = (len(batch_shape) + 1) - b.dim()
+        if missing_b > 0:
+            b = b.view((1,) * missing_b + tuple(b.shape))
+        b = b.expand(*batch_shape, b.shape[-1])
+
+        return A, b
+
+    def masked_subspace_logprobs(
+        self,
+        out: TensorDict,
+        action: Tensor,               # [B,N] or [B,T,N]
+        handle_jacobian_adjustment: Optional[Callable] = None,
+        jacobian_adaptation: Optional[Callable] = None,
+        clamp_min: float = -50.0,
+    ) -> Tuple[Tensor, Tensor]:
+        """
+        Returns:
+            log_prob_full: same shape as action, zeros on masked dims
+            sample_logp:   action.shape[:-1], sum over active dims
+        """
+
+        # ---- no jacobian: fully vectorized ----
+        use_jac = (handle_jacobian_adjustment is not None) and (jacobian_adaptation is not None)
+        if not use_jac:
+            return out["log_prob"], out["sample_log_prob"]
+
+        # Shapes
+        batch_shape = action.shape[:-1]
+        N = action.shape[-1]
+        M = int(torch.tensor(batch_shape, device=action.device).prod().item()) if batch_shape else 1
+
+        # Dense per-dimension logp in the original shape, via your helper
+        logp_full = out["log_prob"]
+
+        # Reshape
+        mask = self._expand_mask(out["observation", "action_mask"].bool(), batch_shape, N)
+        mask = mask.reshape(M, N)
+        action = action.reshape(M, N)
+        logp_full = logp_full.reshape(M, N)
+
+        # ---- jacobian: ragged active dims -> group by mask pattern ----
+        A, b = self._expand_Ab(out["lhs_A"], out["rhs"], batch_shape, N)
+        A = A.reshape(M, A.shape[-2], N)      # [M,m,N]
+        b = b.reshape(M, b.shape[-1])         # [M,m]
+
+        # We must output zeros on masked dims
+        logp_out = action.new_zeros(M, N)
+        sample = action.new_zeros(M)
+
+        # Group by unique mask patterns
+        packed = torch.packbits(mask.to(torch.uint8), dim=-1)             # [M, ceil(N/8)]
+        _, inv = torch.unique(packed, dim=0, return_inverse=True)         # [M]
+        n_groups = int(inv.max().item()) + 1
+
+        for g in range(n_groups):
+            rows = (inv == g).nonzero(as_tuple=True)[0]
+            active = mask[rows[0]].nonzero(as_tuple=True)[0]
+            if active.numel() == 0:
+                continue
+
+            z = action[rows][:, active]                         # [G,k]
+            logp_active = logp_full[rows][:, active]            # [G,k]
+
+            td = TensorDict(
+                {
+                    "action": z,
+                    "lhs_A": A[rows].index_select(-1, active),  # [G,m,k]
+                    "rhs": b[rows],                             # [G,m]
+                },
+                batch_size=torch.Size([rows.numel()]),
+            )
+            J = handle_jacobian_adjustment(td)
+            logp_active = jacobian_adaptation(logp_active, jacobian=J).clamp(min=clamp_min)
+
+            logp_out[rows[:, None], active[None, :]] = logp_active
+            sample[rows] = logp_active.sum(-1)
+
+        return logp_out.reshape(*batch_shape, N), sample.reshape(*batch_shape)
