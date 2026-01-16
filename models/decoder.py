@@ -266,9 +266,16 @@ class AttentionDecoderWithCache(nn.Module):
         if self.scale_max is not None:
             std = std.clamp(max=self.scale_max)
 
+        if not self.use_mask_head:
+            # Apply the action mask to the mean and std logits
+            mask = td.get("action_mask", None)
+            if mask is not None:
+                mean = torch.where(mask, mean.squeeze(), 1e-6)
+                std = torch.where(mask, std.squeeze(), 1e-6)
+            return mean.squeeze(), std.squeeze(), mask
         # === Predict POD mask based on top-k sinkhorn ===
         # === Learned action mask (Option A) ===
-        if self.use_mask_head:
+        elif self.use_mask_head:
             # Shield logits: higher => "more valid" for (state, action)
             # Shape: [B, T, K] where K == action_dim
             mask_logits = self.mask_head(combined_output)
@@ -412,13 +419,6 @@ class AttentionDecoderWithCache(nn.Module):
             # print("mask_hard:", mask_hard.sum().item() / mask_hard.numel())
             # print("mask_final:", mask_final.sum().item() / mask_final.numel())
             # return mean.squeeze(), std.clamp(min=1e-3).squeeze(), mask_final.squeeze()
-        else:
-            # Apply the action mask to the mean and std logits
-            mask = td.get("action_mask", None)
-            if mask is not None:
-                mean = torch.where(mask, mean.squeeze(), 1e-6)
-                std = torch.where(mask, std.squeeze(), 1e-6)
-            return mean.squeeze(), std.squeeze(), mask
 
     def pre_decoder_hook(self, td: TensorDict, env, embeddings: Tensor, num_starts: int = 0) -> Tuple[TensorDict, TensorDict, PrecomputedCache]:
         return td, env, self._precompute_cache(embeddings, num_starts)
