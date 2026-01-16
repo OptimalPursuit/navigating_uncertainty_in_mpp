@@ -168,6 +168,8 @@ class BoundConvexViolationProjection(nn.Module):
             if count >= self.max_iter:
                 break
 
+        # Apply variable mask before returning
+        x_ = x_ * var_mask
         return x_.squeeze(1) if n_step == 1 else x_
 
 class CvxpyProjectionLayer(nn.Module):
