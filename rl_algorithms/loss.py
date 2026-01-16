@@ -277,7 +277,7 @@ def add_mask_bce_loss(
     # (A) Safety: penalize opening illegal actions (false positives)
     # For y==0, BCE-with-logits term is softplus(logit). Minimizing pushes logits -> -inf (closed).
     if illegal.any():
-        L_illegal = F.softplus(mask_logits[illegal]).mean()
+        L_illegal = F.softplus(mask_logits[illegal]).float().mean()
     else:
         L_illegal = mask_logits.new_tensor(0.0)
 
