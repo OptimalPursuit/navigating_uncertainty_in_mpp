@@ -20,13 +20,14 @@ if __name__ == "__main__":
     parser.add_argument('--cv', type=float, default=0.5)
 
     # Algorithm parameters
-    parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
+    parser.add_argument('--feasibility_lambda', type=float, default=0.0 #0.2828168389831236
+                        , help="Lambda for feasibility.")
 
     # Model parameters
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
-    parser.add_argument('--scale_max', type=float, default=9.46, help="Maximum scale for the model.") # PPO=1.93, SAC=9.46
+    parser.add_argument('--scale_max', type=float, default=100, help="Maximum scale for the model.") # PPO=1.93, SAC=9.46
     parser.add_argument('--projection_type', type=str, default='bound_convex_violation', help="Projection type.")
     parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.1, 'delta': 0.1, 'max_iter': 300,
                                                                   'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
