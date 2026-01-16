@@ -264,31 +264,32 @@ def parse_args():
     parser.add_argument('--spot_percentage', type=float, default=0.3, help="Percentage of spot demand.")
 
     # Algorithm parameters
-    parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
+    parser.add_argument('--feasibility_lambda', type=float, default=0.0 #0.2828168389831236
+                        , help="Lambda for feasibility.")
 
     # Model parameters
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
-    parser.add_argument('--temperature', type=int, default=0.2, help="Temperature of policy.")
-    parser.add_argument('--scale_max', type=float, default=9.459951968688712, help="Maximum value of policy scale.")
+    parser.add_argument('--temperature', type=int, default=1.0, help="Temperature of policy.")
+    parser.add_argument('--scale_max', type=float, default=20.0, help="Maximum value of policy scale.")
     parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=True, help="Block stowage mask.")
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
-    parser.add_argument('--projection_type', type=str, default="violation_projection", help="Projection type.")   #'bound_convex_violation', help="Projection type.")
-    parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.01, 'delta': 0.01, 'max_iter': 300,
+    parser.add_argument('--projection_type', type=str, default="bound_convex_violation", help="Projection type.")   #'bound_convex_violation', help="Projection type.")
+    parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.05, 'delta': 0.05, 'max_iter': 300,
                                                                   'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
                         help="Projection parameters.")
-    parser.add_argument('--primal_dual', type=lambda x: x == 'True', default=True, help="Enable primal-dual method.")
+    parser.add_argument('--primal_dual', type=lambda x: x == 'True', default=False, help="Enable primal-dual method.")
     parser.add_argument('--tau_sinkhorn', type=float, default=1.0, help="Slack penalty for projection.")
     parser.add_argument('--iters_sinkhorn', type=float, default=50, help="Slack penalty for projection.")
 
     # Run parameters
     # lr: 0.00014690714579803494
     # pd_lr: 0.000034690714579803494
-    parser.add_argument('--learning_rate', type=float, default=0.00005, help="Learning rate for the optimizer.")
-    parser.add_argument('--pd_learning_rate', type=float, default=0.00003, help="Learning rate for primal-dual optimizer.")
+    parser.add_argument('--learning_rate', type=float, default=0.0005, help="Learning rate for the optimizer.")
+    parser.add_argument('--pd_learning_rate', type=float, default=0.0003, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='sac-vp', help="Folder name for the run.")
     parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
@@ -366,27 +367,29 @@ if __name__ == "__main__":
     config.model.phase = args.phase
     config.testing.feasibility_recovery = args.feasibility_recovery
 
-    # Adapt projection_type to the folder name
-    config.algorithm.type, almost_projection_type = config.testing.folder.split("-")
-    if almost_projection_type == "vp" or almost_projection_type == "fr+vp":
-        config.training.projection_type = "linear_violation"
-    elif almost_projection_type == "ws+pc" or almost_projection_type == "fr+ws+pc":
-        config.training.projection_type = "weighted_scaling_policy_clipping"
-    elif almost_projection_type == "vp+cp":
-        config.training.projection_type = "convex_program"
-        config.testing.folder = config.algorithm.type + "-vp"
-    elif almost_projection_type == "ws+pc+cp":
-        config.training.projection_type = "convex_program"
-        config.testing.folder = config.algorithm.type + "-ws+pc"
-    elif almost_projection_type == "fr" or almost_projection_type == "pen":
-        config.training.projection_type = "None"
-    elif almost_projection_type == "pd" or almost_projection_type == "lag":
-        config.training.projection_type = "None"
-        config.algorithm.primal_dual = True
-    elif almost_projection_type == "cp":
-        config.training.projection_type = "convex_program"
-    else:
-        raise ValueError(f"Unsupported projection type: {almost_projection_type}")
+    # # Adapt projection_type to the folder name
+
+    # todo: fix these!
+    # config.algorithm.type, almost_projection_type = config.testing.folder.split("-")
+    # if almost_projection_type == "vp" or almost_projection_type == "fr+vp":
+    #     config.training.projection_type = "bound_convex_violation" #"linear_violation"
+    # elif almost_projection_type == "ws+pc" or almost_projection_type == "fr+ws+pc":
+    #     config.training.projection_type = "weighted_scaling_policy_clipping"
+    # elif almost_projection_type == "vp+cp":
+    #     config.training.projection_type = "convex_program"
+    #     config.testing.folder = config.algorithm.type + "-vp"
+    # elif almost_projection_type == "ws+pc+cp":
+    #     config.training.projection_type = "convex_program"
+    #     config.testing.folder = config.algorithm.type + "-ws+pc"
+    # elif almost_projection_type == "fr" or almost_projection_type == "pen":
+    #     config.training.projection_type = "None"
+    # elif almost_projection_type == "pd" or almost_projection_type == "lag":
+    #     config.training.projection_type = "None"
+    #     config.algorithm.primal_dual = True
+    # elif almost_projection_type == "cp":
+    #     config.training.projection_type = "convex_program"
+    # else:
+    #     raise ValueError(f"Unsupported projection type: {almost_projection_type}")
 
     if args.feasibility_recovery:
         config.training.projection_type = "convex_program"
