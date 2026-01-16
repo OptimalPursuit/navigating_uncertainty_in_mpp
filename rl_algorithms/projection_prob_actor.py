@@ -345,13 +345,30 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         timestep_idx = out["observation", "timestep"].squeeze(0)
         out["ub"] = out["observation", "realized_demand"].gather(-1, timestep_idx.unsqueeze(-1)).squeeze(-1)
 
-        # Projection and log probs adjustment
-        out["action"] = self.handle_action_projection(out)
-        jacobian = self.handle_jacobian_adjustment(out)
-        out["log_prob"] = self.jacobian_adaptation(out["log_prob"], jacobian=jacobian).clamp(min=-50)
+        # compute jacobian using raw action
+        raw_action = out["action"].clone()
+        out["raw_action"] = raw_action
+        out["action"] = raw_action
 
-        # Get sample log probabilities for loss computations
-        out["sample_log_prob"] = out["log_prob"].sum(dim=-1)
-        # Out
-        out["observation", "env_action"] = out["action"]
+        if "action_mask" not in out["observation"]:
+            jacobian = self.handle_jacobian_adjustment(out)
+            out["log_prob"] = self.jacobian_adaptation(out["log_prob"], jacobian=jacobian).clamp(min=-50)
+        out["sample_log_prob"] = out["log_prob"].sum(-1)
+
+        # project once for env execution
+        proj_action = self.handle_action_projection(out)
+        out["action"] = proj_action
+        out["observation", "env_action"] = proj_action
+
         return out
+
+        # # Projection and log probs adjustment
+        # jacobian = self.handle_jacobian_adjustment(out)
+        # out["log_prob"] = self.jacobian_adaptation(out["log_prob"], jacobian=jacobian).clamp(min=-50)
+        # out["action"] = self.handle_action_projection(out)
+        #
+        # # Get sample log probabilities for loss computations
+        # out["sample_log_prob"] = out["log_prob"].sum(dim=-1)
+        # # Out
+        # out["observation", "env_action"] = out["action"]
+        # return out
