@@ -2,49 +2,78 @@ method: bayes
 metric:
   name: validation.traj_return
   goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10
+
 parameters:
   lr:
-    min: 0.00001
-    max: 0.001
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-3
+
   batch_size:
     values: [64, 128, 256]
-  mini_batch_size:
-    values: [0.125, 0.25, 0.5,] # 1.0 causes issue with sampling
+
+  mini_batch_frac:
+    values: [0.125, 0.25, 0.5]  # interpret in code: int(batch_size * frac)
+
   hidden_dim:
     values: [128, 256, 512]
+
   embed_dim:
-    values: [128, 256, ]
+    values: [128, 256]
+
   num_encoder_layers:
-    values: [2, 3, 4 ]
+    values: [2, 3, 4]
+
   num_decoder_layers:
-    values: [2, 3, 4 ]
+    values: [2, 3, 4]
+
   temperature:
-    min: 0.001
+    distribution: log_uniform_values
+    min: 1e-3
     max: 1.0
+
   scale_max:
+    distribution: log_uniform_values
     min: 0.25
-    max: 10.0
+    max: 100.0
+
   alpha:
-    min: 0.0001
-    max: 0.1
+    distribution: log_uniform_values
+    min: 1e-4
+    max: 1e-1
+
   delta:
-    min: 0.001
-    max: 0.1
+    distribution: log_uniform_values
+    min: 1e-3
+    max: 1e-1
+
   max_iter:
+    distribution: q_uniform
     min: 50
     max: 500
+    q: 1
+
   feasibility_lambda:
     distribution: log_uniform_values
-    min: 0.00001
+    min: 1e-5
     max: 1.0
+
   default_lagrangian_multiplier:
-      distribution: log_uniform_values
-      min: 0.001
-      max: 1.0
+    distribution: log_uniform_values
+    min: 1e-3
+    max: 1.0
+
+
 #  scale:
+#    distribution: log_uniform_values
 #    min: 0.00001
 #    max: 0.001
 #  pd_lr:
+#    distribution: log_uniform_values
 #    min: 0.00001
 #    max: 0.001
 #  tau_sinkhorn:
@@ -52,5 +81,6 @@ parameters:
 #    min: 0.001
 #    max: 1.0
 #  iters_sinkhorn:
+#    distribution: log_uniform_values
 #    min: 10
 #    max: 200
