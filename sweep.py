@@ -21,7 +21,9 @@ if __name__ == "__main__":
     parser.add_argument('--cv', type=float, default=0.5)
 
     # Algorithm parameters
+    parser.add_argument('--algorithm_type', type=str, default='ppo', help="Type of algorithm to use.")
     parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
+    parser.add_argument('--primal_dual', type=lambda x: x == 'True', default=True, help="Use primal-dual method.")
 
     # Model parameters
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
@@ -64,7 +66,9 @@ if __name__ == "__main__":
             config.env.utilization_rate_initial_demand = args.ur
             config.env.cv_demand = args.cv
             # Algorithm
+            config.algorithm.type = args.algorithm_type
             config.algorithm.feasibility_lambda = args.feasibility_lambda
+            config.algorithm.primal_dual = args.primal_dual
             # Model
             config.model.encoder_type = args.encoder_type
             config.model.decoder_type = args.decoder_type

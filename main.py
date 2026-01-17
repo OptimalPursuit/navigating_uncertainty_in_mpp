@@ -264,6 +264,7 @@ def parse_args():
     parser.add_argument('--spot_percentage', type=float, default=0.3, help="Percentage of spot demand.")
 
     # Algorithm parameters
+    parser.add_argument('--algorithm_type', type=str, default='ppo', help="Type of algorithm to use.")
     parser.add_argument('--feasibility_lambda', type=float, default=0.0 #0.2828168389831236
                         , help="Lambda for feasibility.")
 
@@ -346,6 +347,7 @@ if __name__ == "__main__":
     config.env.spot_percentage = args.spot_percentage
 
     # Algorithm
+    config.algorithm.type = args.algorithm_type
     config.algorithm.feasibility_lambda = args.feasibility_lambda
     config.algorithm.primal_dual = args.primal_dual
     # Model
