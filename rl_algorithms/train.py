@@ -31,7 +31,7 @@ from torchrl.data.replay_buffers.storages import LazyTensorStorage
 
 # Custom code
 from rl_algorithms.utils import make_env
-from rl_algorithms.loss import FeasibilityClipPPOLoss, FeasibilitySACLoss
+from rl_algorithms.loss import FeasibilityClipPPOLoss, FeasibilitySACLoss, loss_feasibility
 from rl_algorithms.utils import inspect_tensordict
 
 # Classes
@@ -461,32 +461,34 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
 
 def get_performance_metrics(subdata:Dict, td:TensorDict, env:nn.Module) -> Dict:
     """Compute performance metrics for the policy."""
+    _, feas_dict = loss_feasibility(subdata, subdata["observation", "env_action"], env_init=vars(env))
     out = {# Return
-            "return": subdata["next", "reward"].mean().item(),
-            "traj_return": subdata["next", "reward"].sum(dim=(-2, -1)).mean().item(),
+        "return": subdata["next", "reward"].mean().item(),
+        "traj_return": subdata["next", "reward"].sum(dim=(-2, -1)).mean().item(),
 
-            # Prediction
-            "x": subdata["observation", "env_action"].mean().item(),
-            "loc(x)": subdata["loc"].mean().item(),
-            "scale(x)": subdata["scale"].mean().item(),
+        # Prediction
+        "x": subdata["observation", "env_action"].mean().item(),
+        "loc(x)": subdata["loc"].mean().item(),
+        "scale(x)": subdata["scale"].mean().item(),
 
-            # # Constraints
-            # "total_violation": subdata["violation"].sum(dim=(-2,-1)).mean().item(),
-            # "demand_violation": subdata["violation"][...,0].sum(dim=(1)).mean().item(),
-            # "capacity_violation": subdata["violation"][...,1:-4].sum(dim=(1)).mean().item(),
-            # "LCG_violation": subdata["violation"][..., env.next_port_mask, -4:-2].sum(dim=(1,2)).mean().item(),
-            # "VCG_violation": subdata["violation"][..., env.next_port_mask, -2:].sum(dim=(1,2)).mean().item(),
+        # Constraints
+        "total_violation": feas_dict["total_convex_violations"].mean().item(),
+        "demand_violation": feas_dict["violations"][...,0].sum(dim=(1)).mean().item(),
+        "capacity_violation": feas_dict["violations"][...,1:-4].sum(dim=(1)).mean().item(),
+        "LCG_violation": feas_dict["violations"][..., env.next_port_mask, -4:-2].sum(dim=(1,2)).mean().item(),
+        "VCG_violation": feas_dict["violations"][..., env.next_port_mask, -2:].sum(dim=(1,2)).mean().item(),
+        "pod_violation": feas_dict["total_pod_violations"].mean().item() if env.name == "block_mpp" else 0.0,
 
-            # Environment
-            "total_revenue": subdata["revenue"].sum(dim=(-2,-1)).mean().item(),
-            "total_cost": subdata["cost"].sum(dim=(-2,-1)).mean().item(),
-            "total_profit": subdata["revenue"].sum(dim=(-2,-1)).mean().item() -
-                            subdata["cost"].sum(dim=(-2,-1)).mean().item(),
-            "total_loaded": subdata["action"].sum(dim=(-2,-1)).mean().item(),
-            "total_demand":subdata["observation", "realized_demand"][:,0,:].sum(dim=-1).mean(),
-            "total_e[x]_demand": td["observation", "init_expected_demand"][:, 0, :].sum(dim=-1).mean(),
-            "mean_std[x]_demand": subdata["observation", "std_demand"][:, 0, :].std(dim=-1).mean(),
-        }
+        # Environment
+        "total_revenue": subdata["revenue"].sum(dim=(-2,-1)).mean().item(),
+        "total_cost": subdata["cost"].sum(dim=(-2,-1)).mean().item(),
+        "total_profit": subdata["revenue"].sum(dim=(-2,-1)).mean().item() -
+                        subdata["cost"].sum(dim=(-2,-1)).mean().item(),
+        "total_loaded": subdata["action"].sum(dim=(-2,-1)).mean().item(),
+        "total_demand":subdata["observation", "realized_demand"][:,0,:].sum(dim=-1).mean(),
+        "total_e[x]_demand": td["observation", "init_expected_demand"][:, 0, :].sum(dim=-1).mean(),
+        "mean_std[x]_demand": subdata["observation", "std_demand"][:, 0, :].std(dim=-1).mean(),
+    }
     if "excess_POD_violation" in subdata["observation"]:
         out["excess_POD_violation"] = subdata["observation", "excess_POD_violation"].sum(dim=(1)).mean().item()
     return out
