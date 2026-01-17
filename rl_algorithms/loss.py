@@ -102,13 +102,6 @@ def loss_feasibility(td:TensorDictBase, action:Tensor, lagrange_multiplier:Optio
     mass = pod_locations.sum(dim=-3)
     soft_any = th.clamp(mass, 0.0, 1.0)
     excess_pod_locations = th.relu(soft_any.sum(dim=-1) - 1.0)
-    # print("excess_pod_locations:", excess_pod_locations.sum(), "real:", real_excess_pod_locations.sum())
-
-    # Debugging prints - should be differentiable
-    # print("action:", action.requires_grad)
-    # print("utilization:", utilization.requires_grad)
-    # print("pod_locations:", pod_locations.requires_grad)
-    # print("excess_pod_locations:", excess_pod_locations.requires_grad)
 
     # Compute loss from weighted violations
     agg_fn = make_feasibility_aggregator(aggregate_feasibility, ndims=violations.ndim)
