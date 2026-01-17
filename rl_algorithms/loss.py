@@ -449,9 +449,6 @@ class FeasibilitySACLoss(SACLoss):
         ), self.actor_network_params.to_module(self.actor_network):
             dist = self.actor_network.get_dist(tensordict)
             tensordict["action"] = dist.rsample()
-            if "preload_mask" in tensordict["observation"]:
-                hard_mask = tensordict["observation", "preload_mask"].float()
-                tensordict["action"] = tensordict["action"] * hard_mask
         tensordict = self.actor_network(tensordict) # Perform projection
         log_prob = tensordict["sample_log_prob"] # Use sample log prob
         # (non projection on SAC)
@@ -617,10 +614,6 @@ class FeasibilityClipPPOLoss(PPOLoss):
     @dispatch
     def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
         tensordict = tensordict.clone(False)
-        if "mask" in tensordict:
-            hard_mask = tensordict["observation", "preload_mask"].float()
-            raise NotImplementedError("Learned masking not implemented in FeasibilityClipPPOLoss.")
-
         advantage = tensordict.get(self.tensor_keys.advantage, None)
         if advantage is None:
             self.value_estimator(
@@ -693,9 +686,7 @@ class FeasibilityClipPPOLoss(PPOLoss):
     def _log_weight(
         self, tensordict: TensorDictBase
     ) -> Tuple[torch.Tensor, d.Distribution, torch.Tensor]:
-        # either "unprojected_action" or "action"
-        action = tensordict.get("unprojected_action", self.tensor_keys.action)
-
+        action = tensordict.get("raw_action", self.tensor_keys.action) # use raw action if available
         with self.actor_network_params.to_module(
             self.actor_network
         ) if self.functional else contextlib.nullcontext():
