@@ -54,8 +54,8 @@ class CargoEmbedding(nn.Module):
             expected_demand = td["expected_demand"] / max_demand
             std_demand = td["std_demand"] / max_demand
         else:
-            expected_demand = td["expected_demand"][..., 0, :] / max_demand.squeeze(-1)
-            std_demand = td["std_demand"][..., 0, :] / max_demand.squeeze(-1)
+            expected_demand = td["expected_demand"][..., 0, :] / max_demand.squeeze()
+            std_demand = td["std_demand"][..., 0, :] / max_demand.squeeze()
         combined_input = torch.stack([expected_demand, std_demand, *cargo_parameters.values()], dim=-1)
         combined_emb = self.fc(combined_input)
 
@@ -210,7 +210,7 @@ class DynamicSelfAttentionEmbedding(nn.Module):
         if td["observed_demand"].dim() == 2:
             observed_demand = td["observed_demand"] / max_demand
         else:
-            observed_demand = td["observed_demand"][...,0,:] / max_demand.squeeze(-1)
+            observed_demand = td["observed_demand"][...,0,:] / max_demand.squeeze()
 
         # Self-Attention over demand history
         attended_demand = self.self_attention(observed_demand.view(observed_demand.size(0), -1, 1))
