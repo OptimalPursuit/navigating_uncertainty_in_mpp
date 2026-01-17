@@ -21,7 +21,7 @@ if __name__ == "__main__":
     parser.add_argument('--cv', type=float, default=0.5)
 
     # Algorithm parameters
-    parser.add_argument('--algorithm_type', type=str, default='ppo', help="Type of algorithm to use.")
+    parser.add_argument('--algorithm_type', type=str, default='sac', help="Type of algorithm to use.")
     parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
     parser.add_argument('--primal_dual', type=lambda x: x == 'True', default=False, help="Use primal-dual method.")
 
@@ -43,7 +43,7 @@ if __name__ == "__main__":
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
     parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
     parser.add_argument("--path", type=str, default="results/trained_models/AI2STOW_JOURNAL_VERSION", help="Path to the directory containing the config.yaml and sweep_config.yaml files.")
-    parser.add_argument("--folder", type=str, default="ppo-bvp", help="Folder to save the sweep configuration and results.")
+    parser.add_argument("--folder", type=str, default="sac-bvp", help="Folder to save the sweep configuration and results.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
     args = parser.parse_args()
 

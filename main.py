@@ -264,7 +264,7 @@ def parse_args():
     parser.add_argument('--spot_percentage', type=float, default=0.3, help="Percentage of spot demand.")
 
     # Algorithm parameters
-    parser.add_argument('--algorithm_type', type=str, default='ppo', help="Type of algorithm to use.")
+    parser.add_argument('--algorithm_type', type=str, default='sac', help="Type of algorithm to use.")
     parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
     parser.add_argument('--primal_dual', type=lambda x: x == 'True', default=False, help="Enable primal-dual method.")
 
@@ -291,7 +291,7 @@ def parse_args():
     parser.add_argument('--learning_rate', type=float, default=0.0005, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.0003, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
-    parser.add_argument('--folder', type=str, default='ppo-vp', help="Folder name for the run.")
+    parser.add_argument('--folder', type=str, default='sac-vp', help="Folder name for the run.")
     parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
     return parser.parse_args()
