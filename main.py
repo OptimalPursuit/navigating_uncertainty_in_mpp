@@ -265,8 +265,7 @@ def parse_args():
 
     # Algorithm parameters
     parser.add_argument('--algorithm_type', type=str, default='ppo', help="Type of algorithm to use.")
-    parser.add_argument('--feasibility_lambda', type=float, default=0.0 #0.2828168389831236
-                        , help="Lambda for feasibility.")
+    parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
     parser.add_argument('--primal_dual', type=lambda x: x == 'True', default=False, help="Enable primal-dual method.")
 
     # Model parameters
