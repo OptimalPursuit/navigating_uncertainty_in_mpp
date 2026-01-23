@@ -480,14 +480,17 @@ def get_performance_metrics(subdata:Dict, td:TensorDict, env:nn.Module) -> Dict:
         "pod_violation": feas_dict["total_pod_violations"].mean().item() if env.name == "block_mpp" else 0.0,
 
         # Environment
+
+
         "total_revenue": subdata["revenue"].sum(dim=(-2,-1)).mean().item(),
         "total_cost": subdata["cost"].sum(dim=(-2,-1)).mean().item(),
         "total_profit": subdata["revenue"].sum(dim=(-2,-1)).mean().item() -
                         subdata["cost"].sum(dim=(-2,-1)).mean().item(),
         "total_loaded": subdata["action"].sum(dim=(-2,-1)).mean().item(),
-        "total_demand":subdata["observation", "realized_demand"][:,0,:].sum(dim=-1).mean(),
-        "total_e[x]_demand": td["observation", "init_expected_demand"][:, 0, :].sum(dim=-1).mean(),
-        "mean_std[x]_demand": subdata["observation", "std_demand"][:, 0, :].std(dim=-1).mean(),
+        "total_demand":subdata["observation", "realized_demand"][:,0,:].sum(dim=-1).mean().item(),
+        "total_e[x]_demand": td["observation", "init_expected_demand"][:, 0, :].sum(dim=-1).mean().item(),
+        "mean_std[x]_demand": subdata["observation", "std_demand"][:, 0, :].std(dim=-1).mean().item(),
+        "max_revenue": (env.revenues * subdata["observation", "realized_demand"][:,0,:]).sum(dim=(-1)).mean().item(),
     }
     if "excess_POD_violation" in subdata["observation"]:
         out["excess_POD_violation"] = subdata["observation", "excess_POD_violation"].sum(dim=(1)).mean().item()
