@@ -360,11 +360,18 @@ class AuthenticDemandGenerator(MPP_Generator):
         self.loading_discharge_region = kwargs.get("loading_discharge_region", False)
         self.load_ports = self.middle_leg if self.loading_discharge_region else (self.P - 1)
 
-        # todo: this is not created correctly yet!
+        # Target utilizations
         target_utils = kwargs.get("target_utils", None)
-        self.target_utils = target_utils if target_utils is not None else [
-            0.2 + 0.8 * i / (self.load_ports - 1) for i in range(self.load_ports)
-        ]
+        start = kwargs.get("target_util_start", 0.4)
+        mid = kwargs.get("utilization_rate_initial_demand", 1.0)
+        end = kwargs.get("target_util_end", 0.6)
+        if target_utils is None:
+            if self.loading_discharge_region:
+                self.target_utils = self.make_target_utils_start_mid_end(self.load_ports, start=start, mid=(start+mid)/2, end=mid)
+            else:
+                self.target_utils = self.make_target_utils_start_mid_end(self.load_ports, start=start, mid=mid, end=end)
+        else:
+            self.target_utils = target_utils
 
         # Demand generation
         self.distribution = kwargs.get("distribution", "poisson")
@@ -402,6 +409,34 @@ class AuthenticDemandGenerator(MPP_Generator):
                                 "init_expected_demand": e_x.view(*batch_size, self.T*self.K),
                                 "batch_updates": th.zeros(batch_size, device=self.device).view(*batch_size, 1),
                                 }}, batch_size=batch_size, device=self.device,)
+
+    def make_target_utils_start_mid_end(self, load_ports: int, start=0.6, mid=1.1, end=0.6, sharpness=1.5):
+        """
+        Creates a hump-shaped utilization profile with explicit (start, middle, end).
+
+        - start: utilization at first loading port
+        - mid: utilization at the peak (middle loading port)
+        - end: utilization at last loading port
+        - sharpness > 1 makes peak narrower, < 1 makes it flatter
+
+        Returns: list[float] length = load_ports
+        """
+        if load_ports <= 1:
+            return [mid]
+
+        mid_idx = (load_ports - 1) / 2.0
+        out = []
+        for i in range(load_ports):
+            if i <= mid_idx:
+                # normalized progress 0 -> 1
+                t = i / mid_idx if mid_idx > 0 else 1.0
+                val = start + (mid - start) * (t ** sharpness)
+            else:
+                # normalized progress 0 -> 1 from mid -> end
+                t = (i - mid_idx) / (load_ports - 1 - mid_idx + 1e-9)
+                val = mid + (end - mid) * (t ** sharpness)
+            out.append(float(val))
+        return out
 
     def random_integer_partition(self, v: int, b: int):
         """Partition integer v into b nonnegative integers (randomized)."""
@@ -577,16 +612,14 @@ if __name__ == "__main__":
     env = make_env(config.env, device='cpu')
     batch_size = 1000
 
-    # Create generator
-    generator = env.generator
-    dist = "Gaussian" if not generator.generalization else "Uniform"
-    print("Distribution is ", dist)
+    generator = env.generator  # UniformMPP_Generator
+    td = generator(batch_size)  # one sample
+    td2 = generator(batch_size)  # one sample
+    td3 = generator(batch_size)  # one sample
 
-    # Generate demand
-    td = generator(batch_size)
-    # demand_history = th.empty((batch_size, env.T, env.K), device="cpu")
-    td = generator(batch_size, td)
     demand = td["observation", "realized_demand"].view(batch_size, env.T, env.K)
+    demand2 = td2["observation", "realized_demand"].view(batch_size, env.T, env.K)
+    demand3 = td3["observation", "realized_demand"].view(batch_size, env.T, env.K)
     e_x = td["observation", "expected_demand"].view(batch_size, env.T, env.K)
 
     # compute onboard per leg properly for loading_discharge_region block
@@ -611,11 +644,14 @@ if __name__ == "__main__":
         onboard_ex[leg + 1] = (e_x[:, ob, :].float().mean(dim=0) * env.teus.view(-1)).sum().item()
         total_onboard_ex_per_leg.append(int(onboard_ex.sum().item()))
 
-    C = generator.C if hasattr(generator, 'C') else generator.total_capacity.item()
-    print("Sampled containers on board per leg:", total_onboard_x_per_leg)
-    print("TEU Utilization rate per leg:", [x / C for x in total_onboard_x_per_leg])
-    print("Expected containers on board per leg:", total_onboard_ex_per_leg)
-    print("Expected TEU Utilization rate per leg:", [x / C for x in total_onboard_ex_per_leg])
+    C = float(generator.C if hasattr(generator, "C") else generator.total_capacity.item())
+
+    print("---------- Onboard Analysis ----------")
+    print("Total ship capacity (TEU):", C)
+    print("TEU onboard per leg (realized):", total_onboard_x_per_leg)
+    print("TEU utilization per leg:", [x / C for x in total_onboard_x_per_leg])
+    print("TEU onboard per leg (expected):", total_onboard_ex_per_leg)
+    print("Expected TEU utilization per leg:", [x / C for x in total_onboard_ex_per_leg])
 
     # EDA of all types
     demand_dict = {}
@@ -652,9 +688,10 @@ if __name__ == "__main__":
     plt.xlabel("Port")
     plt.ylabel("Containers")
     plt.ylim(0, demand_port.max() + 100) # + 1000)
-    plt.title("Container Demand at Each Port")
+    plt.title("Containers Loaded per Port")
     plt.show()
-    ds_fn(demand_port, "demand")
+    ds_fn(demand_port, "containers loaded per port")
+    print("------------------------------------")
 
     # Plot boxplot of TEU at each port
     teu_port = teu_port.detach().cpu().numpy()
@@ -663,9 +700,11 @@ if __name__ == "__main__":
     plt.xlabel("Port")
     plt.ylabel("TEU")
     plt.ylim(0, teu_port.max() + 100) # + 1000)
-    plt.title("TEU Demand at Each Port")
+    plt.title("TEU Loaded per Port")
     plt.show()
-    ds_fn(teu_port, "teu demand")
+    ds_fn(teu_port, "teu loaded per port")
+    print("------------------------------------")
+
 
     # Plot boxplot for Revenue
     plt.figure()
@@ -674,26 +713,7 @@ if __name__ == "__main__":
     plt.xlabel("Port")
     plt.ylabel("Revenue")
     plt.ylim(0, revenue_port.max() + 100)
-    plt.title("Revenue at Each Port")
+    plt.title("Revenue Loaded per Port")
     plt.show()
-    ds_fn(revenue_port, "revenue demand")
-
-    # Plot leg utilization (on board demand)
-    from scenario_tree_mip import onboard_groups
-    demand_np = demand.detach().cpu().numpy()
-    ob_demand = []
-    ob_teus = []
-    transport_indices = [(i, j) for i in range(env.P) for j in range(env.P) if i < j]
-    for p in range(env.P - 1):
-        ob = 0
-        ob_teu = 0
-        for (i, j) in onboard_groups(env.P, p, transport_indices)[0]:
-            tr = th.where((env.transport_idx[:, 0] == i) & (env.transport_idx[:, 1] == j))[0].item()
-            for k in range(env.K):
-                ob += demand_np[:, 0][tr, k]
-                ob_teu += demand_np[:, 0][tr, k] * env.teus[k].item()
-        ob_demand.append(ob)
-        ob_teus.append(ob_teu)
-
-    print(f"Onboard demand per port: {ob_demand}")
-    print(f"Onboard TEU per port: {ob_teus}")
+    ds_fn(revenue_port, "revenue loaded per port")
+    print("------------------------------------")
