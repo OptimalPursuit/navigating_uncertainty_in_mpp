@@ -226,7 +226,7 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
 
         # Evaluate policy
         policy_load_path = f"{path}/policy.pth"
-        policy.load_state_dict(torch.load(policy_load_path, map_location=device))
+        missing, unexpected = policy.load_state_dict(torch.load(policy_load_path, map_location=device), strict=False)
 
         metrics, summary_stats = evaluate_model(policy, config, device=device, **config.testing)
         print(summary_stats)
@@ -290,10 +290,11 @@ def parse_args():
     # pd_lr: 0.000034690714579803494
     parser.add_argument('--learning_rate', type=float, default=0.0005, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.0003, help="Learning rate for primal-dual optimizer.")
-    parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
-    parser.add_argument('--folder', type=str, default='sac-vp', help="Folder name for the run.")
-    parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
-    parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
+    parser.add_argument('--testing_path', type=str, default='results/trained_models/AI2STOW_JOURNAL_VERSION', help="Path for testing results.")
+    parser.add_argument('--folder', type=str, default='SA_AM', help="Folder name for the run.")
+    parser.add_argument('--phase', type=str, default='test', help="WandB project name.")
+    parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=True, help="Enable feasibility recovery.")
+    parser.add_argument('--num_episodes', type=int, default=5, help="Number of test episodes.")
     return parser.parse_args()
 
 def deep_update(base, updates):
@@ -314,16 +315,10 @@ if __name__ == "__main__":
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
 
-    # # Check if a config file exists in the folder and load it
-    # config_path = os.path.join(folder_path, "config.yaml")
-    # if os.path.exists(config_path):
-    #     config = load_config(config_path)
-    #     # todo: remove this?
-    #     # config.env.env_name = "mpp"
-    #     # config.env.block_stowage_mask = False
-    #     # config.model.dyn_embed = "ffn"
-    #     # config.testing.path = "results/trained_models/navigating_uncertainty"
-    #     # config.training.projection_kwargs.slack_penalty = 1000
+    # Check if a config file exists in the folder and load it
+    config_path = os.path.join(folder_path, "config.yaml")
+    if os.path.exists(config_path):
+        config = load_config(config_path)
 
     # Parse command-line arguments for dynamic configuration
     args = parse_args()
@@ -367,34 +362,10 @@ if __name__ == "__main__":
     config.testing.folder = args.folder
     config.model.phase = args.phase
     config.testing.feasibility_recovery = args.feasibility_recovery
-
-    # # Adapt projection_type to the folder name
-
-    # todo: fix these!
-    # config.algorithm.type, almost_projection_type = config.testing.folder.split("-")
-    # if almost_projection_type == "vp" or almost_projection_type == "fr+vp":
-    #     config.training.projection_type = "bound_convex_violation" #"linear_violation"
-    # elif almost_projection_type == "ws+pc" or almost_projection_type == "fr+ws+pc":
-    #     config.training.projection_type = "weighted_scaling_policy_clipping"
-    # elif almost_projection_type == "vp+cp":
-    #     config.training.projection_type = "convex_program"
-    #     config.testing.folder = config.algorithm.type + "-vp"
-    # elif almost_projection_type == "ws+pc+cp":
-    #     config.training.projection_type = "convex_program"
-    #     config.testing.folder = config.algorithm.type + "-ws+pc"
-    # elif almost_projection_type == "fr" or almost_projection_type == "pen":
-    #     config.training.projection_type = "None"
-    # elif almost_projection_type == "pd" or almost_projection_type == "lag":
-    #     config.training.projection_type = "None"
-    #     config.algorithm.primal_dual = True
-    # elif almost_projection_type == "cp":
-    #     config.training.projection_type = "convex_program"
-    # else:
-    #     raise ValueError(f"Unsupported projection type: {almost_projection_type}")
+    config.testing.num_episodes = args.num_episodes
 
     if args.feasibility_recovery:
         config.training.projection_type = "convex_program"
-        # config.training.projection_type = "weighted_scaling_policy_clipping"
 
     print(f"Running with folder: {config.testing.folder}, "
           f"algorithm type: {config.algorithm.type},"
