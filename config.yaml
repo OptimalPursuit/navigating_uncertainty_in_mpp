@@ -40,7 +40,7 @@ env:
   iid_demand: true
   include_reefers: false
   limit_revenue: true
-  loading_discharge_region: true
+  loading_discharge_region: false
   long_crane_costs: 0.5
   normalize_obs: true
   normalize_constraints: false

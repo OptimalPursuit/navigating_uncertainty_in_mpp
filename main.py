@@ -258,7 +258,7 @@ def parse_args():
     parser.add_argument('--demand_sparsity', type=int, default=0.3, help="Sparsity level of demand.")
     parser.add_argument('--demand_perturbation', type=float, default=0.2, help="Perturbation level of demand.")
     parser.add_argument('--duration_variable_revenue', type=lambda x: x == 'True', default=True, help="Variable revenue parameter over duration.")
-    parser.add_argument('--loading_discharge_region', type=lambda x: x == 'True', default=True, help="Use loading/discharge regions in generator.")
+    parser.add_argument('--loading_discharge_region', type=lambda x: x == 'True', default=False, help="Use loading/discharge regions in generator.")
     parser.add_argument('--use_dirichlet_partition', type=lambda x: x == 'True', default=True, help="Use Dirichlet partition for demand generation.")
     parser.add_argument('--dirichlet_alpha', type=float, default=0.3, help="Alpha parameter for Dirichlet distribution.")
     parser.add_argument('--spot_percentage', type=float, default=0.3, help="Percentage of spot demand.")
