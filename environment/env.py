@@ -63,9 +63,10 @@ class MasterPlanningEnv(EnvBase):
 
         ## Init env
         # Seed and generator
-        self._set_seed(kwargs.get("seed"))
         self.demand_uncertainty = kwargs.get("demand_uncertainty", False)
         self.generator = MPP_Generator(device=device, **kwargs)
+        self.seed = kwargs.get("seed", 42)
+        self.set_seed(self.seed)
         if td_gen == None:
             self.td_gen = self.generator(batch_size=batch_size,)
         # Data type and shapes
@@ -208,8 +209,12 @@ class MasterPlanningEnv(EnvBase):
 
     def _reset(self,  td: Optional[TensorDict] = None, seed:Optional=None) -> TensorDict:
         """Reset the environment to the initial state."""
+        # Set seed
+        if seed is not None:
+            self.set_seed(seed)
         # Extract batch_size from td if it exists
-        if td is None: td = self.td_gen
+        if td is None:
+            td = self.td_gen
         batch_size = getattr(td, 'batch_size', self.batch_size)
         td = self.generator(batch_size=batch_size, td=td)
 
@@ -279,21 +284,26 @@ class MasterPlanningEnv(EnvBase):
         return out
 
     def _set_seed(self, seed: Optional[int] = None) -> int:
-        """
-        Sets the seed for the environment and updates the RNG.
-
-        Args:
-            seed (Optional[int]): The seed to use. If None, a random seed is generated.
-
-        Returns:
-            int: The seed used to initialize the RNG.
-        """
-        self.rng = torch.Generator(device=self.device)
+        # TorchRL wants: return NEXT seed in a chain, not the same seed
         if seed is None:
-            seed = self.rng.seed()
+            seed = int(torch.seed())  # or int(time.time_ns() % 2**32)
+        seed = int(seed) % (2 ** 32)
+
+        # seed env rng
+        self.rng = torch.Generator(device=self.device)
         self.rng.manual_seed(seed)
         self.seed = seed
-        return seed
+
+        # seed generator rng too (if it exists)
+        if hasattr(self, "generator") and self.generator is not None:
+            if hasattr(self.generator, "set_seed"):
+                seed = self.generator.set_seed(seed)
+            else:
+                self.generator.rng.manual_seed(seed)
+
+        # deterministic "next seed"
+        next_seed = (1103515245 * seed + 12345) % (2 ** 32)
+        return next_seed
 
     # Extraction functions
     def _extract_from_td(self, td:TensorDict, batch_size:Tuple) -> Tuple:
@@ -746,19 +756,7 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
         # Kwargs and super
         self.BL = kwargs.get("blocks", 2)  # Number of paired blocks: 2 (wings + center), 3 (wings + center1 + center2)
         super().__init__(device=device, batch_size=batch_size, **kwargs)
-        # self.generator = UniformMPP_Generator(device=device, **kwargs)
-        kwargs["target_utils"] = [0.3, 1.1, 1.4]
-            # [0.75, 0.99, 0.8]
-        # print("Revenues matrix:\n", self.revenues_matrix.view(self.K, self.T))
-        # print("TUEs", self.teus)
-        # print("Revenue/TEU:", self.revenues_matrix.view(self.K, self.T)/self.teus.unsqueeze(1))
-
-        # [0.6, 0.75, 0.99, 0.99, 0.8]
-        #[0.6, 0.8, 0.95, 0.85, 0.5]  # Target utilization levels for demand generator
         kwargs = self._generate_cargo_shares(kwargs)
-        # print("By size:", self.summarize_shares(kwargs["cargo_shares"], dimension=0))
-        # print("By weight:", self.summarize_shares(kwargs["cargo_shares"], dimension=1))
-        # print("By revenue:", self.summarize_shares(kwargs["cargo_shares"], dimension=2))
         self.generator = AuthenticDemandGenerator(device=device, **kwargs)
 
         # Shapes
@@ -849,8 +847,13 @@ class BlockMasterPlanningEnv(MasterPlanningEnv):
 
     def _reset(self,  td: Optional[TensorDict] = None, seed:Optional=None) -> TensorDict:
         """Reset the environment to the initial state."""
+        # this will call _set_seed internally (TorchRL style)
+        if seed is not None:
+            self.set_seed(seed)
+
         # Extract batch_size from td if it exists
-        if td is None: td = self.td_gen
+        if td is None:
+            td = self.td_gen
         batch_size = getattr(td, 'batch_size', self.batch_size)
         td = self.generator(batch_size=batch_size, td=td)
 
