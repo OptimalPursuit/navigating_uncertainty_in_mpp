@@ -25,8 +25,9 @@ class InnerConvexViolationProjection(nn.Module):
         self.use_early_stopping = kwargs.get('use_early_stopping', True)
         self.use_gradient_scaling = kwargs.get('use_gradient_scaling', True)
 
-
-    def forward(self, x:Tensor, A:Tensor, b:Tensor, **kwargs) -> Tensor:
+    def forward(self, x:Tensor, A:Tensor, b:Tensor,
+                var_mask: Tensor = None,
+                **kwargs) -> Tensor:
         # Raise error is dimensions are invalid
         if b.dim() not in [2, 3] or A.dim() not in [3, 4]:
             raise ValueError("Invalid dimensions: 'b' must have dim 2 or 3 and 'A' must have dim 3 or 4.")
@@ -77,8 +78,17 @@ class InnerConvexViolationProjection(nn.Module):
             count += 1
             if count > self.max_iter:
                 break
-        # Return the adjusted x_, reshaped to remove n_step dimension if it was initially 2D
-        return x_.squeeze(1) if n_step == 1 else x_
+
+        # If n_step == 1, x_ is expected to have a singleton step dim at 1.
+        if n_step == 1:
+            x_ = x_.squeeze(1)
+
+        # Apply variable mask before returning
+        if var_mask is not None:
+            return x_ * var_mask  # relies on same broadcasting
+
+        return x_
+
 
 class BoundConvexViolationProjection(nn.Module):
     """
@@ -170,9 +180,15 @@ class BoundConvexViolationProjection(nn.Module):
             if count >= self.max_iter:
                 break
 
+        # If n_step == 1, x_ is expected to have a singleton step dim at 1.
+        if n_step == 1:
+            x_ = x_.squeeze(1)
+
         # Apply variable mask before returning
-        x_ = x_ * var_mask
-        return x_.squeeze(1) if n_step == 1 else x_
+        if var_mask is not None:
+            return x_ * var_mask  # relies on same broadcasting
+
+        return x_
 
 class CvxpyProjectionLayer(nn.Module):
     def __init__(self, n_action=80, n_constraints=85, slack_penalty=1, **kwargs):

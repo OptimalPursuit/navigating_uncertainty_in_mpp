@@ -83,7 +83,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         return out["action"]
 
     def violation_projection(self, out:TensorDict) -> Tensor:
-        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"])
+        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=out["observation", "action_mask"].float())
         return out["action"]
 
     def bound_violation_projection(self, out:TensorDict) -> Tensor:
