@@ -87,6 +87,8 @@ class BoundConvexViolationProjection(nn.Module):
     respecting frozen variables and optionally ignoring masked constraints.
     """
 
+    # todo: this one diverges; needs investigation
+
     def __init__(self, **kwargs):
         super(BoundConvexViolationProjection, self).__init__()
         self.lr = kwargs.get('alpha', 0.005)
