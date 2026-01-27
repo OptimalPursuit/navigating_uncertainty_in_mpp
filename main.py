@@ -278,7 +278,7 @@ def parse_args():
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
-    parser.add_argument('--projection_type', type=str, default="bound_convex_violation", help="Projection type.")   #'bound_convex_violation', help="Projection type.")
+    parser.add_argument('--projection_type', type=str, default="inner_convex_violation", help="Projection type.")   #'bound_convex_violation', help="Projection type.")
     parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.05, 'delta': 0.05, 'max_iter': 300,
                                                                   'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
                         help="Projection parameters.")
@@ -292,9 +292,9 @@ def parse_args():
     parser.add_argument('--pd_learning_rate', type=float, default=0.0003, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/AI2STOW_JOURNAL_VERSION', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='SA_AM', help="Folder name for the run.")
-    parser.add_argument('--phase', type=str, default='test', help="WandB project name.")
-    parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=True, help="Enable feasibility recovery.")
-    parser.add_argument('--num_episodes', type=int, default=5, help="Number of test episodes.")
+    parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
+    parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
+    parser.add_argument('--num_episodes', type=int, default=30, help="Number of test episodes.")
     return parser.parse_args()
 
 def deep_update(base, updates):
