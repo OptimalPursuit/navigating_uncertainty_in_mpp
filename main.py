@@ -259,16 +259,16 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
 def parse_args():
     parser = argparse.ArgumentParser(description="Script with WandB integration.")
     # Environment parameters
-    parser.add_argument('--env_name', type=str, default='mpp', help="Name of the environment.")
+    parser.add_argument('--env_name', type=str, default='block_mpp', help="Name of the environment.")
     parser.add_argument('--ports', type=int, default=4, help="Number of ports in env.")
-    parser.add_argument('--teu', type=int, default=1000, help="TEU capacity of the ship.")
+    parser.add_argument('--teu', type=int, default=20000, help="TEU capacity of the ship.")
     parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
     parser.add_argument('--ur', type=float, default=1.1)
     parser.add_argument('--cv', type=float, default=0.5)
     # Generator parameters
     parser.add_argument('--demand_sparsity', type=int, default=0.3, help="Sparsity level of demand.")
     parser.add_argument('--demand_perturbation', type=float, default=0.2, help="Perturbation level of demand.")
-    parser.add_argument('--duration_variable_revenue', type=lambda x: x == 'True', default=False, help="Variable revenue parameter over duration.")
+    parser.add_argument('--duration_variable_revenue', type=lambda x: x == 'True', default=True, help="Variable revenue parameter over duration.")
     parser.add_argument('--loading_discharge_region', type=lambda x: x == 'True', default=False, help="Use loading/discharge regions in generator.")
     parser.add_argument('--use_dirichlet_partition', type=lambda x: x == 'True', default=True, help="Use Dirichlet partition for demand generation.")
     parser.add_argument('--dirichlet_alpha', type=float, default=0.3, help="Alpha parameter for Dirichlet distribution.")
@@ -283,6 +283,8 @@ def parse_args():
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
+    parser.add_argument('--embed_dim', type=int, default=128, help="Dimension of embeddings.")
+    parser.add_argument('--hidden_dim', type=int, default=128, help="Dimension of hidden layers.")
     parser.add_argument('--temperature', type=int, default=1.0, help="Temperature of policy.")
     parser.add_argument('--scale_max', type=float, default=10.0, help="Maximum value of policy scale.")
     parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=False, help="Block stowage mask.")
@@ -301,11 +303,11 @@ def parse_args():
     # pd_lr: 0.000034690714579803494
     parser.add_argument('--learning_rate', type=float, default=0.0005, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.0003, help="Learning rate for primal-dual optimizer.")
-    parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
-    parser.add_argument('--folder', type=str, default='sac-vp', help="Folder name for the run.")
+    parser.add_argument('--testing_path', type=str, default='results/trained_models/AI2STOW_JOURNAL_VERSION', help="Path for testing results.")
+    parser.add_argument('--folder', type=str, default='SA_AM', help="Folder name for the run.")
     parser.add_argument('--phase', type=str, default='test', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
-    parser.add_argument('--num_episodes', type=int, default=30, help="Number of test episodes.")
+    parser.add_argument('--num_episodes', type=int, default=5, help="Number of test episodes.")
     return parser.parse_args()
 
 def deep_update(base, updates):
@@ -359,6 +361,8 @@ if __name__ == "__main__":
     config.model.encoder_type = args.encoder_type
     config.model.decoder_type = args.decoder_type
     config.model.dyn_embed = args.dyn_embed
+    config.model.embed_dim = args.embed_dim
+    config.model.hidden_dim = args.hidden_dim
     config.model.temperature = args.temperature
     config.model.scale_max = args.scale_max
     config.model.use_mask_head = args.use_mask_head
