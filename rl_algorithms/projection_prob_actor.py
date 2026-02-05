@@ -83,11 +83,13 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         return out["action"]
 
     def violation_projection(self, out:TensorDict) -> Tensor:
-        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=out["observation", "action_mask"].float())
+        var_mask = out["observation", "action_mask"].float() if "action_mask" in out["observation"] else None
+        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=var_mask)
         return out["action"]
 
     def bound_violation_projection(self, out:TensorDict) -> Tensor:
-        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=out["observation", "action_mask"].float())
+        var_mask = out["observation", "action_mask"].float() if "action_mask" in out["observation"] else None
+        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=var_mask)
         return out["action"]
 
     def violation_projection_policy_clipping(self, out:TensorDict) -> Tensor:
