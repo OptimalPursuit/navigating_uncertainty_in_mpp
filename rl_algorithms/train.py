@@ -10,7 +10,6 @@ from tensordict.nn import TensorDictModule, TensorDictSequential
 from typing import Dict, Tuple, Optional, List, Union
 
 
-
 # Torch
 import torch
 import torch.nn as nn
@@ -28,6 +27,8 @@ from torchrl.collectors import SyncDataCollector
 from torchrl.data.replay_buffers import ReplayBuffer
 from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
 from torchrl.data.replay_buffers.storages import LazyTensorStorage
+# Kron optimizer
+from kron_torch import Kron
 
 # Custom code
 from rl_algorithms.utils import make_env
@@ -269,19 +270,24 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
         sampler=TopKPerSampler(top_k=int(top_k * batch_size), alpha=priority_alpha)
     )
 
-    # Optimizer and scheduler
+    # Kron rule-of-thumb from authors: lr ~ 3x smaller than Adam, weight_decay ~ 3–10x larger
     if kwargs["algorithm"]["type"] == "sac":
-        actor_optim = torch.optim.Adam(policy.parameters(), lr=lr)
+        actor_optim = Kron(policy.parameters(), lr=lr)
+        # actor_optim = torch.optim.Adam(policy.parameters(), lr=lr)
         critic_params = [p for name, p in loss_module.qvalue_network_params.named_parameters() if not name.startswith("dual_head")]
-        critic_optim = torch.optim.Adam(critic_params, lr=lr)
+        critic_optim = Kron(critic_params, lr=lr)
+        # critic_optim = torch.optim.Adam(critic_params, lr=lr)
         # critic_optim = torch.optim.Adam(loss_module.qvalue_network_params.parameters(), lr=lr)
         if not loss_module.fixed_alpha:
+            # Kron does not like scalers, hence alpha is done with Adam
             alpha_optim = torch.optim.Adam([loss_module.log_alpha], lr=lr)
+            # alpha_optim = Kron([loss_module.log_alpha], lr=lr)
         actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(actor_optim, train_data_size)
         critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(critic_optim, train_data_size)
     elif kwargs["algorithm"]["type"] == "ppo":
         actor_critic_params = list(policy.parameters()) + list(critic.parameters())
-        actor_critic_optim = torch.optim.Adam(actor_critic_params, lr=lr)
+        actor_critic_optim = Kron(actor_critic_params, lr=lr)
+        # actor_critic_optim = torch.optim.Adam(actor_critic_params, lr=lr)
         actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(actor_critic_optim, train_data_size)
         # critic_params = [p for name, p in critic.named_parameters() if not name.startswith("dual_head")]
         # critic_optim = torch.optim.Adam(critic_params, lr=lr)
@@ -289,7 +295,8 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
         raise ValueError(f"Algorithm {kwargs['algorithm']['type']} not recognized.")
     if primal_dual:
         dual_params = critic.module.dual_head.parameters()
-        dual_optim = torch.optim.Adam(dual_params, lr=pd_lr)
+        dual_optim = Kron(dual_params, lr=pd_lr)
+        # dual_optim = torch.optim.Adam(dual_params, lr=pd_lr)
 
     train_updates = train_data_size // (batch_size * n_step)
     pbar = tqdm.tqdm(range(train_updates))
