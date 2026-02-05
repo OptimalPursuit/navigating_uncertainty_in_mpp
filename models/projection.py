@@ -14,79 +14,76 @@ class EmptyLayer(nn.Module):
         return x
 
 class InnerConvexViolationProjection(nn.Module):
-    """Convex violation layer to enforce soft feasibility by projecting solutions inside the feasible region."""
+    """
+    UVP 2.0 (Jacobian-friendly):
+      x_{k+1} = x_k - eta(s) * Atilde^T * relu(Atilde x_k - btilde)
 
-    def __init__(self, **kwargs):
-        super(InnerConvexViolationProjection, self).__init__()
-        self.lr = kwargs.get('alpha', 0.005)
+    - Integrates nonnegativity (and optional upper bounds) as linear constraints.
+    - Uses a deterministic Lipschitz step eta(s)=1/(||Atilde||^2 + rho) (no branching).
+    - Fixed K iterations (no early stopping) to keep the map explicit and Jacobian-correctable.
+    """
+
+    def __init__(self,**kwargs):
+        super().__init__()
+        self.K = kwargs.get('max_iter', 30)
+        self.eta = kwargs.get('alpha', 0.01)
+        self.delta = kwargs.get('delta', 0.01)
         self.scale = kwargs.get('scale', 0.001)
-        self.delta = kwargs.get('delta', 0.1)
-        self.max_iter = kwargs.get('max_iter', 100)
-        self.use_early_stopping = kwargs.get('use_early_stopping', True)
-        self.use_gradient_scaling = kwargs.get('use_gradient_scaling', True)
+        self.use_early_stopping = kwargs.get('use_early_stopping', False)  # Not used; fixed iters
+        self.rho = kwargs.get('rho', 1e-12)
+        # True: power iteration approx ||A||_2^2, False: Frobenius ||A||_F^2
+        self.use_spectral_eta = kwargs.get('use_spectral_eta', True)
+        self.power_iters = kwargs.get('power_iters', 5)
+        print(f"InnerConvexViolationProjection: K={self.K}, eta method={'spectral' if self.use_spectral_eta else 'frobenius'}, "
+              f"add_nonnegativity={self.add_nonnegativity}, early_stopping={self.use_early_stopping}")
 
-    def forward(self, x:Tensor, A:Tensor, b:Tensor,
-                var_mask: Tensor = None,
-                **kwargs) -> Tensor:
-        # Raise error is dimensions are invalid
-        if b.dim() not in [2, 3] or A.dim() not in [3, 4]:
-            raise ValueError("Invalid dimensions: 'b' must have dim 2 or 3 and 'A' must have dim 3 or 4.")
+    def _eta_frobenius(self, Atilde: Tensor) -> Tensor:
+        # eta = 1 / (||A||_F^2 + rho) per batch-step
+        # ||A||_F^2: sum over (m',n)
+        denom = torch.sum(Atilde * Atilde, dim=(-2, -1)) + self.rho  # [B,S]
+        return 1.0 / denom
 
-        # Shapes
-        batch_size = b.shape[0]
-        m = b.shape[-1]
-        n_step = 1 if b.dim() == 2 else b.shape[-2] if b.dim() == 3 else None
+    def _eta_spectral(self, Atilde: Tensor) -> Tensor:
+        # eta = 1 / (||A||_2^2 + rho) via power iteration on (A^T A)
+        B, S, m, n = Atilde.shape
+        v = torch.randn((B, S, n, 1), device=Atilde.device, dtype=Atilde.dtype)
+        v = v / (torch.norm(v, dim=-2, keepdim=True) + self.rho)
 
-        # Tensors shapes
-        x_ = x.clone()
-        b = b.unsqueeze(1) if b.dim() == 2 else b
-        A = A.unsqueeze(1) if A.dim() == 3 else A
-        x_ = x_.unsqueeze(1) if x_.dim() == 2 else x_
-        # Initialize tensors
-        active_mask = torch.ones(batch_size, n_step, dtype=torch.bool, device=x.device)  # Start with all batches active
+        for _ in range(self.power_iters):
+            Av = torch.matmul(Atilde, v)                       # [B,S,m,1]
+            AtAv = torch.matmul(Atilde.transpose(-2, -1), Av)  # [B,S,n,1]
+            v = AtAv / (torch.norm(AtAv, dim=-2, keepdim=True) + self.rho)
 
-        # Start loop with early exit in case of nans
+        Av = torch.matmul(Atilde, v)
+        num = torch.sum(Av * Av, dim=(-2, -1))  # ||A v||^2  [B,S]
+        # For unit v, ||A v||^2 estimates ||A||_2^2
+        return 1.0 / (num + self.rho)
+
+    def forward(self, x, A, b, var_mask=None, **kwargs):
+        if b.dim() not in (2, 3) or A.dim() not in (3, 4):
+            raise ValueError("Invalid dimensions: 'b' dim 2/3, 'A' dim 3/4.")
+
+        b_ = b.unsqueeze(1) if b.dim() == 2 else b
+        A_ = A.unsqueeze(1) if A.dim() == 3 else A
+        x_ = x.unsqueeze(1) if x.dim() == 2 else x
+
         if torch.isnan(x_).any():
-            return x_.squeeze(1)
-        count = 0
-        while torch.any(active_mask):
-            # Compute current violation for each batch and step
-            violation_new = torch.clamp(torch.matmul(x_.unsqueeze(2), A.transpose(-2, -1)).squeeze(2) - b, min=0)
-            # Shape: [batch_size, n_step, m]
-            total_violation = torch.sum(violation_new, dim=-1)  # Sum violations in [batch_size, n_step]
+            out = x_.squeeze(1) if b.dim() == 2 else x_
+            return out * var_mask if var_mask is not None else out
 
-            # Define batch-wise stopping conditions
-            no_violation = total_violation < self.delta
+        eta = (self._eta_spectral(A_) if self.use_spectral_eta else self._eta_frobenius(A_)).unsqueeze(-1)
 
-            # Update active mask: only keep batches and steps that are not within tolerance
-            active_mask = ~(no_violation)
+        for _ in range(self.K):
+            r = torch.matmul(A_, x_.unsqueeze(-1)).squeeze(-1) - b_  # [B,S,m]
+            v = torch.relu(r)
+            g = torch.matmul(A_.transpose(-2, -1), v.unsqueeze(-1)).squeeze(-1)  # [B,S,n]
+            x_ = x_ - eta * g
 
-            # Break if no batches/steps are left active
-            if self.use_early_stopping and not torch.any(active_mask):
-                break
+            if var_mask is not None:
+                x_ = x_ * var_mask
 
-            # Calculate penalty gradient for adjustment
-            penalty_gradient = torch.matmul(violation_new.unsqueeze(2), A).squeeze(2)  # Shape: [32, 1, 20]
-            scale = torch.norm(penalty_gradient, dim=-1, keepdim=True) + 1e-6 if self.use_gradient_scaling else 1.0
-
-            # Apply penalty gradient update only for active batches/steps
-            # scale = 1 / (torch.std(penalty_gradient, dim=0, keepdim=True) + 1e-6)
-            update = self.lr * penalty_gradient / scale
-            x_ = torch.where(active_mask.unsqueeze(2), x_ - update, x_)
-            x_ = torch.clamp(x_, min=0) # Ensure non-negativity
-
-            count += 1
-            if count > self.max_iter:
-                break
-
-        # If n_step == 1, x_ is expected to have a singleton step dim at 1.
-        if n_step == 1:
+        if b.dim() == 2:
             x_ = x_.squeeze(1)
-
-        # Apply variable mask before returning
-        if var_mask is not None:
-            return x_ * var_mask  # relies on same broadcasting
-
         return x_
 
 
