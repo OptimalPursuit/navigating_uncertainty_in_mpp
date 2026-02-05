@@ -601,8 +601,10 @@ class MasterPlanningEnv(EnvBase):
         duration_grid = (pod_grid-pol_grid).to(revenues.dtype) # Shape: [P, P]
         # Compute revenues
         mask = th.arange(self.K, device=self.device, dtype=self.float_type) < self.K // 2 # Spot/long-term mask
-        revenues[~mask] = duration_grid # Spot market contracts
-        revenues[mask] = (duration_grid * (1 - reduce_long_revenue)) # Long-term contracts
+        spot = duration_grid.unsqueeze(0)  # [1,4,4] -> broadcasts to [C,4,4]
+        long = (duration_grid * (1 - reduce_long_revenue)).unsqueeze(0)
+        mask3 = mask.view(-1, 1, 1)  # [C,1,1]
+        revenues = torch.where(mask3, long, spot)
         i, j = th.triu_indices(self.P, self.P, offset=1) # Get above-diagonal indices of revenues
 
         # Normalize to make revenues closer
