@@ -34,8 +34,8 @@ class InnerConvexViolationProjection(nn.Module):
         # True: power iteration approx ||A||_2^2, False: Frobenius ||A||_F^2
         self.use_spectral_eta = kwargs.get('use_spectral_eta', True)
         self.power_iters = kwargs.get('power_iters', 5)
-        print(f"InnerConvexViolationProjection: K={self.K}, eta method={'spectral' if self.use_spectral_eta else 'frobenius'}, "
-              f"add_nonnegativity={self.add_nonnegativity}, early_stopping={self.use_early_stopping}")
+        # print(f"InnerConvexViolationProjection: K={self.K}, eta method={'spectral' if self.use_spectral_eta else 'frobenius'},"
+        #       f"power_iters={self.power_iters}")
 
     def _eta_frobenius(self, Atilde: Tensor) -> Tensor:
         # eta = 1 / (||A||_F^2 + rho) per batch-step
@@ -273,12 +273,292 @@ class CvxpyProjectionLayer(nn.Module):
             x_proj = x_proj.view(batch_size, -1, x_raw.shape[-1])
         return x_proj
 
+
+class AlphaChebyshevProjection(nn.Module):
+    """
+    Classical alpha-mapping with an interior anchor y0(s) chosen as the Chebyshev center.
+
+    Given polytope:  P(s) = {x: A(s) x <= b(s)} (and optionally x >= 0)
+    Compute Chebyshev center (x0, r):
+        maximize r
+        s.t. A_i x0 + r * ||A_i||_2 <= b_i   for all i
+             (optional) x0 >= 0
+
+    Then alpha-map an unconstrained proposal x_hat to P(s) using a ray from x0 toward x_hat:
+        x(alpha) = x0 + alpha (x_hat - x0),  alpha in [0,1]
+        alpha* = min_i  (b_i - A_i x0) / (A_i (x_hat - x0))   over i with denom > 0, clipped to [0,1]
+        x_proj = x0 + alpha* (x_hat - x0)
+
+    Notes:
+      - Computing Chebyshev center is an LP/SOCP-type solve per sample (state-dependent); expensive.
+      - This implementation uses cvxpy if available; otherwise raises an ImportError.
+
+    Shapes:
+      - x_hat: [B,n] or [B,S,n]
+      - A:     [B,m,n] or [B,S,m,n]
+      - b:     [B,m] or [B,S,m]
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.add_nonnegativity = bool(kwargs.get("add_nonnegativity", True))
+        self.eps_inside = float(kwargs.get("eps_inside", 1e-9))  # numeric margin
+        self.clip_alpha = True
+
+        # solver controls (cvxpy)
+        self.cvx_solver = kwargs.get("cvx_solver", None)  # e.g., "ECOS", "SCS"
+        self.cvx_verbose = bool(kwargs.get("cvx_verbose", False))
+
+    @staticmethod
+    def _alpha_map_from_center(x_hat: Tensor, A: Tensor, b: Tensor, x0: Tensor, eps_inside: float) -> Tensor:
+        """
+        x_hat: [n], A: [m,n], b: [m], x0: [n]
+        returns x_proj: [n]
+        """
+        d = x_hat - x0                                  # [n]
+        Ax0 = A @ x0                                    # [m]
+        Ad  = A @ d                                     # [m]
+        slack = (b - Ax0).clamp(min=0.0)                # [m]
+
+        # constraints with Ad <= 0 do not limit alpha along the ray
+        # alpha_i = slack_i / Ad_i for Ad_i > 0
+        inf = torch.tensor(float("inf"), device=x_hat.device, dtype=x_hat.dtype)
+        alpha_i = torch.where(Ad > 0, slack / (Ad + 1e-12), inf)
+
+        alpha_star = torch.min(alpha_i)
+        alpha_star = torch.clamp(alpha_star - eps_inside, min=0.0, max=1.0)  # keep inside & clip to [0,1]
+        return x0 + alpha_star * d
+
+    def _chebyshev_center_one(self, A: Tensor, b: Tensor) -> Tensor:
+        """
+        Solve Chebyshev center for a single polytope A x <= b.
+
+        Returns x0: [n] on CPU tensor; caller moves to device if needed.
+        """
+        try:
+            import cvxpy as cp
+        except Exception as e:
+            raise ImportError(
+                "AlphaChebyshevProjection requires cvxpy. Install cvxpy (and a solver like ECOS/SCS)."
+            ) from e
+
+        # Move to CPU numpy for cvxpy
+        A_np = A.detach().cpu().numpy()
+        b_np = b.detach().cpu().numpy()
+
+        m, n = A_np.shape
+        x = cp.Variable(n)
+        r = cp.Variable()
+
+        row_norms = (A_np**2).sum(axis=1) ** 0.5  # ||A_i||_2
+
+        constraints = [A_np @ x + r * row_norms <= b_np]
+        if self.add_nonnegativity:
+            constraints += [x >= 0]
+
+        prob = cp.Problem(cp.Maximize(r), constraints)
+
+        # Pick solver if provided
+        if self.cvx_solver is None:
+            prob.solve(verbose=self.cvx_verbose)
+        else:
+            prob.solve(solver=self.cvx_solver, verbose=self.cvx_verbose)
+
+        if x.value is None:
+            # Infeasible or solver failed; fall back to a feasible-ish point: zeros (may be infeasible)
+            x0 = torch.zeros((n,), dtype=A.dtype)
+        else:
+            x0 = torch.tensor(x.value, dtype=A.dtype)
+
+        return x0
+
+    def forward(self, x_hat: Tensor, A: Tensor, b: Tensor, var_mask: Optional[Tensor] = None, **kwargs) -> Tensor:
+        if b.dim() not in (2, 3) or A.dim() not in (3, 4):
+            raise ValueError("Invalid dimensions: 'b' dim 2/3, 'A' dim 3/4.")
+
+        b_ = b.unsqueeze(1) if b.dim() == 2 else b     # [B,S,m]
+        A_ = A.unsqueeze(1) if A.dim() == 3 else A     # [B,S,m,n]
+        x_ = x_hat.unsqueeze(1) if x_hat.dim() == 2 else x_hat  # [B,S,n]
+
+        B, S, m, n = A_.shape
+        out = torch.empty_like(x_)
+
+        # NOTE: Chebyshev solve per (B,S) element (slow but correct).
+        for bi in range(B):
+            for si in range(S):
+                A_bs = A_[bi, si]   # [m,n]
+                b_bs = b_[bi, si]   # [m]
+                x0 = self._chebyshev_center_one(A_bs, b_bs).to(device=x_.device, dtype=x_.dtype)  # [n]
+                out[bi, si] = self._alpha_map_from_center(x_[bi, si], A_bs, b_bs, x0, self.eps_inside)
+
+        if var_mask is not None:
+            out = out * var_mask
+
+        if b.dim() == 2:
+            out = out.squeeze(1)  # [B,n]
+
+        return out
+
+
+class UVPWithBoundarySeek(nn.Module):
+    """
+    Extend your current UVP projection with an optional boundary-seek step.
+
+    Stage 1 (UVP):
+        x <- x - eta(A) A^T (A x - b)_+    for K steps
+
+    Stage 2 (Boundary seek):
+        Choose direction d (profit_dir, or x_hat - x, etc.)
+        Compute alpha*(x,d) = min_{i: (A d)_i > 0} (b_i - (A x)_i)_+ / (A d)_i
+        Update x <- x + (1-eps_bd) * alpha* * d
+
+    This tries to land on a polytope face along direction d, after feasibility repair.
+
+    Shapes:
+      - x_hat: [B,n] or [B,S,n]
+      - A:     [B,m,n] or [B,S,m,n]
+      - b:     [B,m] or [B,S,m]
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.K = int(kwargs.get("max_iter", 30))
+        self.rho = float(kwargs.get("rho", 1e-12))
+        self.use_spectral_eta = bool(kwargs.get("use_spectral_eta", True))
+        self.power_iters = int(kwargs.get("power_iters", 5))
+
+        # Boundary seek controls
+        self.enable_boundary_seek = bool(kwargs.get("enable_boundary_seek", True))
+        self.eps_bd = float(kwargs.get("eps_bd", 1e-6))      # stay slightly inside
+        self.normalize_d = bool(kwargs.get("normalize_d", True))
+
+        # Which direction to use if none provided:
+        #   "profit": use profit_dir (must be provided)
+        #   "policy": use (x_hat - x_uvp)
+        self.bound_dir_mode = str(kwargs.get("bound_dir_mode", "profit")).lower()
+
+    def _eta_frobenius(self, A: Tensor) -> Tensor:
+        denom = torch.sum(A * A, dim=(-2, -1)) + self.rho  # [B,S]
+        return 1.0 / denom
+
+    def _eta_spectral(self, A: Tensor) -> Tensor:
+        # Deterministic version: start from ones to avoid RNG nondeterminism.
+        B, S, m, n = A.shape
+        v = torch.ones((B, S, n, 1), device=A.device, dtype=A.dtype)
+        v = v / (torch.norm(v, dim=-2, keepdim=True) + 1e-12)
+
+        for _ in range(self.power_iters):
+            Av = torch.matmul(A, v)
+            AtAv = torch.matmul(A.transpose(-2, -1), Av)
+            v = AtAv / (torch.norm(AtAv, dim=-2, keepdim=True) + 1e-12)
+
+        Av = torch.matmul(A, v)
+        num = torch.sum(Av * Av, dim=(-2, -1))  # [B,S]
+        return 1.0 / (num + self.rho)
+
+    @staticmethod
+    def _broadcast_dir(d: Tensor, B: int, S: int, n: int) -> Tensor:
+        if d.dim() == 1:
+            return d.view(1, 1, n).expand(B, S, n)
+        if d.dim() == 2:
+            return d.unsqueeze(1).expand(B, S, n)
+        if d.dim() == 3:
+            return d
+        raise ValueError("direction must have shape [n], [B,n], or [B,S,n].")
+
+    def _boundary_seek(self, x: Tensor, A: Tensor, b: Tensor, d: Tensor) -> Tensor:
+        """
+        x: [B,S,n], A: [B,S,m,n], b: [B,S,m], d: [B,S,n]
+        returns updated x: [B,S,n]
+        """
+        # Optionally normalize direction to reduce scaling sensitivity
+        if self.normalize_d:
+            dn = torch.norm(d, dim=-1, keepdim=True).clamp(min=1e-12)
+            d = d / dn
+
+        # slack = (b - A x)_+
+        Ax = torch.matmul(A, x.unsqueeze(-1)).squeeze(-1)            # [B,S,m]
+        slack = (b - Ax).clamp(min=0.0)                               # [B,S,m]
+
+        # denom = A d
+        Ad = torch.matmul(A, d.unsqueeze(-1)).squeeze(-1)             # [B,S,m]
+
+        inf = torch.tensor(float("inf"), device=x.device, dtype=x.dtype)
+        alpha_i = torch.where(Ad > 0, slack / (Ad + 1e-12), inf)      # [B,S,m]
+        alpha = torch.amin(alpha_i, dim=-1, keepdim=True)             # [B,S,1]
+        alpha = (alpha * (1.0 - self.eps_bd)).clamp(min=0.0)
+
+        return x + alpha * d
+
+    def forward(
+        self,
+        x_hat: Tensor,
+        A: Tensor,
+        b: Tensor,
+        var_mask: Optional[Tensor] = None,
+        profit_dir: Optional[Tensor] = None,
+        **kwargs
+    ) -> Tensor:
+        if b.dim() not in (2, 3) or A.dim() not in (3, 4):
+            raise ValueError("Invalid dimensions: 'b' dim 2/3, 'A' dim 3/4.")
+
+        b_ = b.unsqueeze(1) if b.dim() == 2 else b                  # [B,S,m]
+        A_ = A.unsqueeze(1) if A.dim() == 3 else A                  # [B,S,m,n]
+        x_ = x_hat.unsqueeze(1) if x_hat.dim() == 2 else x_hat      # [B,S,n]
+
+        if torch.isnan(x_).any():
+            out = x_.squeeze(1) if b.dim() == 2 else x_
+            return out * var_mask if var_mask is not None else out
+
+        # UVP step size (A-only)
+        eta = (self._eta_spectral(A_) if self.use_spectral_eta else self._eta_frobenius(A_)).unsqueeze(-1)  # [B,S,1]
+
+        # Stage 1: UVP feasibility repair
+        for _ in range(self.K):
+            r = torch.matmul(A_, x_.unsqueeze(-1)).squeeze(-1) - b_                    # [B,S,m]
+            v = torch.relu(r)                                                         # [B,S,m]
+            g = torch.matmul(A_.transpose(-2, -1), v.unsqueeze(-1)).squeeze(-1)        # [B,S,n]
+            x_ = x_ - eta * g
+            if var_mask is not None:
+                x_ = x_ * var_mask
+
+        # Stage 2: boundary seek
+        if self.enable_boundary_seek:
+            B, S, m, n = A_.shape
+
+            if self.bound_dir_mode == "profit":
+                if profit_dir is None:
+                    profit_dir = kwargs.get("profit_dir", None)
+                if profit_dir is None:
+                    raise ValueError("bound_dir_mode='profit' requires profit_dir to be passed.")
+                d = self._broadcast_dir(profit_dir, B, S, n)
+            elif self.bound_dir_mode == "policy":
+                d = x_hat.unsqueeze(1) if x_hat.dim() == 2 else x_hat
+                d = d - x_
+            else:
+                raise ValueError("bound_dir_mode must be 'profit' or 'policy'.")
+
+            if var_mask is not None:
+                d = d * var_mask
+
+            x_ = self._boundary_seek(x_, A_, b_, d)
+
+            if var_mask is not None:
+                x_ = x_ * var_mask
+
+        if b.dim() == 2:
+            x_ = x_.squeeze(1)
+
+        return x_
+
+
 class ProjectionFactory:
     _class_map = {
         'linear_violation':InnerConvexViolationProjection,
         'linear_violation_policy_clipping':InnerConvexViolationProjection,
         'inner_convex_violation':InnerConvexViolationProjection,
-        'bound_convex_violation':BoundConvexViolationProjection,
+        'bound_convex_violation':UVPWithBoundarySeek,
+        'alpha_chebyshev':AlphaChebyshevProjection,
         'convex_program':CvxpyProjectionLayer,
         'convex_program_policy_clipping':CvxpyProjectionLayer,
     }
