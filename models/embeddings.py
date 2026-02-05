@@ -189,62 +189,106 @@ class DemandSelfAttention(nn.Module):
         attn_output, _ = self.attention(demand_emb, demand_emb, demand_emb)
         return self.fc(attn_output)  # Aggregate attention-weighted demand
 
-
 class DynamicSelfAttentionEmbedding(nn.Module):
-    """Dynamic embedding with self-attention on demand"""
+    """
+    Shape-safe dynamic embedding using self-attention over demand history.
 
+    - Ensures observed_demand becomes [B, N, 1] (per-node scalar) before attention
+      by flattening whatever you have into a sequence.
+    - Produces a global attended vector [B, E], then expands to [B, N, E]
+      and concatenates with latent_state [B, N, D].
+    - Linear is lazy-built to match actual input size.
+    """
     def __init__(self, embed_dim, seq_dim, env):
-        super(DynamicSelfAttentionEmbedding, self).__init__()
+        super().__init__()
         self.env = env
         self.seq_dim = seq_dim
         self.train_max_demand = self.env.generator.train_max_demand
-        self.self_attention = DemandSelfAttention(embed_dim)  # Add self-attention layer
-        self.project_dynamic = nn.Linear(2 * embed_dim, 3 * embed_dim)
+        self.self_attention = DemandSelfAttention(embed_dim)
+        self.embed_dim = embed_dim
+        self.project_dynamic = None  # lazy-init
 
-    def forward(self, latent_state: Optional[Tensor], td: TensorDict) -> Tuple[Tensor, Tensor, Tensor]:
-        """Embed the dynamic demand for MPP using self-attention"""
+    def _ensure_layer(self, in_features: int, device, dtype):
+        if self.project_dynamic is None or self.project_dynamic.in_features != in_features:
+            self.project_dynamic = nn.Linear(in_features, 3 * self.embed_dim).to(device=device, dtype=dtype)
+
+    def forward(self, latent_state: Optional[Tensor], td: TensorDict):
+        if latent_state is None:
+            raise RuntimeError("latent_state is None but DynamicSelfAttentionEmbedding requires per-node embeddings.")
+
         if self.env.name == "block_mpp":
-           max_demand = td["max_demand"]
+            max_demand = td["max_demand"]
         else:
             max_demand = td["realized_demand"].max() if self.train_max_demand is None else self.train_max_demand.view(1, -1)
-        if td["observed_demand"].dim() == 2:
-            observed_demand = td["observed_demand"] / max_demand
+
+        # ---- normalize observed_demand to a sequence [B, T, 1] for attention ----
+        od = td["observed_demand"]
+        if od.dim() == 2:  # [B, N]
+            od_norm = (od / max_demand).unsqueeze(-1)  # [B, N, 1]
         else:
-            observed_demand = td["observed_demand"][...,0,:] / max_demand.squeeze()
+            od_norm = (od[..., 0, :] / max_demand.squeeze()).unsqueeze(-1)  # [B, N, 1] (best-effort)
 
-        # Self-Attention over demand history
-        attended_demand = self.self_attention(observed_demand.view(observed_demand.size(0), -1, 1))
+        # attention over "node-sequence" or history-sequence (depending on your data)
+        att = self.self_attention(od_norm)     # [B, N, E] (if od_norm is [B,N,1])
+        att_global = att.mean(dim=1)           # [B, E]
 
-        # Combine with latent state
-        hidden = torch.cat([attended_demand, latent_state], dim=-1)
+        # ---- ensure latent is [B, N, D] ----
+        if latent_state.dim() == 2:  # [B, D] -> [B, N, D]
+            latent_state = latent_state.unsqueeze(1).expand(-1, od_norm.size(1), -1)
+
+        att_expand = att_global.unsqueeze(1).expand(-1, latent_state.size(1), -1)  # [B, N, E]
+        hidden = torch.cat([att_expand, latent_state], dim=-1)                      # [B, N, E + D]
+
+        self._ensure_layer(hidden.size(-1), hidden.device, hidden.dtype)
         glimpse_k_dyn, glimpse_v_dyn, logit_k_dyn = self.project_dynamic(hidden).chunk(3, dim=-1)
         return glimpse_k_dyn, glimpse_v_dyn, logit_k_dyn
 
-class DynamicEmbedding(nn.Module):
-    """Dynamic embedding of the MPP"""
 
-    def __init__(self, embed_dim, seq_dim, env, ):
-        super(DynamicEmbedding, self).__init__()
+class DynamicEmbedding(nn.Module):
+    """
+    Shape-safe dynamic embedding.
+
+    This fixes your crash:
+    - forces observed_demand to be [B, N, 1]
+    - supports latent_state either [B, N, D] or [B, D]
+    - builds project_dynamic lazily to match actual in_features (= 1 + D)
+    """
+    def __init__(self, embed_dim, seq_dim, env):
+        super().__init__()
         self.env = env
         self.seq_dim = seq_dim
-        self.project_dynamic = nn.Linear(embed_dim + 1, 3 * embed_dim)
         self.train_max_demand = self.env.generator.train_max_demand
+        self.embed_dim = embed_dim
+        self.project_dynamic = None  # lazy-init
 
-    def forward(self, latent_state: Optional[Tensor], td: TensorDict) -> Tuple[Tensor, Tensor, Tensor]:
-        """Embed the dynamic demand for the MPP"""
-        # Get relevant demand embeddings
+    def _ensure_layer(self, in_features: int, device, dtype):
+        if self.project_dynamic is None or self.project_dynamic.in_features != in_features:
+            self.project_dynamic = nn.Linear(in_features, 3 * self.embed_dim).to(device=device, dtype=dtype)
+
+    def forward(self, latent_state: Optional[Tensor], td: TensorDict):
+        if latent_state is None:
+            raise RuntimeError("latent_state is None but DynamicEmbedding requires per-node embeddings.")
+
         if self.env.name == "block_mpp":
-           max_demand = td["max_demand"]
+            max_demand = td["max_demand"]
         else:
             max_demand = td["realized_demand"].max() if self.train_max_demand is None else self.train_max_demand.view(1, -1)
 
-        if td["observed_demand"].dim() == 2:
-            observed_demand = td["observed_demand"] / max_demand
+        # ---- observed_demand -> [B, N, 1] ----
+        od = td["observed_demand"]
+        if od.dim() == 2:  # [B, N]
+            obs = od / max_demand
         else:
-            observed_demand = td["observed_demand"][...,0,:] / max_demand
+            obs = od[..., 0, :] / max_demand.squeeze()
+        observed_demand = obs.unsqueeze(-1)  # [B, N, 1]
 
-        # Project key, value, and logit to anticipate future steps
-        hidden = torch.cat([observed_demand, latent_state], dim=-1)
+        # ---- latent_state -> [B, N, D] ----
+        if latent_state.dim() == 2:  # [B, D]
+            latent_state = latent_state.unsqueeze(1).expand(-1, observed_demand.size(1), -1)
+
+        hidden = torch.cat([observed_demand, latent_state], dim=-1)  # [B, N, 1 + D]
+
+        self._ensure_layer(hidden.size(-1), hidden.device, hidden.dtype)
         glimpse_k_dyn, glimpse_v_dyn, logit_k_dyn = self.project_dynamic(hidden).chunk(3, dim=-1)
         return glimpse_k_dyn, glimpse_v_dyn, logit_k_dyn
 
