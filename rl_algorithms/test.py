@@ -73,7 +73,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
     test_env = make_env(env_kwargs, batch_size=[max_paths], device=device)
     n_step = test_env.T * test_env.K  # Maximum steps per episode (T x K)
     feas_threshold = 1.0
-    delta = 1.0
+    delta = 0.1  # Violation tolerance
     num_rollouts = 1  # Number of rollouts per episode
 
     # Set policy to evaluation mode
