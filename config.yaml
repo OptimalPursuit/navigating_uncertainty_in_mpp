@@ -18,7 +18,7 @@ env:
   LCG_target: 0.95
   TEU: 20000 # 20000, 1000
   VCG_target: 1.05
-  bays: 10 #10, 20
+  bays: 20 #10, 20
   blocks: 2
   capacity:
   - 50 # 50, 500
