@@ -70,6 +70,25 @@ class InnerConvexViolationProjection(nn.Module):
         num = torch.sum(Av * Av, dim=(-2, -1))             # [B,S] ~ ||A||_2^2
         return 1.0 / (num + self.rho)
 
+    def _normalize_constraints(self, A: Tensor, b: Tensor):
+        # expects A: [B,S,m,n], b: [B,S,m]
+        if not self.row_normalize:
+            return A, b
+        row_norm = torch.norm(A, dim=-1, keepdim=True).clamp(min=1e-12)  # [B,S,m,1]
+        A_work = A / row_norm
+        b_work = b / row_norm.squeeze(-1)
+        return A_work, b_work
+
+    def get_eta(self, A: Tensor, b: Tensor) -> Tensor:
+        if A.dim() not in (3, 4) or b.dim() not in (2, 3):
+            raise ValueError("get_eta expects A dim 3/4 and b dim 2/3.")
+
+        b_ = b.unsqueeze(1) if b.dim() == 2 else b
+        A_ = A.unsqueeze(1) if A.dim() == 3 else A
+        A_work, _ = self._normalize_constraints(A_, b_)
+        eta = (self._eta_spectral(A_work) if self.use_spectral_eta else self._eta_frobenius(A_work)).unsqueeze(-1)
+        return eta
+
     def _alpha_map_from_anchor(self, x_anchor: Tensor, x_target: Tensor, A: Tensor, b: Tensor) -> Tensor:
         """
         x_anchor: [B,S,n]  (UVP output)
@@ -109,11 +128,7 @@ class InnerConvexViolationProjection(nn.Module):
             return out * var_mask if var_mask is not None else out
 
         # Optional constraint row normalization
-        A_work, b_work = A_, b_
-        if self.row_normalize:
-            row_norm = torch.norm(A_work, dim=-1, keepdim=True).clamp(min=1e-12)  # [B,S,m,1]
-            A_work = A_work / row_norm
-            b_work = b_work / row_norm.squeeze(-1)                                # [B,S,m]
+        A_work, b_work = self._normalize_constraints(A_, b_)
 
         # Tighten constraints to encourage interior solutions
         b_tight = b_work - self.mu_inside
