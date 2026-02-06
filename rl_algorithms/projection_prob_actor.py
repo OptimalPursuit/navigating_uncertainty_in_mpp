@@ -29,6 +29,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
                  spec: Optional[TensorSpec] = None,
                  projection_layer: Optional[nn.Module] = None,
                  projection_type: Optional[str] = None,
+                 revenues: Optional[Tensor] = None,
                  **kwargs):
         super().__init__(module, in_keys, out_keys, spec=spec, **kwargs)
 
@@ -42,6 +43,28 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         clip_min = spec.space.low
         clip_max = spec.space.high
         self.clipped_gaussian = ClippedGaussian(initial_loc, initial_scale, clip_min, clip_max)
+        self.revenues_per_timestep = revenues
+
+        self.projection_methods = {
+            "weighted_scaling": self.weighted_scaling_projection,
+            "linear_violation": self.violation_projection,
+            "linear_violation_policy_clipping": self.violation_projection_policy_clipping,
+            "inner_convex_violation": self.violation_projection,
+            'inner_convex_violation_alpha': self.alpha_cheby_projection,
+            "policy_clipping": self.policy_clipping_projection,
+            "weighted_scaling_policy_clipping": self.weighted_scaling_policy_clipping_projection,
+            "convex_program":self.convex_program,
+            "convex_program_policy_clipping":self.convex_program_policy_clipping,
+            "alpha_chebyshev": self.alpha_cheby_projection,
+            "none": self.identity_fn,
+        }
+
+        self.jacobian_methods = {
+            "weighted_scaling": self.jacobian_weighted_scaling,
+            "linear_violation": self.jacobian_violation,
+            "inner_convex_violation": self.jacobian_violation,
+            "weighted_scaling_policy_clipping": self.jacobian_weighted_scaling,
+        }
 
     def get_logprobs(self, action:Tensor, dist:Distribution) -> Tensor:
         """Compute the log probabilities of the actions given the distribution."""
@@ -59,6 +82,18 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             sample
         )
         return out
+
+    def get_max_revenue_action(self, out:TensorDict) -> Tensor:
+        """Compute the action that maximizes revenue given the demand and revenues per timestep."""
+        t = out["observation", "timestep"].long()  # [B]
+        var_mask = out["observation", "action_mask"].float() if "action_mask" in out["observation"] else torch.ones_like(out["action"])
+        relative_action = out["action"] * var_mask / out["action"].sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        demand = out["observation", "realized_demand"].gather(-1, t.unsqueeze(-1)).squeeze(-1)
+
+        revenue_action = demand.unsqueeze(-1) * relative_action * self.revenues_per_timestep[t].unsqueeze(-1)  # [B,n]
+        # revenue_action = out["action"] * self.revenues_per_timestep[t].unsqueeze(-1)  # [B,n]
+        return revenue_action
+
 
     def weighted_scaling_projection(self, out:TensorDict) -> Tensor:
         return self.weighted_scaling(out["action"], ub=out["ub"])
@@ -92,6 +127,11 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=var_mask)
         return out["action"]
 
+    def alpha_cheby_projection(self, out:TensorDict) -> Tensor:
+        var_mask = out["observation", "action_mask"].float() if "action_mask" in out["observation"] else None
+        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=var_mask)
+        return out["action"]
+
     def violation_projection_policy_clipping(self, out:TensorDict) -> Tensor:
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"])
         out["action"] = self.policy_clipping_projection(out)
@@ -102,19 +142,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
     def handle_action_projection(self, out:TensorDict) -> Tensor:
         """Handle with policy projection"""
-        projection_methods = {
-            "weighted_scaling": self.weighted_scaling_projection,
-            "linear_violation": self.violation_projection,
-            "linear_violation_policy_clipping": self.violation_projection_policy_clipping,
-            "inner_convex_violation": self.violation_projection,
-            "bound_convex_violation": self.bound_violation_projection,
-            "policy_clipping": self.policy_clipping_projection,
-            "weighted_scaling_policy_clipping": self.weighted_scaling_policy_clipping_projection,
-            "convex_program":self.convex_program,
-            "convex_program_policy_clipping":self.convex_program_policy_clipping,
-
-        }
-        projection_fn = projection_methods.get(self.projection_type, self.identity_fn)
+        projection_fn = self.projection_methods.get(self.projection_type, self.identity_fn)
         return projection_fn(out)
 
     def jacobian_weighted_scaling(self, out:TensorDict, epsilon:float=1e-8) -> Tensor:
@@ -228,14 +256,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
     def handle_jacobian_adjustment(self, out:TensorDict) -> Optional[Tensor]:
         """Handle with Jacobian adjustment of projection methods;
         We only have Jacobian for weighted scaling and linear violation."""
-        jacobian_methods = {
-            "weighted_scaling": self.jacobian_weighted_scaling,
-            "linear_violation": self.jacobian_violation,
-            "inner_convex_violation": self.jacobian_violation,
-            "bound_convex_violation": self.jacobian_violation_bound,
-            "weighted_scaling_policy_clipping": self.jacobian_weighted_scaling,
-        }
-        jacobian_fn = jacobian_methods.get(self.projection_type, None)
+        jacobian_fn = self.jacobian_methods.get(self.projection_type, None)
         return jacobian_fn(out) if jacobian_fn else None
 
     def jacobian_adaptation(self, logprob:Tensor, jacobian:Tensor, epsilon:float=1e-8) -> Tensor:
@@ -257,9 +278,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         out = args[0] if "action" in kwargs else super().forward(*args, **kwargs)
 
         # Raise error for projection layers without log prob adaptation implementations
-        if self.projection_type not in ["linear_violation", "linear_violation_policy_clipping", "inner_convex_violation",
-                                        "bound_convex_violation", "weighted_scaling_policy_clipping", "none",
-                                        "quadratic_program", "convex_program", "convex_program_policy_clipping"]:
+        if self.projection_type not in self.projection_methods.keys():
             raise ValueError(f"Log prob adaptation for projection type \'{self.projection_type}\' not supported.")
 
         # Get distribution
@@ -286,10 +305,10 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
         # compute jacobian using active raw action
         if ("action_mask" in out["observation"]):
+            # todo: check if jacobian adjustment is added effectively!
             # todo: check if this is generally effective
             out["log_prob"], out["sample_log_prob"] = self.masked_subspace_logprobs(
-                out, raw,
-                clamp_min=-50.0,
+                out, raw, clamp_min=-50.0,
             )
 
         # project once before env execution
