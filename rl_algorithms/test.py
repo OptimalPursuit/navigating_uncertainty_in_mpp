@@ -72,8 +72,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
     max_paths = 2 # Run small batch, as we care about instances
     test_env = make_env(env_kwargs, batch_size=[max_paths], device=device)
     n_step = test_env.T * test_env.K  # Maximum steps per episode (T x K)
-    feas_threshold = 1.0
-    delta = 0.1  # Violation tolerance
+    delta = 0.1
     num_rollouts = 1  # Number of rollouts per episode
 
     # Set policy to evaluation mode
@@ -137,13 +136,9 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
                 zero_idx = torch.where((traj["action"][0] == 0.0) & (traj["clip_max"][0] == 0.0))
                 violation[zero_idx] = 0.0
 
-                # Adjust violations based on delta and next_port_mask
-                violation_adjusted = violation.clone()
-                v_mask = violation_adjusted[:, :-4] < delta
-                violation_adjusted[:, :-4][v_mask] = 0.0
-                violation_adjusted[:, -4:][~test_env.next_port_mask] = 0.0
-                total_violation = violation_adjusted.sum().item()
-                is_feasible = total_violation <= feas_threshold
+                # Determine is_feasible and total_violation for metrics
+                total_violation = violation.sum().item()
+                is_feasible = total_violation <= delta
 
                 rollout_info = {
                     "trajectory": traj,
@@ -177,14 +172,10 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
             metrics["max_revenues"][episode] = best["max_revenue"]
 
             # Detailed violation metrics
-            violation_adjusted = best["violation"]
-            v_mask = violation_adjusted[:, :-4] < delta
-            violation_adjusted[:, :-4][v_mask] = 0.0
-            violation_adjusted[:, -4:][~test_env.next_port_mask] = 0.0
-
-            metrics["demand_violations"][episode] = violation_adjusted[:, 0].sum()
-            metrics["capacity_violations"][episode] = violation_adjusted[:, 1:-4].sum()
-            metrics["stability_violations"][episode] = violation_adjusted[:, -4:].sum()
+            violation = best["violation"]
+            metrics["demand_violations"][episode] = violation[:, 0].sum()
+            metrics["capacity_violations"][episode] = violation[:, 1:-4].sum()
+            metrics["stability_violations"][episode] = violation[:, -4:].sum()
             if "excess_pod_locations" in trajectory["observation"]:
                 # Assuming excess_pod_locations is a tensor in the observation
                 metrics["pbs_violations"][episode] = trajectory["observation", "excess_pod_locations"][0].sum()
