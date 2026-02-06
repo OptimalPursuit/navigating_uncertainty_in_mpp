@@ -404,7 +404,6 @@ class FeasibilitySACLoss(SACLoss):
             raise ValueError("Feasibility loss requires 'lhs_A' and 'rhs' in tensordict.")
         lagrangian_multiplier = metadata_actor.get("lagrangian_multiplier", self.lagrangian_multiplier)
         feasibility_loss, violation_dict = loss_feasibility(tensordict, action, lagrangian_multiplier, env_init=self._env_init,)
-        loss_mask = add_mask_bce_loss(tensordict,)
 
         # Alpha loss
         loss_alpha = self._alpha_loss(metadata_actor["log_prob"])
@@ -418,13 +417,15 @@ class FeasibilitySACLoss(SACLoss):
             "alpha": self._alpha,
             "entropy": entropy.detach().mean(),
             "loss_feasibility": feasibility_loss,
-            "loss_mask": loss_mask,
             "violation": violation_dict["violations"],
             "total_violation": violation_dict["total_convex_violations"],
             "pod_violation": violation_dict["pod_violations"],
             "total_pod_violation": violation_dict["total_pod_violations"],
             "lagrangian_multiplier": lagrangian_multiplier,
         }
+        if "pod_locations" in tensordict["observation"]:
+            loss_mask = add_mask_bce_loss(tensordict,)
+            out["loss_mask"] = loss_mask
 
         # Reduce outputs based on reduction mode
         td_out = TensorDict(out, [])
@@ -658,9 +659,10 @@ class FeasibilityClipPPOLoss(PPOLoss):
             raise ValueError("Feasibility loss requires 'lhs_A' and 'rhs' in tensordict.")
         lagrangian_multiplier = tensordict.get("lagrangian_multiplier", self.lagrangian_multiplier)
         feasibility_loss, violation_dict = loss_feasibility(tensordict, loc, lagrangian_multiplier, env_init=self._env_init,)
-        loss_mask = add_mask_bce_loss(tensordict,)
+        if "pod_locations" in tensordict["observation"]:
+            loss_mask = add_mask_bce_loss(tensordict,)
+            td_out.set("loss_mask", loss_mask)
         td_out.set("loss_feasibility", feasibility_loss)
-        td_out.set("loss_mask", loss_mask)
         td_out.set("violation", violation_dict["violations"])
         td_out.set("total_violation", violation_dict["total_convex_violations"])
         td_out.set("pod_violation", violation_dict["pod_violations"])
