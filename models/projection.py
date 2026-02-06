@@ -13,13 +13,6 @@ class EmptyLayer(nn.Module):
     def forward(self, x:Tensor, **kwargs) -> Tensor:
         return x
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch import Tensor
-from typing import Optional
-
-
 class InnerConvexViolationProjection(nn.Module):
     """
     UVP 2.0 + UVP-tightening + (optional) UVP->policy alpha-map.
