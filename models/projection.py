@@ -13,77 +13,151 @@ class EmptyLayer(nn.Module):
     def forward(self, x:Tensor, **kwargs) -> Tensor:
         return x
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch import Tensor
+from typing import Optional
+
+
 class InnerConvexViolationProjection(nn.Module):
     """
-    UVP 2.0 (Jacobian-friendly):
-      x_{k+1} = x_k - eta(s) * Atilde^T * relu(Atilde x_k - btilde)
+    UVP 2.0 + UVP-tightening + (optional) UVP->policy alpha-map.
 
-    - Integrates nonnegativity (and optional upper bounds) as linear constraints.
-    - Uses a deterministic Lipschitz step eta(s)=1/(||Atilde||^2 + rho) (no branching).
-    - Fixed K iterations (no early stopping) to keep the map explicit and Jacobian-correctable.
+    Stage 1 (UVP on tightened constraints):
+        x <- x - eta(A) * A^T * relu(Ax - (b - mu_inside))    for K steps
+
+    Stage 2 (alpha-map from UVP anchor toward original x_in), applied only if UVP anchor is feasible:
+        d = x_in - x_uvp
+        alpha* = min_{i: (Ad)_i > 0} (b_i - (Ax_uvp)_i) / (Ad)_i
+        alpha = clip(alpha* - eps_inside, 0, 1)
+        x <- x_uvp + alpha d
+
+    Extras:
+      - Optional row-normalization of constraints (recommended).
+      - Deterministic spectral eta (no RNG).
+      - Alpha-map gating based on max constraint violation after UVP.
     """
 
-    def __init__(self,**kwargs):
+    def __init__(self, **kwargs):
         super().__init__()
-        self.K = kwargs.get('max_iter', 30)
-        self.eta = kwargs.get('alpha', 0.01)
-        self.delta = kwargs.get('delta', 0.01)
-        self.scale = kwargs.get('scale', 0.001)
-        self.use_early_stopping = kwargs.get('use_early_stopping', False)  # Not used; fixed iters
-        self.rho = kwargs.get('rho', 1e-12)
-        # True: power iteration approx ||A||_2^2, False: Frobenius ||A||_F^2
-        self.use_spectral_eta = kwargs.get('use_spectral_eta', True)
-        self.power_iters = kwargs.get('power_iters', 5)
-        # print(f"InnerConvexViolationProjection: K={self.K}, eta method={'spectral' if self.use_spectral_eta else 'frobenius'},"
-        #       f"power_iters={self.power_iters}")
+        self.K = int(kwargs.get("max_iter", 30))
+        self.rho = float(kwargs.get("rho", 1e-12))
 
-    def _eta_frobenius(self, Atilde: Tensor) -> Tensor:
-        # eta = 1 / (||A||_F^2 + rho) per batch-step
-        # ||A||_F^2: sum over (m',n)
-        denom = torch.sum(Atilde * Atilde, dim=(-2, -1)) + self.rho  # [B,S]
+        # step size controls
+        self.use_spectral_eta = bool(kwargs.get("use_spectral_eta", True))
+        self.power_iters = int(kwargs.get("power_iters", 5))
+
+        # UVP improvements
+        self.row_normalize = bool(kwargs.get("row_normalize", True))
+        self.mu_inside = float(kwargs.get("mu_inside", 1e-3))         # meaningful when row_normalize=True
+
+        # Optional alpha-map controls
+        self.enable_alpha_map = bool(kwargs.get("enable_alpha_map", True))
+        self.alpha_feas_tol = float(kwargs.get("alpha_feas_tol", 1e-7))
+        self.eps_inside = float(kwargs.get("eps_inside", 1e-6))
+        self.normalize_d = bool(kwargs.get("normalize_d", False))     # usually False for alpha-map
+
+    def _eta_frobenius(self, A: Tensor) -> Tensor:
+        denom = torch.sum(A * A, dim=(-2, -1)) + self.rho  # [B,S]
         return 1.0 / denom
 
-    def _eta_spectral(self, Atilde: Tensor) -> Tensor:
-        # eta = 1 / (||A||_2^2 + rho) via power iteration on (A^T A)
-        B, S, m, n = Atilde.shape
-        v = torch.randn((B, S, n, 1), device=Atilde.device, dtype=Atilde.dtype)
-        v = v / (torch.norm(v, dim=-2, keepdim=True) + self.rho)
+    def _eta_spectral(self, A: Tensor) -> Tensor:
+        # Deterministic power iteration for ||A||_2^2 (avoid RNG)
+        B, S, m, n = A.shape
+        v = torch.ones((B, S, n, 1), device=A.device, dtype=A.dtype)
+        v = v / (torch.norm(v, dim=-2, keepdim=True) + 1e-12)
 
         for _ in range(self.power_iters):
-            Av = torch.matmul(Atilde, v)                       # [B,S,m,1]
-            AtAv = torch.matmul(Atilde.transpose(-2, -1), Av)  # [B,S,n,1]
-            v = AtAv / (torch.norm(AtAv, dim=-2, keepdim=True) + self.rho)
+            Av = torch.matmul(A, v)                        # [B,S,m,1]
+            AtAv = torch.matmul(A.transpose(-2, -1), Av)   # [B,S,n,1]
+            v = AtAv / (torch.norm(AtAv, dim=-2, keepdim=True) + 1e-12)
 
-        Av = torch.matmul(Atilde, v)
-        num = torch.sum(Av * Av, dim=(-2, -1))  # ||A v||^2  [B,S]
-        # For unit v, ||A v||^2 estimates ||A||_2^2
+        Av = torch.matmul(A, v)
+        num = torch.sum(Av * Av, dim=(-2, -1))             # [B,S] ~ ||A||_2^2
         return 1.0 / (num + self.rho)
 
-    def forward(self, x, A, b, var_mask=None, **kwargs):
+    def _alpha_map_from_anchor(self, x_anchor: Tensor, x_target: Tensor, A: Tensor, b: Tensor) -> Tensor:
+        """
+        x_anchor: [B,S,n]  (UVP output)
+        x_target: [B,S,n]  (original proposal)
+        A:        [B,S,m,n]
+        b:        [B,S,m]
+        """
+        d = x_target - x_anchor  # [B,S,n]
+        if self.normalize_d:
+            d = d / torch.norm(d, dim=-1, keepdim=True).clamp(min=1e-12)
+
+        Ax = torch.matmul(A, x_anchor.unsqueeze(-1)).squeeze(-1)      # [B,S,m]
+        Ad = torch.matmul(A, d.unsqueeze(-1)).squeeze(-1)             # [B,S,m]
+        slack = b - Ax                                                # TRUE slack, [B,S,m]
+
+        inf = torch.tensor(float("inf"), device=x_anchor.device, dtype=x_anchor.dtype)
+        alpha_i = torch.where(Ad > 0, slack / (Ad + 1e-12), inf)       # [B,S,m]
+        alpha = torch.amin(alpha_i, dim=-1, keepdim=True)              # [B,S,1]
+
+        # If no Ad>0, alpha=inf => unblocked => alpha=1
+        alpha = torch.where(torch.isfinite(alpha), alpha, torch.ones_like(alpha))
+
+        alpha = torch.clamp(alpha - self.eps_inside, min=0.0, max=1.0)
+        return x_anchor + alpha * d
+
+    def forward(self, x: Tensor, A: Tensor, b: Tensor, var_mask: Optional[Tensor] = None, **kwargs) -> Tensor:
         if b.dim() not in (2, 3) or A.dim() not in (3, 4):
             raise ValueError("Invalid dimensions: 'b' dim 2/3, 'A' dim 3/4.")
 
-        b_ = b.unsqueeze(1) if b.dim() == 2 else b
-        A_ = A.unsqueeze(1) if A.dim() == 3 else A
-        x_ = x.unsqueeze(1) if x.dim() == 2 else x
+        # Shape to [B,S,...]
+        b_ = b.unsqueeze(1) if b.dim() == 2 else b                   # [B,S,m]
+        A_ = A.unsqueeze(1) if A.dim() == 3 else A                   # [B,S,m,n]
+        x_in = x.unsqueeze(1) if x.dim() == 2 else x                 # [B,S,n]
 
-        if torch.isnan(x_).any():
-            out = x_.squeeze(1) if b.dim() == 2 else x_
+        if torch.isnan(x_in).any():
+            out = x_in.squeeze(1) if b.dim() == 2 else x_in
             return out * var_mask if var_mask is not None else out
 
-        eta = (self._eta_spectral(A_) if self.use_spectral_eta else self._eta_frobenius(A_)).unsqueeze(-1)
+        # Optional constraint row normalization
+        A_work, b_work = A_, b_
+        if self.row_normalize:
+            row_norm = torch.norm(A_work, dim=-1, keepdim=True).clamp(min=1e-12)  # [B,S,m,1]
+            A_work = A_work / row_norm
+            b_work = b_work / row_norm.squeeze(-1)                                # [B,S,m]
 
+        # Tighten constraints to encourage interior solutions
+        b_tight = b_work - self.mu_inside
+
+        # Step size eta depends only on A_work
+        eta = (self._eta_spectral(A_work) if self.use_spectral_eta else self._eta_frobenius(A_work)).unsqueeze(-1)  # [B,S,1]
+
+        # Stage 1: UVP on tightened constraints
+        x_ = x_in
         for _ in range(self.K):
-            r = torch.matmul(A_, x_.unsqueeze(-1)).squeeze(-1) - b_  # [B,S,m]
-            v = torch.relu(r)
-            g = torch.matmul(A_.transpose(-2, -1), v.unsqueeze(-1)).squeeze(-1)  # [B,S,n]
+            r = torch.matmul(A_work, x_.unsqueeze(-1)).squeeze(-1) - b_tight         # [B,S,m]
+            v = torch.relu(r)                                                        # [B,S,m]
+            g = torch.matmul(A_work.transpose(-2, -1), v.unsqueeze(-1)).squeeze(-1)  # [B,S,n]
             x_ = x_ - eta * g
+            if var_mask is not None:
+                x_ = x_ * var_mask
+
+        # Stage 2: alpha-map back toward original proposal, only if feasible wrt TRUE constraints
+        if self.enable_alpha_map:
+            Ax_true = torch.matmul(A_work, x_.unsqueeze(-1)).squeeze(-1)              # [B,S,m]
+            max_viol = (Ax_true - b_work).clamp(min=0.0).amax(dim=-1, keepdim=True)   # [B,S,1]
+            do_alpha = (max_viol <= self.alpha_feas_tol)                               # [B,S,1] bool
+
+            x_target = x_in
+            if var_mask is not None:
+                x_target = x_target * var_mask
+
+            x_alpha = self._alpha_map_from_anchor(x_, x_target, A_work, b_work)
+            x_ = torch.where(do_alpha, x_alpha, x_)
 
             if var_mask is not None:
                 x_ = x_ * var_mask
 
+        # Back to [B,n] if input had no step dimension
         if b.dim() == 2:
             x_ = x_.squeeze(1)
+
         return x_
 
 
@@ -94,7 +168,7 @@ class BoundConvexViolationProjection(nn.Module):
     respecting frozen variables and optionally ignoring masked constraints.
     """
 
-    # todo: this one diverges; needs investigation
+    # todo: this one diverges; needs investigation / remove!
 
     def __init__(self, **kwargs):
         super(BoundConvexViolationProjection, self).__init__()
@@ -400,164 +474,14 @@ class AlphaChebyshevProjection(nn.Module):
         return out
 
 
-class UVPWithBoundarySeek(nn.Module):
-    """
-    Extend your current UVP projection with an optional boundary-seek step.
-
-    Stage 1 (UVP):
-        x <- x - eta(A) A^T (A x - b)_+    for K steps
-
-    Stage 2 (Boundary seek):
-        Choose direction d (profit_dir, or x_hat - x, etc.)
-        Compute alpha*(x,d) = min_{i: (A d)_i > 0} (b_i - (A x)_i)_+ / (A d)_i
-        Update x <- x + (1-eps_bd) * alpha* * d
-
-    This tries to land on a polytope face along direction d, after feasibility repair.
-
-    Shapes:
-      - x_hat: [B,n] or [B,S,n]
-      - A:     [B,m,n] or [B,S,m,n]
-      - b:     [B,m] or [B,S,m]
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__()
-        self.K = int(kwargs.get("max_iter", 30))
-        self.rho = float(kwargs.get("rho", 1e-12))
-        self.use_spectral_eta = bool(kwargs.get("use_spectral_eta", True))
-        self.power_iters = int(kwargs.get("power_iters", 5))
-
-        # Boundary seek controls
-        self.enable_boundary_seek = bool(kwargs.get("enable_boundary_seek", True))
-        self.eps_bd = float(kwargs.get("eps_bd", 1e-6))      # stay slightly inside
-        self.normalize_d = bool(kwargs.get("normalize_d", True))
-
-        # Which direction to use if none provided:
-        #   "profit": use profit_dir (must be provided)
-        #   "policy": use (x_hat - x_uvp)
-        self.bound_dir_mode = str(kwargs.get("bound_dir_mode", "profit")).lower()
-
-    def _eta_frobenius(self, A: Tensor) -> Tensor:
-        denom = torch.sum(A * A, dim=(-2, -1)) + self.rho  # [B,S]
-        return 1.0 / denom
-
-    def _eta_spectral(self, A: Tensor) -> Tensor:
-        # Deterministic version: start from ones to avoid RNG nondeterminism.
-        B, S, m, n = A.shape
-        v = torch.ones((B, S, n, 1), device=A.device, dtype=A.dtype)
-        v = v / (torch.norm(v, dim=-2, keepdim=True) + 1e-12)
-
-        for _ in range(self.power_iters):
-            Av = torch.matmul(A, v)
-            AtAv = torch.matmul(A.transpose(-2, -1), Av)
-            v = AtAv / (torch.norm(AtAv, dim=-2, keepdim=True) + 1e-12)
-
-        Av = torch.matmul(A, v)
-        num = torch.sum(Av * Av, dim=(-2, -1))  # [B,S]
-        return 1.0 / (num + self.rho)
-
-    @staticmethod
-    def _broadcast_dir(d: Tensor, B: int, S: int, n: int) -> Tensor:
-        if d.dim() == 1:
-            return d.view(1, 1, n).expand(B, S, n)
-        if d.dim() == 2:
-            return d.unsqueeze(1).expand(B, S, n)
-        if d.dim() == 3:
-            return d
-        raise ValueError("direction must have shape [n], [B,n], or [B,S,n].")
-
-    def _boundary_seek(self, x: Tensor, A: Tensor, b: Tensor, d: Tensor) -> Tensor:
-        """
-        x: [B,S,n], A: [B,S,m,n], b: [B,S,m], d: [B,S,n]
-        returns updated x: [B,S,n]
-        """
-        # Optionally normalize direction to reduce scaling sensitivity
-        if self.normalize_d:
-            dn = torch.norm(d, dim=-1, keepdim=True).clamp(min=1e-12)
-            d = d / dn
-
-        # slack = (b - A x)_+
-        Ax = torch.matmul(A, x.unsqueeze(-1)).squeeze(-1)            # [B,S,m]
-        slack = (b - Ax).clamp(min=0.0)                               # [B,S,m]
-
-        # denom = A d
-        Ad = torch.matmul(A, d.unsqueeze(-1)).squeeze(-1)             # [B,S,m]
-
-        inf = torch.tensor(float("inf"), device=x.device, dtype=x.dtype)
-        alpha_i = torch.where(Ad > 0, slack / (Ad + 1e-12), inf)      # [B,S,m]
-        alpha = torch.amin(alpha_i, dim=-1, keepdim=True)             # [B,S,1]
-        alpha = (alpha * (1.0 - self.eps_bd)).clamp(min=0.0)
-
-        return x + alpha * d
-
-    def forward(
-        self,
-        x_hat: Tensor,
-        A: Tensor,
-        b: Tensor,
-        var_mask: Optional[Tensor] = None,
-        profit_dir: Optional[Tensor] = None,
-        **kwargs
-    ) -> Tensor:
-        if b.dim() not in (2, 3) or A.dim() not in (3, 4):
-            raise ValueError("Invalid dimensions: 'b' dim 2/3, 'A' dim 3/4.")
-
-        b_ = b.unsqueeze(1) if b.dim() == 2 else b                  # [B,S,m]
-        A_ = A.unsqueeze(1) if A.dim() == 3 else A                  # [B,S,m,n]
-        x_ = x_hat.unsqueeze(1) if x_hat.dim() == 2 else x_hat      # [B,S,n]
-
-        if torch.isnan(x_).any():
-            out = x_.squeeze(1) if b.dim() == 2 else x_
-            return out * var_mask if var_mask is not None else out
-
-        # UVP step size (A-only)
-        eta = (self._eta_spectral(A_) if self.use_spectral_eta else self._eta_frobenius(A_)).unsqueeze(-1)  # [B,S,1]
-
-        # Stage 1: UVP feasibility repair
-        for _ in range(self.K):
-            r = torch.matmul(A_, x_.unsqueeze(-1)).squeeze(-1) - b_                    # [B,S,m]
-            v = torch.relu(r)                                                         # [B,S,m]
-            g = torch.matmul(A_.transpose(-2, -1), v.unsqueeze(-1)).squeeze(-1)        # [B,S,n]
-            x_ = x_ - eta * g
-            if var_mask is not None:
-                x_ = x_ * var_mask
-
-        # Stage 2: boundary seek
-        if self.enable_boundary_seek:
-            B, S, m, n = A_.shape
-
-            if self.bound_dir_mode == "profit":
-                if profit_dir is None:
-                    profit_dir = kwargs.get("profit_dir", None)
-                if profit_dir is None:
-                    raise ValueError("bound_dir_mode='profit' requires profit_dir to be passed.")
-                d = self._broadcast_dir(profit_dir, B, S, n)
-            elif self.bound_dir_mode == "policy":
-                d = x_hat.unsqueeze(1) if x_hat.dim() == 2 else x_hat
-                d = d - x_
-            else:
-                raise ValueError("bound_dir_mode must be 'profit' or 'policy'.")
-
-            if var_mask is not None:
-                d = d * var_mask
-
-            x_ = self._boundary_seek(x_, A_, b_, d)
-
-            if var_mask is not None:
-                x_ = x_ * var_mask
-
-        if b.dim() == 2:
-            x_ = x_.squeeze(1)
-
-        return x_
-
 
 class ProjectionFactory:
     _class_map = {
         'linear_violation':InnerConvexViolationProjection,
         'linear_violation_policy_clipping':InnerConvexViolationProjection,
         'inner_convex_violation':InnerConvexViolationProjection,
-        'bound_convex_violation':UVPWithBoundarySeek,
+        'inner_convex_violation_alpha':InnerConvexViolationProjection,
+        'bound_convex_violation':BoundConvexViolationProjection,
         'alpha_chebyshev':AlphaChebyshevProjection,
         'convex_program':CvxpyProjectionLayer,
         'convex_program_policy_clipping':CvxpyProjectionLayer,
