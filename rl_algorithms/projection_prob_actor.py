@@ -342,7 +342,6 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
 
         # project once before env execution
-        out["action"] = raw
         proj_action = self.handle_action_projection(out)
         out["action"] = proj_action
         out["observation", "env_action"] = proj_action
