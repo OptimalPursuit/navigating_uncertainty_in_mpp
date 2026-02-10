@@ -395,7 +395,7 @@ class FeasibilitySACLoss(SACLoss):
         """Computes SAC loss with feasibility constraints."""
         # Pass critic_fn for value estimation if needed
         if self._fw_improvement:
-            tensordict.set("critic_fn", self.critic_network)
+            tensordict.set("critic_fn", self.qvalue_network)
 
         # Actor loss
         loss_actor, metadata_actor = self._actor_loss(tensordict)
@@ -441,13 +441,17 @@ class FeasibilitySACLoss(SACLoss):
         return td_out
 
     def _actor_loss(
-        self, tensordict: TensorDictBase
+        self, td: TensorDictBase
     ) -> Tuple[Tensor, Dict[str, Tensor]]:
+        tensordict = td.clone(False)
+
         with set_exploration_type(
             ExplorationType.RANDOM
         ), self.actor_network_params.to_module(self.actor_network):
             dist = self.actor_network.get_dist(tensordict)
-            tensordict["action"] = dist.rsample()
+            action = dist.rsample()
+            tensordict.set("action", action)
+
         tensordict = self.actor_network(tensordict) # Perform projection
         log_prob = tensordict["sample_log_prob"] # Use sample log prob
         # (non projection on SAC)
