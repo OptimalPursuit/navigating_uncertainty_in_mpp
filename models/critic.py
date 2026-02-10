@@ -91,29 +91,33 @@ class CriticNetwork(nn.Module):
 
         self.dual_head = dual_head
 
-    def forward(self, obs: Union[Tensor, TensorDict], action:Optional=None,) -> (Tensor, Tensor):
+    def forward(self, obs: Union[Tensor, TensorDict], action: Optional[Tensor] = None) -> Union[Tensor, tuple]:
         # Encode the input
-        h, _ = self.encoder(obs)  # [batch_size, N, embed_dim] -> [batch_size, N]
-        h = self.critic_embedding(h, obs)
+        encoded_h, _ = self.encoder(obs)  # [batch_size, N, embed_dim] -> [batch_size, N]
+        embedded_h = self.critic_embedding(encoded_h, obs)
 
         # State-action value
         if action is not None and hasattr(self, "state_action_layer"):
-            h = torch.cat([h, action.clone().detach()], dim=-1)
-            h = self.state_action_layer(h)
+            if embedded_h.size(0) != action.size(0):
+                raise ValueError("Batch size of `embedded_h` and `action` must match.")
+            concatenated_h = torch.cat([embedded_h, action.clone()], dim=-1)
+            state_action_h = self.state_action_layer(concatenated_h)
+        else:
+            state_action_h = embedded_h
 
         # Compute the value
         if not self.customized:  # for most constructive tasks
-            output = self.value_head(h).sum(dim=1, keepdims=True)  # [batch_size, N] -> [batch_size, 1]
+            output = self.value_head(state_action_h).sum(dim=1, keepdims=True)  # [batch_size, N] -> [batch_size, 1]
         else:  # customized encoder and value head with hidden input
-            output = self.value_head(h) # [batch_size, N] -> [batch_size, N]
-        output = output / self.temperature
+            output = self.value_head(state_action_h)  # [batch_size, N] -> [batch_size, N]
+        output = output / self.temperature  # Safe division
 
         # Compute the Lagrangian multiplier
         if self.primal_dual:
-            lagrangian_multiplier = self.dual_head(h)
+            lagrangian_multiplier = self.dual_head(state_action_h)
             return output, lagrangian_multiplier
         else:
-            return output
+            return output  # ensures [B, S] if it was [B, S, 1]
 
 def create_critic_from_actor(
     policy: nn.Module, backbone: str = "encoder", **critic_kwargs
