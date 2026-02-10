@@ -389,9 +389,14 @@ class FeasibilitySACLoss(SACLoss):
         )
         self.register_buffer("lagrangian_multiplier", lagrangian_multiplier)
         self._env_init = kwargs.get("env_init", None)
+        self._fw_improvement = kwargs.get('frank_wolfe_improvement', False)
 
     def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
         """Computes SAC loss with feasibility constraints."""
+        # Pass critic_fn for value estimation if needed
+        if self._fw_improvement:
+            tensordict.set("critic_fn", self.critic_network)
+
         # Actor loss
         loss_actor, metadata_actor = self._actor_loss(tensordict)
 
@@ -579,6 +584,7 @@ class FeasibilityClipPPOLoss(PPOLoss):
         self.register_buffer("clip_epsilon", torch.tensor(clip_epsilon, device=device))
         self.register_buffer("lagrangian_multiplier", lagrangian_multiplier)
         self._env_init = kwargs.get("env_init", None)
+        self._fw_improvement = kwargs.get('frank_wolfe_improvement', False)
 
     @property
     def _clip_bounds(self) -> Tuple[Tensor, Tensor]:
@@ -608,6 +614,8 @@ class FeasibilityClipPPOLoss(PPOLoss):
     @dispatch
     def forward(self, tensordict: TensorDictBase) -> TensorDictBase:
         tensordict = tensordict.clone(False)
+        if self._fw_improvement:
+            tensordict.set("critic_fn", self.critic_network)
         advantage = tensordict.get(self.tensor_keys.advantage, None)
         if advantage is None:
             self.value_estimator(
