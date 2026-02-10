@@ -56,13 +56,15 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             "convex_program":self.convex_program,
             "convex_program_policy_clipping":self.convex_program_policy_clipping,
             "alpha_chebyshev": self.alpha_cheby_projection,
+            "log_barrier": self.violation_projection,
+            "frank_wolfe": self.franke_wolfe_improvement,
             "none": self.identity_fn,
         }
 
         self.jacobian_methods = {
             "weighted_scaling": self.jacobian_weighted_scaling,
-            "linear_violation": self.jacobian_violation,
-            "inner_convex_violation": self.jacobian_violation,
+            "linear_violation": self.jacobian_uvp_K_steps,
+            "inner_convex_violation": self.jacobian_uvp_K_steps,
             "weighted_scaling_policy_clipping": self.jacobian_weighted_scaling,
         }
 
@@ -122,9 +124,8 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=var_mask)
         return out["action"]
 
-    def bound_violation_projection(self, out:TensorDict) -> Tensor:
-        var_mask = out["observation", "action_mask"].float() if "action_mask" in out["observation"] else None
-        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=var_mask)
+    def franke_wolfe_improvement(self, out:TensorDict) -> Tensor:
+        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], s=out, critic_fn=out["critic_fn"])
         return out["action"]
 
     def alpha_cheby_projection(self, out:TensorDict) -> Tensor:
@@ -175,39 +176,46 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             jacobian = jacobian.view(batch, seq, n, n)
         return jacobian
 
-    def jacobian_violation(self, out:TensorDict) -> Tensor:
-        """Compute the Jacobian of the violation projection:
-            J_g(x) = I + lr * A^T D A, where D = diag((Ax-b) > 0)"""
-        # Input
-        x = out["action"]
+    def jacobian_uvp_K_steps(self, out: TensorDict) -> torch.Tensor:
+        """
+        Exact Jacobian of the K-step UVP loop, by re-simulating x_k.
+        Returns:
+          - [B,n,n] or [B,S,n,n]
+        """
+        x0 = out["action"]
         A = out["lhs_A"]
         b = out["rhs"]
-        lr = self.projection_layer.lr
 
-        # Shapes
-        if A.dim() == 2:
-            batch, n = A.shape
-        elif A.dim() == 3:
-            batch, _, n = A.shape
-            shape = (batch, n, n)
-        elif A.dim() == 4:
-            batch, seq, _, n = A.shape
-            shape = (batch, seq, n, n)
-        else:
-            raise ValueError(f"Invalid dimension of A: {A.dim()}")
+        proj = self.projection_layer
 
-        # Compute
-        I = torch.eye(n, device=x.device).expand(shape)  # Identity matrix for each batch
-        violation = compute_violation(x, A, b)
-        D = torch.diag_embed(violation > 0).float()
+        b_ = b.unsqueeze(1) if b.dim() == 2 else b
+        A_ = A.unsqueeze(1) if A.dim() == 3 else A
+        x = x0.unsqueeze(1) if x0.dim() == 2 else x0
+
+        B, S, m, n = A_.shape
+
+        A_work, b_work = proj._normalize_constraints(A_, b_)
+        b_tight = b_work - proj.mu_inside
+        eta = proj.get_eta(A, b).unsqueeze(-1)  # [B,S,1,1]
+
+        I = torch.eye(n, device=x.device, dtype=x.dtype).view(1, 1, n, n).expand(B, S, n, n)
+        J = I.clone()
+
+        for _ in range(proj.K):
+            r = (A_work @ x.unsqueeze(-1)).squeeze(-1) - b_tight  # [B,S,m]
+            D = torch.diag_embed((r > 0).to(x.dtype))  # [B,S,m,m]
+
+            J_step = I - eta * (A_work.transpose(-2, -1) @ (D @ A_work))  # [B,S,n,n]
+            J = J_step @ J  # composition
+
+            # advance x (match forward)
+            v = torch.relu(r)
+            g = (A_work.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1)
+            x = x - eta.squeeze(-1) * g  # eta back to [B,S,1]
 
         if A.dim() == 3:
-            jacobian = I + lr * torch.bmm(A.transpose(-2, -1), D).bmm(A)
-        elif A.dim() > 3:
-            jacobian = I + lr * torch.matmul(A.transpose(-2, -1), torch.matmul(D, A))
-        else:
-            raise ValueError(f"Invalid dimension of A: {A.dim()}")
-        return jacobian
+            J = J.squeeze(1)
+        return J
 
     def jacobian_violation_bound(self, out:TensorDict) -> Tensor:
         """
@@ -259,19 +267,23 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         jacobian_fn = self.jacobian_methods.get(self.projection_type, None)
         return jacobian_fn(out) if jacobian_fn else None
 
-    def jacobian_adaptation(self, logprob:Tensor, jacobian:Tensor, epsilon:float=1e-8) -> Tensor:
-        """Perform logprob adaptation for invertible and differentiable (bijective) functions with non-singular Jacobians.
-        - log pi'(x|s) = log pi(x|s) - log|det(J_g(x))|
+    def jacobian_adaptation(self, sample_logp: Tensor, jacobian: Tensor) -> Tensor:
         """
-        # If no Jacobian is provided, return the original log probabilities
+        sample_logp: [B] or [B,T] (already summed over action dims)
+        jacobian:    [B,N,N] or [B,T,N,N]
+        """
         if jacobian is None:
-            return logprob
+            return sample_logp
 
-        # log pi'(x|s) = log pi(x|s) - log|det(J_g(x))|
-        _, log_abs_det = torch.linalg.slogdet(jacobian) # Compute the sign and log absolute determinant of the Jacobian
-        logprob_ = logprob - log_abs_det.unsqueeze(-1) # Note log_abs_det is a scalar applied to all batch elements
-        # This is appropriate for our projection functions, as the actions are transformed globally rather than per element
-        return logprob_ # Apply reduction for loss computations. Shape: [Batch]
+        sign, log_abs_det = torch.linalg.slogdet(jacobian)
+        valid = sign != 0
+        # sign > 0 can be considered
+
+        # if invalid: no correction (or clamp)
+        log_abs_det = torch.where(valid, log_abs_det, torch.zeros_like(log_abs_det))
+
+        # CoV correction
+        return sample_logp - log_abs_det
 
 
     def forward(self, *args, **kwargs,) -> TensorDict:
@@ -305,11 +317,29 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
         # compute jacobian using active raw action
         if ("action_mask" in out["observation"]):
-            # todo: check if jacobian adjustment is added effectively!
             # todo: check if this is generally effective
             out["log_prob"], out["sample_log_prob"] = self.masked_subspace_logprobs(
-                out, raw, clamp_min=-50.0,
+                out, raw, clamp_min=-50.0, handle_jacobian_adjustment=self.handle_jacobian_adjustment, jacobian_adaptation=self.jacobian_adaptation
             )
+        else:
+            # todo: check if jacobian adjustment is added effectively!
+            # Ensure sample_log_prob exists
+            logp_full = out["log_prob"]  # shape [..., N]
+            sample_logp = logp_full.sum(dim=-1)  # shape [...]
+
+            # Apply jacobian correction in full space if implemented for projection_type
+            J = self.handle_jacobian_adjustment(out)  # returns [..., N, N] or None
+            if J is not None:
+                sample_logp = logp_full.sum(dim=-1)
+                sample_logp = self.jacobian_adaptation(sample_logp, jacobian=J).clamp(min=-50.0)
+
+            # out["log_prob"] = logp_full
+            out["sample_log_prob"] = sample_logp
+
+        # Use critic for FW improvement direction if implemented
+        if self.projection_type == "frank_wolfe":
+            out["critic_fn"] = out.get("critic_fn", None)
+
 
         # project once before env execution
         out["action"] = raw
