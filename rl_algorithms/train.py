@@ -230,7 +230,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             max_alpha=1.0, #[1.0, 10]
             lagrangian_multiplier=lagrangian_multiplier,
             env_init=vars(train_env),   # dict of instance attributes
-            frank_wolfe_improvement=kwargs["projection_type"] == "frank_wolfe",
+            frank_wolfe_improvement=kwargs["training"]["projection_type"] == "frank_wolfe",
         )
     elif kwargs["algorithm"]["type"] == "ppo":
         loss_module = FeasibilityClipPPOLoss(
@@ -244,7 +244,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             normalize_advantage=True,
             lagrangian_multiplier=lagrangian_multiplier,
             env_init=vars(train_env),   # dict of instance attributes
-            frank_wolfe_improvement=kwargs["projection_type"] == "frank_wolfe",
+            frank_wolfe_improvement=kwargs["training"]["projection_type"] == "frank_wolfe",
         )
     elif kwargs["algorithm"]["type"] == "ddpg":
         # Create the DDPG loss module
