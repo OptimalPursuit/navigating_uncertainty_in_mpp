@@ -1,21 +1,24 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch import Tensor
 import cvxpy as cp
 from cvxpylayers.torch import CvxpyLayer
 from typing import Optional, Tuple
 
+
 class EmptyLayer(nn.Module):
     def __init__(self, **kwargs):
-        super(EmptyLayer, self).__init__()
+        super().__init__()
 
-    def forward(self, x:Tensor, **kwargs) -> Tensor:
+    def forward(self, x: Tensor, **kwargs) -> Tensor:
         return x
+
 
 class InnerConvexViolationProjection(nn.Module):
     """
     UVP 2.0 + tightening + (optional) alpha-map.
+    Softness: UVP inherently produces soft feasibility; alpha-map is only applied when UVP anchor is feasible
+    (w.r.t. the same normalized constraints used internally).
     """
 
     def __init__(self, **kwargs):
@@ -37,9 +40,17 @@ class InnerConvexViolationProjection(nn.Module):
         self.alpha_feas_tol = float(kwargs.get("alpha_feas_tol", 1e-7))
         self.eps_inside = float(kwargs.get("eps_inside", 1e-6))
         self.normalize_d = bool(kwargs.get("normalize_d", False))
+        self.enforce_nonneg = bool(kwargs.get("enforce_nonneg", False))
 
-        # fairness: enforce nonnegativity
-        self.enforce_nonneg = bool(kwargs.get("enforce_nonneg", True))
+    def get_eta(self, A: Tensor, b: Tensor) -> Tensor:
+        if A.dim() not in (3, 4) or b.dim() not in (2, 3):
+            raise ValueError("get_eta expects A dim 3/4 and b dim 2/3.")
+
+        b_ = b.unsqueeze(1) if b.dim() == 2 else b
+        A_ = A.unsqueeze(1) if A.dim() == 3 else A
+        A_work, _ = self._normalize_constraints(A_, b_)
+        eta = (self._eta_spectral(A_work) if self.use_spectral_eta else self._eta_frobenius(A_work)).unsqueeze(-1)
+        return eta
 
     def _eta_frobenius(self, A: Tensor) -> Tensor:
         denom = torch.sum(A * A, dim=(-2, -1)) + self.rho  # [B,S]
@@ -68,13 +79,19 @@ class InnerConvexViolationProjection(nn.Module):
         if self.normalize_d:
             d = d / torch.norm(d, dim=-1, keepdim=True).clamp(min=1e-12)
 
-        Ax = torch.matmul(A, x_anchor.unsqueeze(-1)).squeeze(-1)  # [B,S,m]
-        Ad = torch.matmul(A, d.unsqueeze(-1)).squeeze(-1)         # [B,S,m]
-        slack = b - Ax                                            # [B,S,m]
+        B, S, m, n = A.shape
+        BS = B * S
+        A_f = A.reshape(BS, m, n)
+        xa_f = x_anchor.reshape(BS, n, 1)
+        d_f = d.reshape(BS, n, 1)
+
+        Ax = torch.bmm(A_f, xa_f).squeeze(-1).reshape(B, S, m)
+        Ad = torch.bmm(A_f, d_f).squeeze(-1).reshape(B, S, m)
+        slack = b - Ax
 
         inf = torch.tensor(float("inf"), device=x_anchor.device, dtype=x_anchor.dtype)
-        alpha_i = torch.where(Ad > 0, slack / (Ad + 1e-12), inf)   # [B,S,m]
-        alpha = torch.amin(alpha_i, dim=-1, keepdim=True)          # [B,S,1]
+        alpha_i = torch.where(Ad > 0, slack / (Ad + 1e-12), inf)
+        alpha = torch.amin(alpha_i, dim=-1, keepdim=True)
         alpha = torch.where(torch.isfinite(alpha), alpha, torch.ones_like(alpha))
         alpha = torch.clamp(alpha - self.eps_inside, min=0.0, max=1.0)
 
@@ -85,54 +102,78 @@ class InnerConvexViolationProjection(nn.Module):
 
     def forward(self, x: Tensor, A: Tensor, b: Tensor, var_mask: Optional[Tensor] = None, **kwargs) -> Tensor:
         if b.dim() not in (2, 3) or A.dim() not in (3, 4):
-            raise ValueError("Invalid dimensions: 'b' dim 2/3, 'A' dim 3/4.")
+            raise ValueError("Invalid dimensions: b dim 2/3, A dim 3/4 expected.")
 
-        b_ = b.unsqueeze(1) if b.dim() == 2 else b
-        A_ = A.unsqueeze(1) if A.dim() == 3 else A
-        x_in = x.unsqueeze(1) if x.dim() == 2 else x
+        # normalize shapes to [B,S,*]
+        b_BS = b.unsqueeze(1) if b.dim() == 2 else b  # [B,S,m]
+        A_BS = A.unsqueeze(1) if A.dim() == 3 else A  # [B,S,m,n]
+        x_BS = x.unsqueeze(1) if x.dim() == 2 else x  # [B,S,n]
 
-        if torch.isnan(x_in).any():
-            out = x_in.squeeze(1) if b.dim() == 2 else x_in
+        if torch.isnan(x_BS).any():
+            out = x_BS.squeeze(1) if b.dim() == 2 else x_BS
             if self.enforce_nonneg:
                 out = out.clamp_min(0.0)
             return out * var_mask if var_mask is not None else out
 
-        # fairness: enforce x>=0 at input
         if self.enforce_nonneg:
-            x_in = x_in.clamp_min(0.0)
+            x_BS = x_BS.clamp_min(0.0)
 
-        A_work, b_work = self._normalize_constraints(A_, b_)
+        A_work, b_work = self._normalize_constraints(A_BS, b_BS)
         b_tight = b_work - self.mu_inside
-        eta = (self._eta_spectral(A_work) if self.use_spectral_eta else self._eta_frobenius(A_work)).unsqueeze(-1)
 
-        x_ = x_in
+        # step-size
+        eta = (self._eta_spectral(A_work) if self.use_spectral_eta else self._eta_frobenius(A_work)).unsqueeze(
+            -1)  # [B,S,1]
+
+        B, S, m, n = A_work.shape
+        BS = B * S
+
+        # flatten for bmm
+        A_f = A_work.reshape(BS, m, n)  # [BS,m,n]
+        b_f = b_tight.reshape(BS, m, 1)  # [BS,m,1]
+        x_f = x_BS.reshape(BS, n, 1)  # [BS,n,1]
+        eta_f = eta.reshape(BS, 1, 1)  # [BS,1,1]
+
+        if var_mask is not None:
+            vm = var_mask.unsqueeze(1) if var_mask.dim() == 2 else var_mask  # [B,S,n]
+            vm_f = vm.reshape(BS, n, 1)  # [BS,n,1]
+        else:
+            vm_f = None
+
+        # ---- UVP loop (bmm) ----
         for _ in range(self.K):
-            r = torch.matmul(A_work, x_.unsqueeze(-1)).squeeze(-1) - b_tight
-            v = torch.relu(r)
-            g = torch.matmul(A_work.transpose(-2, -1), v.unsqueeze(-1)).squeeze(-1)
-            x_ = x_ - eta * g
+            Ax = torch.bmm(A_f, x_f)  # [BS,m,1]
+            r = Ax - b_f  # [BS,m,1]
+            v = torch.relu(r)  # [BS,m,1]
+            g = torch.bmm(A_f.transpose(1, 2), v)  # [BS,n,1]
+            x_f = x_f - eta_f * g  # [BS,n,1]
 
             if self.enforce_nonneg:
-                x_ = x_.clamp_min(0.0)
-            if var_mask is not None:
-                x_ = x_ * var_mask
+                x_f = x_f.clamp_min(0.0)
+            if vm_f is not None:
+                x_f = x_f * vm_f
 
+        x_ = x_f.squeeze(-1).reshape(B, S, n)  # [B,S,n]
+
+        # ---- Alpha-map (unchanged logic; only compute if any sample is feasible) ----
         if self.enable_alpha_map:
-            Ax_true = torch.matmul(A_work, x_.unsqueeze(-1)).squeeze(-1)
-            max_viol = (Ax_true - b_work).clamp(min=0.0).amax(dim=-1, keepdim=True)
+            # A_work @ x_ with bmm to avoid another broadcasted matmul
+            Ax_true = torch.bmm(A_f, x_f).squeeze(-1).reshape(B, S, m)  # [B,S,m]
+            max_viol = (Ax_true - b_work).clamp(min=0.0).amax(dim=-1, keepdim=True)  # [B,S,1]
             do_alpha = (max_viol <= self.alpha_feas_tol)
 
-            x_target = x_in
-            if var_mask is not None:
-                x_target = x_target * var_mask
+            if do_alpha.any():
+                x_target = x_BS
+                if var_mask is not None:
+                    x_target = x_target * (var_mask.unsqueeze(1) if var_mask.dim() == 2 else var_mask)
 
-            x_alpha = self._alpha_map_from_anchor(x_, x_target, A_work, b_work)
-            x_ = torch.where(do_alpha, x_alpha, x_)
+                x_alpha = self._alpha_map_from_anchor(x_, x_target, A_work, b_work)
+                x_ = torch.where(do_alpha, x_alpha, x_)
 
-            if self.enforce_nonneg:
-                x_ = x_.clamp_min(0.0)
-            if var_mask is not None:
-                x_ = x_ * var_mask
+                if self.enforce_nonneg:
+                    x_ = x_.clamp_min(0.0)
+                if var_mask is not None:
+                    x_ = x_ * (var_mask.unsqueeze(1) if var_mask.dim() == 2 else var_mask)
 
         if b.dim() == 2:
             x_ = x_.squeeze(1)
@@ -143,7 +184,14 @@ class InnerConvexViolationProjection(nn.Module):
 
 class CvxpyProjectionLayer(nn.Module):
     """
-    QP projection + (optional) slack on last 4 constraints.
+    QP projection with nonnegativity and slack on a soft subset of constraints.
+
+    Solves (per item):
+      min_x,s  0.5||x-x_raw||^2 + slack_penalty||s||^2
+      s.t.     A_hard x <= b_hard
+               A_soft x <= b_soft + s
+               s >= 0
+               x >= lower
     """
 
     def __init__(self, n_action=80, n_constraints=85, slack_penalty=1.0, stab_idx: int = -4, **kwargs):
@@ -154,7 +202,8 @@ class CvxpyProjectionLayer(nn.Module):
         self.stab_idx = int(stab_idx)
 
         x = cp.Variable(self.n)
-        s = cp.Variable(abs(self.stab_idx) if self.stab_idx < 0 else (self.m - self.stab_idx))
+        soft_dim = abs(self.stab_idx) if self.stab_idx < 0 else (self.m - self.stab_idx)
+        s = cp.Variable(soft_dim)
 
         x_raw_param = cp.Parameter(self.n)
         A_param = cp.Parameter((self.m, self.n))
@@ -163,7 +212,6 @@ class CvxpyProjectionLayer(nn.Module):
 
         objective = cp.Minimize(0.5 * cp.sum_squares(x - x_raw_param) + self.slack_penalty * cp.sum_squares(s))
 
-        # slicing semantics
         if self.stab_idx < 0:
             hard = slice(0, self.stab_idx)
             soft = slice(self.stab_idx, None)
@@ -175,22 +223,14 @@ class CvxpyProjectionLayer(nn.Module):
             A_param[hard, :] @ x <= b_param[hard],
             A_param[soft, :] @ x <= b_param[soft] + s,
             s >= 0,
-            x >= lower_param,  # nonnegativity if lower=0
+            x >= lower_param,
         ]
 
         problem = cp.Problem(objective, constraints)
         self.cvxpy_layer = CvxpyLayer(problem, parameters=[x_raw_param, A_param, b_param, lower_param], variables=[x])
 
-    def forward(
-        self,
-        x_raw: Tensor,
-        A: Tensor,
-        b: Tensor,
-        lower: Optional[Tensor] = None,
-        upper: Optional[Tensor] = None,  # ignored
-    ) -> Tensor:
+    def forward(self, x_raw: Tensor, A: Tensor, b: Tensor, lower: Optional[Tensor] = None, upper: Optional[Tensor] = None) -> Tensor:
         batch_size = x_raw.shape[0]
-
         if lower is None:
             lower = torch.zeros_like(x_raw)
         if lower.dim() == 1:
@@ -207,105 +247,135 @@ class CvxpyProjectionLayer(nn.Module):
 
         if needs_flattening:
             x_proj = x_proj.view(batch_size, -1, x_raw.shape[-1])
-
         return x_proj
 
 
 class AlphaChebyshevProjection(nn.Module):
     """
-    Alpha-map with Chebyshev center anchor.
+    Chebyshev-center anchor + alpha-map, with the SAME soft slack semantics as the Chebyshev solve.
 
-    Shapes:
-      x_hat: [B,n] or [B,S,n]
-      A:     [B,m,n] or [B,S,m,n]
-      b:     [B,m]   or [B,S,m]
+    IMPORTANT FIX (consistency):
+      - If you allow slack 's' on soft constraints when computing the anchor, then the alpha-map must
+        be computed against the relaxed RHS b_eff = b + s on those SAME rows.
+      - Otherwise you can anchor in a relaxed polytope but map against the hard one (undefined when hard is empty).
+
+    Chebyshev (soft):
+      max_{x,r,s>=0}  radius_weight*r - slack_penalty*||s||^2
+      s.t.            A_hard x + r d_hard <= b_hard
+                      A_soft x + r d_soft <= b_soft + s
+                      x >= 0 (optional), r>=0
+    Alpha-map:
+      uses b_eff where b_eff_soft = b_soft + s and b_eff_hard = b_hard.
     """
 
-    def __init__(self, n_action: int = 80, n_constraints: int = 85, **kwargs):
+    def __init__(
+        self,
+        n_action: int = 80,
+        n_constraints: int = 85,
+        stab_idx: int = -4,
+        slack_penalty: float = 1.0,
+        radius_weight: float = 1.0,
+        add_nonnegativity: bool = True,
+        eps_inside: float = 1e-9,
+        cvx_solver: Optional[str] = None,
+        cvx_verbose: bool = False,
+        enforce_nonneg: bool = True,
+        **kwargs,
+    ):
         super().__init__()
         self.n = int(n_action)
         self.m = int(n_constraints)
+        self.stab_idx = int(stab_idx)
 
-        self.add_nonnegativity = bool(kwargs.get("add_nonnegativity", True))
-        self.eps_inside = float(kwargs.get("eps_inside", 1e-9))
-        self.cvx_solver = kwargs.get("cvx_solver", None)
-        self.cvx_verbose = bool(kwargs.get("cvx_verbose", False))
-        self.enforce_nonneg = bool(kwargs.get("enforce_nonneg", True))
+        self.slack_penalty = float(slack_penalty)
+        self.radius_weight = float(radius_weight)
 
-        # Chebyshev center layer:
-        # max r
-        # s.t. A x + r * row_norms <= b
-        #      x >= 0 (optional)
-        #      r >= 0
+        self.add_nonnegativity = bool(add_nonnegativity)
+        self.eps_inside = float(eps_inside)
+        self.cvx_solver = cvx_solver
+        self.cvx_verbose = bool(cvx_verbose)
+        self.enforce_nonneg = bool(enforce_nonneg)
+
+        if self.stab_idx < 0:
+            self.hard = slice(0, self.stab_idx)
+            self.soft = slice(self.stab_idx, None)
+            self.soft_dim = abs(self.stab_idx)
+        else:
+            self.hard = slice(0, self.stab_idx)
+            self.soft = slice(self.stab_idx, self.m)
+            self.soft_dim = self.m - self.stab_idx
+
         x = cp.Variable(self.n)
         r = cp.Variable()
+        s = cp.Variable(self.soft_dim)
 
         A_param = cp.Parameter((self.m, self.n))
         b_param = cp.Parameter(self.m)
-        d_param = cp.Parameter(self.m, nonneg=True)  # row norms >= 0
+        d_param = cp.Parameter(self.m, nonneg=True)
 
-        cons = [A_param @ x + cp.multiply(d_param, r) <= b_param, r >= 0]
+        obj = cp.Maximize(self.radius_weight * r - self.slack_penalty * cp.sum_squares(s))
+
+        cons = [r >= 0, s >= 0]
+        cons += [A_param[self.hard, :] @ x + cp.multiply(d_param[self.hard], r) <= b_param[self.hard]]
+        cons += [A_param[self.soft, :] @ x + cp.multiply(d_param[self.soft], r) <= b_param[self.soft] + s]
         if self.add_nonnegativity:
             cons += [x >= 0]
 
-        prob = cp.Problem(cp.Maximize(r), cons)
-
-        self.cheby_layer = CvxpyLayer(
-            prob,
-            parameters=[A_param, b_param, d_param],
-            variables=[x, r],
-        )
+        prob = cp.Problem(obj, cons)
+        self.cheby_layer = CvxpyLayer(prob, parameters=[A_param, b_param, d_param], variables=[x, r, s])
 
     @staticmethod
-    def _alpha_map_batched(x_hat: Tensor, A: Tensor, b: Tensor, x0: Tensor, eps_inside: float) -> Tensor:
-        # x_hat,x0: [B,S,n], A: [B,S,m,n], b: [B,S,m]
-        d = x_hat - x0                                      # [B,S,n]
-        Ax0 = torch.matmul(A, x0.unsqueeze(-1)).squeeze(-1) # [B,S,m]
-        Ad  = torch.matmul(A, d.unsqueeze(-1)).squeeze(-1)  # [B,S,m]
-        slack = (b - Ax0).clamp(min=0.0)                    # [B,S,m]
+    def _alpha_map_batched(x_hat: Tensor, A: Tensor, b_eff: Tensor, x0: Tensor, eps_inside: float) -> Tensor:
+        d = x_hat - x0
+        Ax0 = torch.matmul(A, x0.unsqueeze(-1)).squeeze(-1)
+        Ad = torch.matmul(A, d.unsqueeze(-1)).squeeze(-1)
+        slack = (b_eff - Ax0).clamp(min=0.0)
 
         inf = torch.tensor(float("inf"), device=x_hat.device, dtype=x_hat.dtype)
-        alpha_i = torch.where(Ad > 0, slack / (Ad + 1e-12), inf)   # [B,S,m]
-        alpha = torch.amin(alpha_i, dim=-1, keepdim=True)          # [B,S,1]
+        alpha_i = torch.where(Ad > 0, slack / (Ad + 1e-12), inf)
+        alpha = torch.amin(alpha_i, dim=-1, keepdim=True)
         alpha = torch.where(torch.isfinite(alpha), alpha, torch.ones_like(alpha))
         alpha = torch.clamp(alpha - eps_inside, 0.0, 1.0)
-
         return x0 + alpha * d
 
     def forward(self, x_hat: Tensor, A: Tensor, b: Tensor, var_mask: Optional[Tensor] = None, **kwargs) -> Tensor:
         if b.dim() not in (2, 3) or A.dim() not in (3, 4):
             raise ValueError("Invalid dimensions: b dim 2/3, A dim 3/4 expected.")
 
-        # Normalize to [B,S,*]
         b_BS = b.unsqueeze(1) if b.dim() == 2 else b
         A_BS = A.unsqueeze(1) if A.dim() == 3 else A
         x_BS = x_hat.unsqueeze(1) if x_hat.dim() == 2 else x_hat
 
         B, S, m, n = A_BS.shape
         if m != self.m or n != self.n:
-            raise ValueError(f"Layer configured for (m={self.m}, n={self.n}) but got (m={m}, n={n}).")
+            raise ValueError(f"Configured (m={self.m}, n={self.n}) but got (m={m}, n={n}).")
 
-        # Compute row norms d = ||A_i||_2 (batched)
         d_BS = torch.norm(A_BS, dim=-1).clamp(min=1e-12)  # [B,S,m]
 
-        # Flatten for batched cvxpylayer call
         A_f = A_BS.reshape(-1, m, n)
         b_f = b_BS.reshape(-1, m)
         d_f = d_BS.reshape(-1, m)
 
-        # Solve Chebyshev centers in batch
-        x0_f, r_f = self.cheby_layer(A_f, b_f, d_f, solver_args={"verbose": self.cvx_verbose} if self.cvx_solver is None
-                                     else {"solver": self.cvx_solver, "verbose": self.cvx_verbose})
+        solver_args = {"verbose": self.cvx_verbose}
+        if self.cvx_solver is not None:
+            solver_args["solver"] = self.cvx_solver
 
+        x0_f, r_f, s_f = self.cheby_layer(A_f, b_f, d_f, solver_args=solver_args)
         x0 = x0_f.view(B, S, n)
+        s = s_f.view(B, S, self.soft_dim)
 
-        # Alpha-map (fully vectorized)
-        out = self._alpha_map_batched(x_BS, A_BS, b_BS, x0, self.eps_inside)
+        # Build relaxed RHS for alpha-map: b_eff = b + s on soft rows
+        b_eff = b_BS.clone()
+        b_eff[..., self.soft] = b_eff[..., self.soft] + s
+
+        out = self._alpha_map_batched(x_BS, A_BS, b_eff, x0, self.eps_inside)
 
         if self.enforce_nonneg:
             out = out.clamp_min(0.0)
+
         if var_mask is not None:
-            out = out * (var_mask.unsqueeze(1) if var_mask.dim() == 2 else var_mask)
+            vm = var_mask.unsqueeze(1) if var_mask.dim() == 2 else var_mask
+            out = out * vm
 
         return out.squeeze(1) if b.dim() == 2 else out
 
@@ -313,7 +383,10 @@ class AlphaChebyshevProjection(nn.Module):
 class LogBarrierProjection(nn.Module):
     """
     Log-barrier solve for:
-        min_x 0.5||x-x_raw||^2 - mu * sum_i log(b_i - (Ax)_i) - mu * sum_j log(x_j - lower_j)
+      min_x 0.5||x-x_raw||^2 - mu * sum_i log(b_i - (Ax)_i) - mu * sum_j log(x_j - lower_j)
+
+    NOTE: This is a hard-feasibility method; if your environment has empty polytopes, it can fail
+    unless you provide a feasible initialization. This implementation uses a Chebyshev init (loop).
     """
 
     def __init__(self, **kwargs):
@@ -336,13 +409,6 @@ class LogBarrierProjection(nn.Module):
         return A / row_norm, b / row_norm.squeeze(-1)
 
     def _chebyshev_center_one(self, A: Tensor, b: Tensor, lower: Tensor) -> Tensor:
-        """
-        Chebyshev center with only lower bounds:
-            max r
-            s.t. A_i x + r||A_i|| <= b_i
-                 x >= lower + r
-                 r >= 0
-        """
         A_np = A.detach().cpu().numpy()
         b_np = b.detach().cpu().numpy()
         lo_np = lower.detach().cpu().numpy()
@@ -364,7 +430,6 @@ class LogBarrierProjection(nn.Module):
             prob.solve(solver=self.cvx_solver, verbose=self.cvx_verbose)
 
         if x.value is None:
-            # safe-ish fallback: clamp raw lower (still might violate Ax<=b; line search will handle)
             return torch.tensor(lo_np, dtype=torch.float32)
         return torch.tensor(x.value, dtype=torch.float32)
 
@@ -385,7 +450,7 @@ class LogBarrierProjection(nn.Module):
         **kwargs,
     ) -> Tensor:
         if b.dim() not in (2, 3) or A.dim() not in (3, 4):
-            raise ValueError("Invalid dimensions: 'b' dim 2/3 and 'A' dim 3/4 expected.")
+            raise ValueError("Invalid dimensions: b dim 2/3 and A dim 3/4 expected.")
 
         b_ = b.unsqueeze(1) if b.dim() == 2 else b
         A_ = A.unsqueeze(1) if A.dim() == 3 else A
@@ -403,15 +468,12 @@ class LogBarrierProjection(nn.Module):
             lower_ = lower_.to(device=x0.device, dtype=x0.dtype)
 
         if var_mask is not None:
-            vm = var_mask
-            if vm.dim() == 2:
-                vm = vm.unsqueeze(1)
+            vm = var_mask.unsqueeze(1) if var_mask.dim() == 2 else var_mask
         else:
             vm = None
 
         A_work, b_work = self._normalize_constraints(A_, b_)
 
-        # Chebyshev init per (B,S)
         x = torch.empty_like(x0)
         for bi in range(B):
             for si in range(S):
@@ -422,7 +484,6 @@ class LogBarrierProjection(nn.Module):
         if not feas.all():
             x = torch.where(feas, x, (x.clamp_min(0.0) + lower_) * 0.5)
 
-        # Barrier descent
         for _ in range(self.K):
             grad = (x - x0)
 
@@ -462,10 +523,11 @@ class LogBarrierProjection(nn.Module):
 class FrankWolfePolicyImprovement(nn.Module):
     """
     FAIRNESS UPDATE:
-      - Removes artificial upper bounds (no x<=upper constraints).
-      - Uses lower as nonnegativity (default 0).
-      - Keeps stability slack as you had it.
-      - Signature keeps 'upper' for compatibility but ignores it.
+      - No artificial upper bounds.
+      - Lower is nonnegativity (default 0).
+      - Feasible anchor uses the SAME soft slack semantics as CvxpyProjectionLayer.
+      - LMO is solved over the hard feasible set (no slack) because FW requires a convex feasible set.
+        (If hard set is empty, FW is undefined; you should fall back to projection mode.)
     """
 
     def __init__(
@@ -489,9 +551,19 @@ class FrankWolfePolicyImprovement(nn.Module):
         self.cvx_solver = kwargs.get("cvx_solver", None)
         self.cvx_verbose = bool(kwargs.get("cvx_verbose", False))
 
-        # (1) Feasible anchor QP repair (no upper)
+        # hard/soft slices
+        if self.stab_idx < 0:
+            self.hard = slice(0, self.stab_idx)
+            self.soft = slice(self.stab_idx, None)
+            soft_dim = abs(self.stab_idx)
+        else:
+            self.hard = slice(0, self.stab_idx)
+            self.soft = slice(self.stab_idx, self.m)
+            soft_dim = self.m - self.stab_idx
+
+        # (1) Feasible anchor QP repair (soft slack allowed)
         x = cp.Variable(self.n)
-        s = cp.Variable(abs(self.stab_idx) if self.stab_idx < 0 else (self.m - self.stab_idx))
+        s = cp.Variable(soft_dim)
 
         x_raw_param = cp.Parameter(self.n)
         A_param = cp.Parameter((self.m, self.n))
@@ -499,28 +571,16 @@ class FrankWolfePolicyImprovement(nn.Module):
         lower_param = cp.Parameter(self.n)
 
         obj = cp.Minimize(0.5 * cp.sum_squares(x - x_raw_param) + self.slack_penalty * cp.sum_squares(s))
-
-        if self.stab_idx < 0:
-            hard = slice(0, self.stab_idx)
-            soft = slice(self.stab_idx, None)
-        else:
-            hard = slice(0, self.stab_idx)
-            soft = slice(self.stab_idx, self.m)
-
         cons = [
-            A_param[hard, :] @ x <= b_param[hard],
-            A_param[soft, :] @ x <= b_param[soft] + s,
+            A_param[self.hard, :] @ x <= b_param[self.hard],
+            A_param[self.soft, :] @ x <= b_param[self.soft] + s,
             s >= 0,
             x >= lower_param,
         ]
         anchor_problem = cp.Problem(obj, cons)
-        self.anchor_layer = CvxpyLayer(
-            anchor_problem,
-            parameters=[x_raw_param, A_param, b_param, lower_param],
-            variables=[x],
-        )
+        self.anchor_layer = CvxpyLayer(anchor_problem, parameters=[x_raw_param, A_param, b_param, lower_param], variables=[x])
 
-        # (2) LMO: argmax <c,g> s.t. A c <= b, c >= lower (no upper)
+        # (2) LMO: argmax <c,g> over HARD feasible set (no slack)
         c = cp.Variable(self.n)
         g_param = cp.Parameter(self.n)
         A2_param = cp.Parameter((self.m, self.n))
@@ -533,14 +593,9 @@ class FrankWolfePolicyImprovement(nn.Module):
             c >= lower2_param,
         ]
         lmo_problem = cp.Problem(lmo_obj, lmo_cons)
-        self.lmo_layer = CvxpyLayer(
-            lmo_problem,
-            parameters=[g_param, A2_param, b2_param, lower2_param],
-            variables=[c],
-        )
+        self.lmo_layer = CvxpyLayer(lmo_problem, parameters=[g_param, A2_param, b2_param, lower2_param], variables=[c])
 
     def _broadcast_lower(self, lower: Optional[Tensor], ref: Tensor) -> Tensor:
-        # ref: [B,S,n]
         B, S, n = ref.shape
         device, dtype = ref.device, ref.dtype
         if lower is None:
@@ -553,15 +608,7 @@ class FrankWolfePolicyImprovement(nn.Module):
             lower = lower.to(device=device, dtype=dtype)
         return lower
 
-    def feasible_anchor(
-        self,
-        x: Tensor,
-        A: Tensor,
-        b: Tensor,
-        lower: Optional[Tensor] = None,
-        upper: Optional[Tensor] = None,  # ignored
-        detach: bool = True,
-    ) -> Tensor:
+    def feasible_anchor(self, x: Tensor, A: Tensor, b: Tensor, lower: Optional[Tensor] = None, upper: Optional[Tensor] = None, detach: bool = True) -> Tensor:
         b_BS = b.unsqueeze(1) if b.dim() == 2 else b
         A_BS = A.unsqueeze(1) if A.dim() == 3 else A
         x_raw_BS = x.unsqueeze(1) if x.dim() == 2 else x
@@ -576,20 +623,11 @@ class FrankWolfePolicyImprovement(nn.Module):
 
         x_feas_f, = self.anchor_layer(x_f, A_f, b_f, lo_f)
         x_feas = x_feas_f.view(B, S, n)
-
         if detach:
             x_feas = x_feas.detach()
         return x_feas.squeeze(1)
 
-    def lmo(
-        self,
-        g: Tensor,
-        A: Tensor,
-        b: Tensor,
-        lower: Optional[Tensor] = None,
-        upper: Optional[Tensor] = None,  # ignored
-        detach: bool = True,
-    ) -> Tensor:
+    def lmo(self, g: Tensor, A: Tensor, b: Tensor, lower: Optional[Tensor] = None, upper: Optional[Tensor] = None, detach: bool = True) -> Tensor:
         g_BS = g.unsqueeze(1) if g.dim() == 2 else g
         A_BS = A.unsqueeze(1) if A.dim() == 3 else A
         b_BS = b.unsqueeze(1) if b.dim() == 2 else b
@@ -606,7 +644,6 @@ class FrankWolfePolicyImprovement(nn.Module):
 
         c_f, = self.lmo_layer(g_f, A_f, b_f, lo_f)
         c = c_f.view(B, S, n)
-
         if detach:
             c = c.detach()
         return c.squeeze(1) if g.dim() == 2 else c
@@ -645,28 +682,31 @@ class FrankWolfePolicyImprovement(nn.Module):
 
         q_out = critic_fn(s2)
         q = q_out["state_action_value"]
-        g = torch.autograd.grad(q.sum(), x_for_grad, create_graph=False, allow_unused=True)[0].detach()
+        g = torch.autograd.grad(q.sum(), x_for_grad, create_graph=False, allow_unused=True)[0]
+        if g is None:
+            return x_feas
+        g = g.detach()
 
         c = self.lmo(g, A, b, lower=lower, upper=None, detach=detach_solvers)
         x_fw = (1.0 - self.alpha) * x_feas + self.alpha * c
         return x_fw
 
+
 class ProjectionFactory:
     _class_map = {
-        'linear_violation':InnerConvexViolationProjection,
-        'linear_violation_policy_clipping':InnerConvexViolationProjection,
-        'inner_convex_violation':InnerConvexViolationProjection,
-        'inner_convex_violation_alpha':InnerConvexViolationProjection,
-        'alpha_chebyshev':AlphaChebyshevProjection,
-        'convex_program':CvxpyProjectionLayer,
-        'convex_program_policy_clipping':CvxpyProjectionLayer,
-        'frank_wolfe':FrankWolfePolicyImprovement,
-        'log_barrier':LogBarrierProjection,
+        "linear_violation": InnerConvexViolationProjection,
+        "linear_violation_policy_clipping": InnerConvexViolationProjection,
+        "inner_convex_violation": InnerConvexViolationProjection,
+        "inner_convex_violation_alpha": InnerConvexViolationProjection,
+        "alpha_chebyshev": AlphaChebyshevProjection,
+        "convex_program": CvxpyProjectionLayer,
+        "convex_program_policy_clipping": CvxpyProjectionLayer,
+        "frank_wolfe": FrankWolfePolicyImprovement,
+        "log_barrier": LogBarrierProjection,
     }
 
     @staticmethod
-    def create_class(class_type: str, kwargs:dict) -> nn.Module:
+    def create_class(class_type: str, kwargs: dict) -> nn.Module:
         if class_type in ProjectionFactory._class_map:
             return ProjectionFactory._class_map[class_type](**kwargs)
-        else:
-            return EmptyLayer()
+        return EmptyLayer()
