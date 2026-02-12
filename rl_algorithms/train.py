@@ -27,7 +27,8 @@ from torchrl.collectors import SyncDataCollector
 from torchrl.data.replay_buffers import ReplayBuffer
 from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
 from torchrl.data.replay_buffers.storages import LazyTensorStorage
-# Kron optimizer
+# Optimizers
+from torch.optim import Adam
 from kron_torch import Kron
 
 # Custom code
@@ -272,33 +273,27 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
         sampler=TopKPerSampler(top_k=int(top_k * batch_size), alpha=priority_alpha)
     )
 
+    Optim = Adam if kwargs["training"]["optimizer"] == "Adam" else Kron
+
     # Kron rule-of-thumb from authors: lr ~ 3x smaller than Adam, weight_decay ~ 3–10x larger
     if kwargs["algorithm"]["type"] == "sac":
-        actor_optim = Kron(policy.parameters(), lr=lr)
-        # actor_optim = torch.optim.Adam(policy.parameters(), lr=lr)
+        actor_optim = Optim(policy.parameters(), lr=lr)
         critic_params = [p for name, p in loss_module.qvalue_network_params.named_parameters() if not name.startswith("dual_head")]
-        critic_optim = Kron(critic_params, lr=lr)
-        # critic_optim = torch.optim.Adam(critic_params, lr=lr)
-        # critic_optim = torch.optim.Adam(loss_module.qvalue_network_params.parameters(), lr=lr)
+        critic_optim = Optim(critic_params, lr=lr)
         if not loss_module.fixed_alpha:
             # Kron does not like scalers, hence alpha is done with Adam
-            alpha_optim = torch.optim.Adam([loss_module.log_alpha], lr=lr)
-            # alpha_optim = Kron([loss_module.log_alpha], lr=lr)
+            alpha_optim = Optim([loss_module.log_alpha], lr=lr)
         actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(actor_optim, train_data_size)
         critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(critic_optim, train_data_size)
     elif kwargs["algorithm"]["type"] == "ppo":
         actor_critic_params = list(policy.parameters()) + list(critic.parameters())
-        actor_critic_optim = Kron(actor_critic_params, lr=lr)
-        # actor_critic_optim = torch.optim.Adam(actor_critic_params, lr=lr)
+        actor_critic_optim = Optim(actor_critic_params, lr=lr)
         actor_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(actor_critic_optim, train_data_size)
-        # critic_params = [p for name, p in critic.named_parameters() if not name.startswith("dual_head")]
-        # critic_optim = torch.optim.Adam(critic_params, lr=lr)
     else:
         raise ValueError(f"Algorithm {kwargs['algorithm']['type']} not recognized.")
     if primal_dual:
         dual_params = critic.module.dual_head.parameters()
-        dual_optim = Kron(dual_params, lr=pd_lr)
-        # dual_optim = torch.optim.Adam(dual_params, lr=pd_lr)
+        dual_optim = Optim(dual_params, lr=pd_lr)
 
     train_updates = train_data_size // (batch_size * n_step)
     pbar = tqdm.tqdm(range(train_updates))
@@ -307,7 +302,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     early_stopping = EarlyStopping()
 
     policy.train()
-    # torch.autograd.set_detect_anomaly(True)
+    torch.autograd.set_detect_anomaly(True)
     # Training loop
     for step, td in enumerate(collector):
         if kwargs["algorithm"]["type"] == "ppo":
@@ -320,50 +315,49 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
 
             # Loss computation and backpropagation
             if kwargs["algorithm"]["type"] == "sac":
-                # Loss computation
-                loss_out = loss_module(subdata.to(device))
+                with torch.autograd.detect_anomaly():
+                    # --- Critic update ---
+                    critic_optim.zero_grad()
+                    loss_out_critic = loss_module(subdata)  # forward #1
+                    loss_out_critic["loss_qvalue"].backward()
+                    qvalue_params = loss_module.qvalue_network_params.flatten_keys().values()
+                    torch.nn.utils.clip_grad_norm_(qvalue_params, max_grad_norm)
+                    critic_optim.step()
 
-                # Critic Update
-                critic_optim.zero_grad()
-                loss_out["loss_qvalue"].backward()
-                qvalue_params = loss_module.qvalue_network_params.flatten_keys().values()
-                loss_out["gn_critic"] = torch.nn.utils.clip_grad_norm_(qvalue_params, max_grad_norm)
-                critic_optim.step()
-                # Soft update target critics
-                with torch.no_grad():
-                    soft_update(loss_module.target_qvalue_network_params, loss_module.qvalue_network_params, tau)
+                    with torch.no_grad():
+                        soft_update(loss_module.target_qvalue_network_params,
+                                    loss_module.qvalue_network_params, tau)
 
-                # Actor, Dual and Alpha Update
-                # Zero out gradients
-                actor_optim.zero_grad()
-                if kwargs["algorithm"]["primal_dual"]:
-                    dual_optim.zero_grad()
-                if not loss_module.fixed_alpha:
-                    alpha_optim.zero_grad()
+                    # --- Actor / dual / alpha update ---
+                    actor_optim.zero_grad()
+                    if primal_dual:
+                        dual_optim.zero_grad()
+                    if not loss_module.fixed_alpha:
+                        alpha_optim.zero_grad()
 
-                # Compute actor loss
-                if "loss_feasibility" in loss_out:
-                    loss_out["loss_actor"] = loss_out["loss_actor"] + feasibility_lambda * loss_out["loss_feasibility"]
-                if "loss_mask" in loss_out and mask_loss:
-                    loss_out["loss_actor"] = loss_out["loss_actor"] + mask_lambda * loss_out["loss_mask"]
+                    loss_out_actor = loss_module(subdata)  # forward #2 (fresh graph)
 
-                loss_out["loss_actor"].backward(retain_graph=primal_dual)
+                    loss_actor = loss_out_actor["loss_actor"]
+                    if "loss_feasibility" in loss_out_actor:
+                        loss_actor = loss_actor + feasibility_lambda * loss_out_actor["loss_feasibility"]
+                    if "loss_mask" in loss_out_actor and mask_loss:
+                        loss_actor = loss_actor + mask_lambda * loss_out_actor["loss_mask"]
 
-                # Compute primal-dual loss if applicable
-                if kwargs["algorithm"]["primal_dual"]:
-                    loss_out["loss_feasibility"].backward()
-                # Compute alpha loss if applicable
-                if not loss_module.fixed_alpha:
-                    loss_out["loss_alpha"].backward()
+                    loss_actor.backward(retain_graph=primal_dual)
 
-                # Step optimizers
-                loss_out["gn_actor"] = torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-                actor_optim.step()
-                if kwargs["algorithm"]["primal_dual"]:
-                    loss_out["gn_dual"] = torch.nn.utils.clip_grad_norm_(dual_params, max_grad_norm)
-                    dual_optim.step()
-                if not loss_module.fixed_alpha:
-                    alpha_optim.step()
+                    if primal_dual:
+                        loss_out_actor["loss_feasibility"].backward()
+                    if not loss_module.fixed_alpha:
+                        loss_out_actor["loss_alpha"].backward()
+
+                    torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+                    actor_optim.step()
+                    if primal_dual:
+                        dual_optim.step()
+                    if not loss_module.fixed_alpha:
+                        alpha_optim.step()
+
+                    loss_out = loss_out_actor  # for logging
 
             elif kwargs["algorithm"]["type"] == "ppo":
                 for _ in range(num_epochs):
