@@ -1,0 +1,57 @@
+#!/bin/bash
+#SBATCH --job-name=torchrl_main                # Job name
+#SBATCH --output=output_files/gpu_job.%j.out   # Slurm job output
+#SBATCH --error=output_files/gpu_job.%j.err    # Slurm job error log
+#SBATCH --cpus-per-task=32                     # CPUs per task
+#SBATCH --gres=gpu:1                           # GPU request
+#SBATCH --time=7-00:00:00                      # Job run time (d-hh:mm:ss)
+#SBATCH --partition=acltr                      # Partition to run on (acltr, pcn345)
+#SBATCH --mail-type=FAIL,END                   # Email notification
+
+set -euo pipefail
+
+# Ensure the output directory exists
+mkdir -p output_files
+
+# Use tmp in own memory
+TMP_BASE="${SCRATCH:-$HOME/tmp}"          # prefer $SCRATCH if defined
+mkdir -p "$TMP_BASE"
+JOB_TMPDIR="$(mktemp -d "$TMP_BASE/${SLURM_JOB_ID}.XXXX")"
+
+export TMPDIR="$JOB_TMPDIR"
+export TMP="$JOB_TMPDIR"
+export TEMP="$JOB_TMPDIR"
+export TMP_DIR="$JOB_TMPDIR"              # matches admin’s check
+
+cleanup() { rm -rf "$JOB_TMPDIR"; }
+trap cleanup EXIT
+echo "Using TMPDIR=$TMPDIR"
+
+# Print the hostname of the allocated node
+hostname
+
+SCRIPT_PATH="main.py"
+
+# Common CLI args you might still want to pass via sbatch:
+# sbatch job.sh --other_arg=... --seed=...
+
+# Note: projection_kwargs are passed as a single argument string to avoid shell splitting.
+PROJ_KWARGS_ICV_V1="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 300, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False}"
+PROJ_KWARGS_ICV_V2="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 30,  'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': True,  'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False}"
+
+# Run sweep over projection types
+for PROJ in frank_wolfe log_barrier alpha_chebyshev convex_program; do
+  echo "=== Running --projection ${PROJ} ==="
+  python3 "$SCRIPT_PATH" "$@" --projection "${PROJ}"
+done
+
+# Two variants for inner_convex_violation
+echo "=== Running --projection inner_convex_violation (kwargs v1) ==="
+python3 "$SCRIPT_PATH" "$@" \
+  --projection inner_convex_violation \
+  --projection_kwargs "$PROJ_KWARGS_ICV_V1"
+
+echo "=== Running --projection inner_convex_violation (kwargs v2) ==="
+python3 "$SCRIPT_PATH" "$@" \
+  --projection inner_convex_violation \
+  --projection_kwargs "$PROJ_KWARGS_ICV_V2"
