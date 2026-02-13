@@ -580,20 +580,37 @@ class FrankWolfePolicyImprovement(nn.Module):
         anchor_problem = cp.Problem(obj, cons)
         self.anchor_layer = CvxpyLayer(anchor_problem, parameters=[x_raw_param, A_param, b_param, lower_param], variables=[x])
 
-        # (2) LMO: argmax <c,g> over HARD feasible set (no slack)
+        # (2) Soft LMO: approx argmax <c,g> with slack on constraints
         c = cp.Variable(self.n)
+        s2 = cp.Variable(soft_dim)  # slack for soft constraints only (match your soft index set)
+
         g_param = cp.Parameter(self.n)
         A2_param = cp.Parameter((self.m, self.n))
         b2_param = cp.Parameter(self.m)
         lower2_param = cp.Parameter(self.n)
 
-        lmo_obj = cp.Minimize(-g_param @ c)
+        lmo_obj = cp.Minimize(
+            -g_param @ c
+            + self.slack_penalty  * cp.sum(s2)  # L1 slack penalty
+        )
+
         lmo_cons = [
-            A2_param @ c <= b2_param,
+            # hard constraints must hold
+            A2_param[self.hard, :] @ c <= b2_param[self.hard],
+            # soft constraints may violate with nonnegative slack
+            A2_param[self.soft, :] @ c <= b2_param[self.soft] + s2,
+            s2 >= 0,
+
+            # bounds (keep as-is)
             c >= lower2_param,
         ]
+
         lmo_problem = cp.Problem(lmo_obj, lmo_cons)
-        self.lmo_layer = CvxpyLayer(lmo_problem, parameters=[g_param, A2_param, b2_param, lower2_param], variables=[c])
+        self.lmo_layer = CvxpyLayer(
+            lmo_problem,
+            parameters=[g_param, A2_param, b2_param, lower2_param],
+            variables=[c],  # return c; include s2 too if you want to monitor violations
+        )
 
     def _broadcast_lower(self, lower: Optional[Tensor], ref: Tensor) -> Tensor:
         B, S, n = ref.shape
