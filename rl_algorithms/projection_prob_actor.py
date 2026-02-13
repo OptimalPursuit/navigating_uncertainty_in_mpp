@@ -38,8 +38,6 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         self.projection_layer = projection_layer
         self.projection_type = projection_type.lower()
         self.jacobian_correction = jacobian_correction
-        print("jacobian_correction:", self.jacobian_correction)
-        breakpoint()
 
         # Initialize clipped Gaussian
         initial_loc = torch.zeros(spec.shape, device=spec.device, dtype=spec.dtype)
