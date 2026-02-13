@@ -13,36 +13,31 @@ set -euo pipefail
 # Ensure the output directory exists
 mkdir -p output_files
 
-# Use tmp in own memory
-TMP_BASE="${SCRATCH:-$HOME/tmp}"          # prefer $SCRATCH if defined
+# Use tmp in own memory (prefer SCRATCH if available)
+TMP_BASE="${SCRATCH:-$HOME/tmp}"
 mkdir -p "$TMP_BASE"
 JOB_TMPDIR="$(mktemp -d "$TMP_BASE/${SLURM_JOB_ID}.XXXX")"
 
 export TMPDIR="$JOB_TMPDIR"
 export TMP="$JOB_TMPDIR"
 export TEMP="$JOB_TMPDIR"
-export TMP_DIR="$JOB_TMPDIR"              # matches admin’s check
+export TMP_DIR="$JOB_TMPDIR"  # matches admin’s check
 
 cleanup() { rm -rf "$JOB_TMPDIR"; }
 trap cleanup EXIT
-echo "Using TMPDIR=$TMPDIR"
 
-# Print the hostname of the allocated node
+echo "Using TMPDIR=$TMPDIR"
 hostname
 
 SCRIPT_PATH="main.py"
 
-# Common CLI args you might still want to pass via sbatch:
-# sbatch job.sh --other_arg=... --seed=...
+# JSON strings (valid for argparse type=json.loads)
+PROJ_KWARGS_ICV_V1='{"alpha":0.01,"delta":0.01,"max_iter":300,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":false,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":false,"jacobian_correction":true}'
+PROJ_KWARGS_ICV_V2='{"alpha":0.01,"delta":0.01,"max_iter":300,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":false,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":false,"jacobian_correction":false}'
+PROJ_KWARGS_ICV_V3='{"alpha":0.01,"delta":0.01,"max_iter":30,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":true,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":false,"jacobian_correction":true}'
+PROJ_KWARGS_ICV_V4='{"alpha":0.01,"delta":0.01,"max_iter":30,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":true,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":false,"jacobian_correction":false}'
 
-# Note: projection_kwargs are passed as a single argument string to avoid shell splitting.
-PROJ_KWARGS_ICV_V1="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 300, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False, 'jacobian_correction':True}"
-PROJ_KWARGS_ICV_V1="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 300, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False, 'jacobian_correction':False}"
-PROJ_KWARGS_ICV_V3="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 30,  'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': True,  'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False, 'jacobian_correction':True}"
-PROJ_KWARGS_ICV_V4="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 30,  'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': True,  'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False, 'jacobian_correction':False}"
-
-# Variants for inner_convex_violation
-echo "=== Running ----projection_type inner_convex_violation (kwargs v1) ==="
+echo "=== Running --projection_type inner_convex_violation (kwargs v1) ==="
 python3 "$SCRIPT_PATH" "$@" \
   --projection_type inner_convex_violation \
   --projection_kwargs "$PROJ_KWARGS_ICV_V1"
@@ -52,8 +47,7 @@ python3 "$SCRIPT_PATH" "$@" \
   --projection_type inner_convex_violation \
   --projection_kwargs "$PROJ_KWARGS_ICV_V2"
 
-# Two variants for inner_convex_violation
-echo "=== Running ----projection_type inner_convex_violation (kwargs v3) ==="
+echo "=== Running --projection_type inner_convex_violation (kwargs v3) ==="
 python3 "$SCRIPT_PATH" "$@" \
   --projection_type inner_convex_violation \
   --projection_kwargs "$PROJ_KWARGS_ICV_V3"
@@ -63,7 +57,7 @@ python3 "$SCRIPT_PATH" "$@" \
   --projection_type inner_convex_violation \
   --projection_kwargs "$PROJ_KWARGS_ICV_V4"
 
-# Run sweep over projection types
+# Run sweep over other projection types (no kwargs)
 for PROJ in frank_wolfe log_barrier alpha_chebyshev convex_program; do
   echo "=== Running --projection_type ${PROJ} ==="
   python3 "$SCRIPT_PATH" "$@" --projection_type "${PROJ}"
