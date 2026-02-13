@@ -101,6 +101,7 @@ training:
     scale: 0.00025463040788043916 #0.00015463040788043916
     slack_penalty: 10000 #1000
     use_early_stopping: true
+    jacobian_correction: true
   projection_type: None
   # None, weighted_scaling_policy_clipping, linear_violation, linear_violation_policy_clipping, convex_program, convex_program_policy_clipping
   test_data_size: 5000

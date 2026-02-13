@@ -30,12 +30,16 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
                  projection_layer: Optional[nn.Module] = None,
                  projection_type: Optional[str] = None,
                  revenues: Optional[Tensor] = None,
+                 jacobian_correction: bool = True,
                  **kwargs):
         super().__init__(module, in_keys, out_keys, spec=spec, **kwargs)
 
         # Initialize projection layer
         self.projection_layer = projection_layer
         self.projection_type = projection_type.lower()
+        self.jacobian_correction = jacobian_correction
+        print("jacobian_correction:", self.jacobian_correction)
+        breakpoint()
 
         # Initialize clipped Gaussian
         initial_loc = torch.zeros(spec.shape, device=spec.device, dtype=spec.dtype)
@@ -328,10 +332,11 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             sample_logp = logp_full.sum(dim=-1)  # shape [...]
 
             # Apply jacobian correction in full space if implemented for projection_type
-            J = self.handle_jacobian_adjustment(out)  # returns [..., N, N] or None
-            if J is not None:
-                sample_logp = logp_full.sum(dim=-1)
-                sample_logp = self.jacobian_adaptation(sample_logp, jacobian=J).clamp(min=-50.0)
+            if self.jacobian_correction:
+                J = self.handle_jacobian_adjustment(out)  # returns [..., N, N] or None
+                if J is not None:
+                    sample_logp = logp_full.sum(dim=-1)
+                    sample_logp = self.jacobian_adaptation(sample_logp, jacobian=J).clamp(min=-50.0)
 
             # out["log_prob"] = logp_full
             out["sample_log_prob"] = sample_logp
@@ -391,8 +396,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         """
 
         # ---- no jacobian: fully vectorized ----
-        use_jac = (handle_jacobian_adjustment is not None) and (jacobian_adaptation is not None)
-        if not use_jac:
+        if not self.jacobian_correction:
             return out["log_prob"], out["sample_log_prob"]
 
         # Shapes
