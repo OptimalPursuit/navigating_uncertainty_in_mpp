@@ -302,7 +302,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     early_stopping = EarlyStopping()
 
     policy.train()
-    torch.autograd.set_detect_anomaly(True)
+    # torch.autograd.set_detect_anomaly(True)
     # Training loop
     for step, td in enumerate(collector):
         if kwargs["algorithm"]["type"] == "ppo":
