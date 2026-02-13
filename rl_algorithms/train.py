@@ -309,7 +309,6 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
         replay_buffer.extend(td)
         for _ in range(batch_size // mini_batch_size):
             # Sample mini-batch (including actions, n-step returns, old log likelihoods, target_values)
-            # all_data = replay_buffer.storage._storage.to(device)
             subdata = replay_buffer.sample(mini_batch_size).to(device)
 
             # Loss computation and backpropagation
