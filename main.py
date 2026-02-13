@@ -295,7 +295,7 @@ def parse_args():
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
-    parser.add_argument('--projection_type', type=str, default="franke_wolfe", help="Projection type.")
+    parser.add_argument('--projection_type', type=str, default="frank_wolfe", help="Projection type.")
     parser.add_argument('--projection_kwargs', type=json.loads, default={
             'alpha': 0.01, 'delta': 0.01, 'max_iter': 300, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
             'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map':False, 'enforce_nonneg':False},
