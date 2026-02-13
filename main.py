@@ -236,7 +236,7 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
         use_spectral_eta = config.training.projection_kwargs.use_spectral_eta
         max_iter = config.training.projection_kwargs.max_iter
         power_iters = config.training.projection_kwargs.power_iters
-        vp_str = f"{max_iter}_{power_iters}_spectral{use_spectral_eta}_enable_alpha_map{config.training.projection_kwargs.enable_alpha_map}"
+        vp_str = f"{max_iter}_{power_iters}_spectr{use_spectral_eta}_alpha{config.training.projection_kwargs.enable_alpha_map}"
         policy, critic = initialize_policy_and_critic(config, env, device)
 
         # Evaluate policy
@@ -248,12 +248,12 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
 
         # Save summary statistics in path
         if "feasibility_recovery" in config.testing:
-            file_name = f"summary_stats_P{config.env.ports}_feas_recov{config.testing.feasibility_recovery}_" \
+            file_name = f"P{config.env.ports}_frec{config.testing.feasibility_recovery}_" \
                    f"cv{config.env.cv_demand}_gen{config.env.generalization}_{config.training.projection_type}" \
                         f"_{config.training.projection_kwargs.slack_penalty}_PBS{config.env.block_stowage_mask}" \
                         f"_UR{config.env.utilization_rate_initial_demand}_VP{vp_str}.yaml"
         else:
-            file_name = f"summary_stats_P{config.env.ports}_cv{config.env.cv_demand}" \
+            file_name = f"P{config.env.ports}_cv{config.env.cv_demand}" \
                         f"_gen{config.env.generalization}_{config.training.projection_type}" \
                         f"_{config.training.projection_kwargs.slack_penalty}_PBS{config.env.block_stowage_mask}" \
                         f"_UR{config.env.utilization_rate_initial_demand}_VP{vp_str}.yaml"
