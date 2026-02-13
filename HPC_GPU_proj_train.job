@@ -41,17 +41,17 @@ PROJ_KWARGS_ICV_V2="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 30,  'slack_penal
 
 # Run sweep over projection types
 for PROJ in frank_wolfe log_barrier alpha_chebyshev convex_program; do
-  echo "=== Running --projection ${PROJ} ==="
-  python3 "$SCRIPT_PATH" "$@" --projection "${PROJ}"
+  echo "=== Running --projection_type ${PROJ} ==="
+  python3 "$SCRIPT_PATH" "$@" --projection_type "${PROJ}"
 done
 
 # Two variants for inner_convex_violation
-echo "=== Running --projection inner_convex_violation (kwargs v1) ==="
+echo "=== Running ----projection_type inner_convex_violation (kwargs v1) ==="
 python3 "$SCRIPT_PATH" "$@" \
-  --projection inner_convex_violation \
+  --projection_type inner_convex_violation \
   --projection_kwargs "$PROJ_KWARGS_ICV_V1"
 
-echo "=== Running --projection inner_convex_violation (kwargs v2) ==="
+echo "=== Running --projection_type inner_convex_violation (kwargs v2) ==="
 python3 "$SCRIPT_PATH" "$@" \
-  --projection inner_convex_violation \
+  --projection_type inner_convex_violation \
   --projection_kwargs "$PROJ_KWARGS_ICV_V2"
