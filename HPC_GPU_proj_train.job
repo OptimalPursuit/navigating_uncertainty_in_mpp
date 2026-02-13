@@ -36,16 +36,12 @@ SCRIPT_PATH="main.py"
 # sbatch job.sh --other_arg=... --seed=...
 
 # Note: projection_kwargs are passed as a single argument string to avoid shell splitting.
-PROJ_KWARGS_ICV_V1="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 300, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False}"
-PROJ_KWARGS_ICV_V2="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 30,  'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': True,  'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False}"
+PROJ_KWARGS_ICV_V1="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 300, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False, 'jacobian_correction':True}"
+PROJ_KWARGS_ICV_V1="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 300, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False, 'jacobian_correction':False}"
+PROJ_KWARGS_ICV_V3="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 30,  'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': True,  'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False, 'jacobian_correction':True}"
+PROJ_KWARGS_ICV_V4="{'alpha': 0.01, 'delta': 0.01, 'max_iter': 30,  'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'use_spectral_eta': True,  'power_iters': 3, 'enable_alpha_map': False, 'enforce_nonneg': False, 'jacobian_correction':False}"
 
-# Run sweep over projection types
-for PROJ in frank_wolfe log_barrier alpha_chebyshev convex_program; do
-  echo "=== Running --projection_type ${PROJ} ==="
-  python3 "$SCRIPT_PATH" "$@" --projection_type "${PROJ}"
-done
-
-# Two variants for inner_convex_violation
+# Variants for inner_convex_violation
 echo "=== Running ----projection_type inner_convex_violation (kwargs v1) ==="
 python3 "$SCRIPT_PATH" "$@" \
   --projection_type inner_convex_violation \
@@ -55,3 +51,20 @@ echo "=== Running --projection_type inner_convex_violation (kwargs v2) ==="
 python3 "$SCRIPT_PATH" "$@" \
   --projection_type inner_convex_violation \
   --projection_kwargs "$PROJ_KWARGS_ICV_V2"
+
+# Two variants for inner_convex_violation
+echo "=== Running ----projection_type inner_convex_violation (kwargs v3) ==="
+python3 "$SCRIPT_PATH" "$@" \
+  --projection_type inner_convex_violation \
+  --projection_kwargs "$PROJ_KWARGS_ICV_V3"
+
+echo "=== Running --projection_type inner_convex_violation (kwargs v4) ==="
+python3 "$SCRIPT_PATH" "$@" \
+  --projection_type inner_convex_violation \
+  --projection_kwargs "$PROJ_KWARGS_ICV_V4"
+
+# Run sweep over projection types
+for PROJ in frank_wolfe log_barrier alpha_chebyshev convex_program; do
+  echo "=== Running --projection_type ${PROJ} ==="
+  python3 "$SCRIPT_PATH" "$@" --projection_type "${PROJ}"
+done
