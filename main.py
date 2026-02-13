@@ -1,6 +1,7 @@
 ## Imports
 import os
 import argparse
+import json
 
 # Datatypes
 import yaml
@@ -201,7 +202,8 @@ def initialize_policy_and_critic(config: DotMap, env:nn.Module, device:Union[str
         return_log_prob=True,
         projection_layer=projection_layer,
         projection_type=config.training.projection_type,
-        spec=env.action_spec
+        spec=env.action_spec,
+        revenues=env.revenues,
     )
 
     return policy, critic
@@ -231,15 +233,17 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
     elif config.model.phase == "test":
         alpha = config.training.projection_kwargs.alpha
         delta = config.training.projection_kwargs.delta
+        use_spectral_eta = config.training.projection_kwargs.use_spectral_eta
         max_iter = config.training.projection_kwargs.max_iter
-        vp_str = f"{alpha}_{delta}_{max_iter}"
+        power_iters = config.training.projection_kwargs.power_iters
+        vp_str = f"{max_iter}_{power_iters}_spectral{use_spectral_eta}_enable_alpha_map{config.training.projection_kwargs.enable_alpha_map}"
         policy, critic = initialize_policy_and_critic(config, env, device)
 
         # Evaluate policy
         policy_load_path = f"{path}/policy.pth"
         missing, unexpected = policy.load_state_dict(torch.load(policy_load_path, map_location=device), strict=False)
 
-        metrics, summary_stats = evaluate_model(policy, config, device=device, **config.testing)
+        metrics, summary_stats = evaluate_model(policy, config, device=device, critic=critic, **config.testing)
         print(summary_stats)
 
         # Save summary statistics in path
@@ -259,16 +263,16 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
 def parse_args():
     parser = argparse.ArgumentParser(description="Script with WandB integration.")
     # Environment parameters
-    parser.add_argument('--env_name', type=str, default='block_mpp', help="Name of the environment.")
+    parser.add_argument('--env_name', type=str, default='mpp', help="Name of the environment.")
     parser.add_argument('--ports', type=int, default=4, help="Number of ports in env.")
-    parser.add_argument('--teu', type=int, default=20000, help="TEU capacity of the ship.")
+    parser.add_argument('--teu', type=int, default=1000, help="TEU capacity of the ship.")
     parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
     parser.add_argument('--ur', type=float, default=1.1)
     parser.add_argument('--cv', type=float, default=0.5)
     # Generator parameters
     parser.add_argument('--demand_sparsity', type=int, default=0.3, help="Sparsity level of demand.")
     parser.add_argument('--demand_perturbation', type=float, default=0.2, help="Perturbation level of demand.")
-    parser.add_argument('--duration_variable_revenue', type=lambda x: x == 'True', default=True, help="Variable revenue parameter over duration.")
+    parser.add_argument('--duration_variable_revenue', type=lambda x: x == 'True', default=False, help="Variable revenue parameter over duration.")
     parser.add_argument('--loading_discharge_region', type=lambda x: x == 'True', default=False, help="Use loading/discharge regions in generator.")
     parser.add_argument('--use_dirichlet_partition', type=lambda x: x == 'True', default=True, help="Use Dirichlet partition for demand generation.")
     parser.add_argument('--dirichlet_alpha', type=float, default=0.3, help="Alpha parameter for Dirichlet distribution.")
@@ -284,30 +288,30 @@ def parse_args():
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
     parser.add_argument('--embed_dim', type=int, default=128, help="Dimension of embeddings.")
-    parser.add_argument('--hidden_dim', type=int, default=128, help="Dimension of hidden layers.")
-    parser.add_argument('--temperature', type=int, default=1.0, help="Temperature of policy.")
-    parser.add_argument('--scale_max', type=float, default=10.0, help="Maximum value of policy scale.")
+    parser.add_argument('--hidden_dim', type=int, default=512, help="Dimension of hidden layers.")
+    parser.add_argument('--temperature', type=int, default=0.11243639449117128, help="Temperature of policy.")
+    parser.add_argument('--scale_max', type=float, default=9.46, help="Maximum value of policy scale.")
     parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=False, help="Block stowage mask.")
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
-    parser.add_argument('--projection_type', type=str, default="inner_convex_violation", help="Projection type.")
-    parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.01, 'delta': 0.01, 'max_iter': 300,
-                                                                  'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
-                        help="Projection parameters.")
-    parser.add_argument('--tau_sinkhorn', type=float, default=1.0, help="Slack penalty for projection.")
-    parser.add_argument('--iters_sinkhorn', type=float, default=50, help="Slack penalty for projection.")
+    parser.add_argument('--projection_type', type=str, default="franke_wolfe", help="Projection type.")
+    parser.add_argument('--projection_kwargs', type=json.loads, default={
+            'alpha': 0.01, 'delta': 0.01, 'max_iter': 300, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
+            'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map':False, 'enforce_nonneg':False},
+                        help="Projection parameters as JSON string.")
 
     # Run parameters
     # lr: 0.00014690714579803494
     # pd_lr: 0.000034690714579803494
-    parser.add_argument('--learning_rate', type=float, default=0.0005, help="Learning rate for the optimizer.")
+    parser.add_argument('--optimizer', type=str, default="Adam", help="Optimizer type.")
+    parser.add_argument('--learning_rate', type=float, default=0.00015, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.0003, help="Learning rate for primal-dual optimizer.")
-    parser.add_argument('--testing_path', type=str, default='results/trained_models/AI2STOW_JOURNAL_VERSION', help="Path for testing results.")
-    parser.add_argument('--folder', type=str, default='SA_AM', help="Folder name for the run.")
-    parser.add_argument('--phase', type=str, default='test', help="WandB project name.")
+    parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty_ECML', help="Path for testing results.")
+    parser.add_argument('--folder', type=str, default='sac-fw', help="Folder name for the run.")
+    parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
-    parser.add_argument('--num_episodes', type=int, default=5, help="Number of test episodes.")
+    parser.add_argument('--num_episodes', type=int, default=30, help="Number of test episodes.")
     return parser.parse_args()
 
 def deep_update(base, updates):
@@ -367,25 +371,33 @@ if __name__ == "__main__":
     config.model.scale_max = args.scale_max
     config.model.use_mask_head = args.use_mask_head
     config.model.use_preload_mask = args.use_preload_mask
-    config.model.tau_sinkhorn = args.tau_sinkhorn
-    config.model.iters_sinkhorn = args.iters_sinkhorn
     # Run
     config.training.learning_rate = args.learning_rate
     config.training.pd_learning_rate = args.pd_learning_rate
     config.training.projection_type = args.projection_type
+    config.training.projection_kwargs = DotMap(args.projection_kwargs)
     config.testing.path = args.testing_path
     config.testing.folder = args.folder
     config.model.phase = args.phase
     config.testing.feasibility_recovery = args.feasibility_recovery
     config.testing.num_episodes = args.num_episodes
 
-    if args.feasibility_recovery:
+    if args.feasibility_recovery or (config.training.projection_type == "frank_wolfe" and config.model.phase == "test"):
         config.training.projection_type = "convex_program"
+    if config.training.projection_type == "inner_convex_violation_alpha":
+        config.training.projection_kwargs.enable_alpha_map = True
+
+    # todo: check the logic of load_config and adapt_env_kwargs, as they are currently called multiple times.
+    #  Maybe they can be merged into one function that also handles the command-line arguments?
+    config = adapt_env_kwargs(config)
 
     print(f"Running with folder: {config.testing.folder}, "
           f"algorithm type: {config.algorithm.type},"
           f"generalization: {config.env.generalization},"
-          f"projection type: {config.training.projection_type}")
+          f"projection type: {config.training.projection_type},"
+          f"use_spectral_eta: {config.training.projection_kwargs.use_spectral_eta}",
+          f"proj_iterations: {config.training.projection_kwargs.max_iter},"
+          f"power_iters: {config.training.projection_kwargs.power_iters}")
 
     # Call your main() function
     ## todo: Likely a bunch of warnings will be thrown, but they are not critical. Should be fixed soon.

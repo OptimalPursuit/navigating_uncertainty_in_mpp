@@ -104,7 +104,7 @@ training:
   projection_type: None
   # None, weighted_scaling_policy_clipping, linear_violation, linear_violation_policy_clipping, convex_program, convex_program_policy_clipping
   test_data_size: 5000
-  train_data_size: 14400000 #7200000
+  train_data_size: 7200000 #14400000 #7200000
   val_data_size: 5000
   validation_freq: 0.2
   validation_patience: 2
