@@ -299,7 +299,7 @@ def parse_args():
     parser.add_argument('--projection_type', type=str, default="frank_wolfe", help="Projection type.")
     parser.add_argument('--projection_kwargs', type=json.loads, default={
             'alpha': 0.01, 'delta': 0.01, 'max_iter': 300, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
-            'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map':False, 'enforce_nonneg':False, 'jacobian_correction':True},
+            'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map':False, 'enforce_nonneg':True, 'jacobian_correction':True},
                         help="Projection parameters as JSON string.")
 
     # Run parameters

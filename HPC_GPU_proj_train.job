@@ -32,10 +32,10 @@ hostname
 SCRIPT_PATH="main.py"
 
 # JSON strings (valid for argparse type=json.loads)
-PROJ_KWARGS_ICV_V1='{"alpha":0.01,"delta":0.01,"max_iter":300,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":false,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":false,"jacobian_correction":true}'
-PROJ_KWARGS_ICV_V2='{"alpha":0.01,"delta":0.01,"max_iter":300,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":false,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":false,"jacobian_correction":false}'
-PROJ_KWARGS_ICV_V3='{"alpha":0.01,"delta":0.01,"max_iter":30,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":true,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":false,"jacobian_correction":true}'
-PROJ_KWARGS_ICV_V4='{"alpha":0.01,"delta":0.01,"max_iter":30,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":true,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":false,"jacobian_correction":false}'
+PROJ_KWARGS_ICV_V1='{"alpha":0.01,"delta":0.01,"max_iter":300,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":false,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":true,"jacobian_correction":true}'
+PROJ_KWARGS_ICV_V2='{"alpha":0.01,"delta":0.01,"max_iter":300,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":false,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":true,"jacobian_correction":false}'
+PROJ_KWARGS_ICV_V3='{"alpha":0.01,"delta":0.01,"max_iter":30,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":true,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":true,"jacobian_correction":true}'
+PROJ_KWARGS_ICV_V4='{"alpha":0.01,"delta":0.01,"max_iter":30,"slack_penalty":10000,"n_action":20,"n_constraints":25,"use_spectral_eta":true,"power_iters":3,"enable_alpha_map":false,"enforce_nonneg":true,"jacobian_correction":false}'
 
 echo "=== Running --projection_type inner_convex_violation (kwargs v1) ==="
 python3 "$SCRIPT_PATH" "$@" \
