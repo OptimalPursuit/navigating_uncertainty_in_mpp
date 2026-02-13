@@ -302,7 +302,6 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     early_stopping = EarlyStopping()
 
     policy.train()
-    # torch.autograd.set_detect_anomaly(True)
     # Training loop
     for step, td in enumerate(collector):
         if kwargs["algorithm"]["type"] == "ppo":
@@ -315,49 +314,48 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
 
             # Loss computation and backpropagation
             if kwargs["algorithm"]["type"] == "sac":
-                with torch.autograd.detect_anomaly():
-                    # --- Critic update ---
-                    critic_optim.zero_grad()
-                    loss_out_critic = loss_module(subdata)  # forward #1
-                    loss_out_critic["loss_qvalue"].backward()
-                    qvalue_params = loss_module.qvalue_network_params.flatten_keys().values()
-                    torch.nn.utils.clip_grad_norm_(qvalue_params, max_grad_norm)
-                    critic_optim.step()
+                # --- Critic update ---
+                critic_optim.zero_grad()
+                loss_out_critic = loss_module(subdata)  # forward #1
+                loss_out_critic["loss_qvalue"].backward()
+                qvalue_params = loss_module.qvalue_network_params.flatten_keys().values()
+                torch.nn.utils.clip_grad_norm_(qvalue_params, max_grad_norm)
+                critic_optim.step()
 
-                    with torch.no_grad():
-                        soft_update(loss_module.target_qvalue_network_params,
-                                    loss_module.qvalue_network_params, tau)
+                with torch.no_grad():
+                    soft_update(loss_module.target_qvalue_network_params,
+                                loss_module.qvalue_network_params, tau)
 
-                    # --- Actor / dual / alpha update ---
-                    actor_optim.zero_grad()
-                    if primal_dual:
-                        dual_optim.zero_grad()
-                    if not loss_module.fixed_alpha:
-                        alpha_optim.zero_grad()
+                # --- Actor / dual / alpha update ---
+                actor_optim.zero_grad()
+                if primal_dual:
+                    dual_optim.zero_grad()
+                if not loss_module.fixed_alpha:
+                    alpha_optim.zero_grad()
 
-                    loss_out_actor = loss_module(subdata)  # forward #2 (fresh graph)
+                loss_out_actor = loss_module(subdata)  # forward #2 (fresh graph)
 
-                    loss_actor = loss_out_actor["loss_actor"]
-                    if "loss_feasibility" in loss_out_actor:
-                        loss_actor = loss_actor + feasibility_lambda * loss_out_actor["loss_feasibility"]
-                    if "loss_mask" in loss_out_actor and mask_loss:
-                        loss_actor = loss_actor + mask_lambda * loss_out_actor["loss_mask"]
+                loss_actor = loss_out_actor["loss_actor"]
+                if "loss_feasibility" in loss_out_actor:
+                    loss_actor = loss_actor + feasibility_lambda * loss_out_actor["loss_feasibility"]
+                if "loss_mask" in loss_out_actor and mask_loss:
+                    loss_actor = loss_actor + mask_lambda * loss_out_actor["loss_mask"]
 
-                    loss_actor.backward(retain_graph=primal_dual)
+                loss_actor.backward(retain_graph=primal_dual)
 
-                    if primal_dual:
-                        loss_out_actor["loss_feasibility"].backward()
-                    if not loss_module.fixed_alpha:
-                        loss_out_actor["loss_alpha"].backward()
+                if primal_dual:
+                    loss_out_actor["loss_feasibility"].backward()
+                if not loss_module.fixed_alpha:
+                    loss_out_actor["loss_alpha"].backward()
 
-                    torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-                    actor_optim.step()
-                    if primal_dual:
-                        dual_optim.step()
-                    if not loss_module.fixed_alpha:
-                        alpha_optim.step()
+                torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+                actor_optim.step()
+                if primal_dual:
+                    dual_optim.step()
+                if not loss_module.fixed_alpha:
+                    alpha_optim.step()
 
-                    loss_out = loss_out_actor  # for logging
+                loss_out = loss_out_actor  # for logging
 
             elif kwargs["algorithm"]["type"] == "ppo":
                 for _ in range(num_epochs):
