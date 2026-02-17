@@ -6,20 +6,30 @@ from cvxpylayers.torch import CvxpyLayer
 from typing import Optional, Tuple
 
 
-class EmptyLayer(nn.Module):
+class NormalizedProjection(nn.Module):
+    def __init__(self, row_normalize: bool = True, eps_row_norm: float = 1e-12, **kwargs):
+        super().__init__()
+        self.row_normalize = bool(row_normalize)
+        self.eps_row_norm = float(eps_row_norm)
+
+    def _normalize_constraints(self, A: Tensor, b: Tensor):
+        if not self.row_normalize:
+            return A, b
+        row_norm = torch.norm(A, dim=-1, keepdim=True).clamp(min=self.eps_row_norm)  # [B,S,m,1]
+        return A / row_norm, b / row_norm.squeeze(-1)
+
+class EmptyLayer(NormalizedProjection):
     def __init__(self, **kwargs):
         super().__init__()
 
     def forward(self, x: Tensor, **kwargs) -> Tensor:
         return x
 
-
-class InnerConvexViolationProjection(nn.Module):
-    """
-    UVP 2.0 + tightening + (optional) alpha-map.
-    Softness: UVP inherently produces soft feasibility; alpha-map is only applied when UVP anchor is feasible
-    (w.r.t. the same normalized constraints used internally).
-    """
+class InnerConvexViolationProjection(NormalizedProjection):
+    """UVP + alpha-map projection for linear constraints Ax <= b.
+    The alpha-map is a post-processing step that can improve performance when the UVP iterate is close to the boundary
+    but not quite feasible. It uses the same anchor point as the UVP (no separate solve) and moves along the ray
+    from the anchor to the UVP output until just inside the constraints."""
 
     def __init__(self, **kwargs):
         super().__init__()
@@ -32,7 +42,6 @@ class InnerConvexViolationProjection(nn.Module):
         self.eta_margin = float(kwargs.get("eta_margin", 0.99))
 
         # UVP improvements
-        self.row_normalize = bool(kwargs.get("row_normalize", True))
         self.mu_inside = float(kwargs.get("mu_inside", 1e-3))  # meaningful when row_normalize=True
 
         # alpha-map controls
@@ -67,12 +76,6 @@ class InnerConvexViolationProjection(nn.Module):
         Av = torch.matmul(A, v)
         num = torch.sum(Av * Av, dim=(-2, -1))  # [B,S] ~ ||A||_2^2
         return self.eta_margin / (num + self.rho)
-
-    def _normalize_constraints(self, A: Tensor, b: Tensor):
-        if not self.row_normalize:
-            return A, b
-        row_norm = torch.norm(A, dim=-1, keepdim=True).clamp(min=1e-12)  # [B,S,m,1]
-        return A / row_norm, b / row_norm.squeeze(-1)
 
     def _alpha_map_from_anchor(self, x_anchor: Tensor, x_target: Tensor, A: Tensor, b: Tensor) -> Tensor:
         d = x_target - x_anchor
@@ -182,7 +185,7 @@ class InnerConvexViolationProjection(nn.Module):
         return x_
 
 
-class CvxpyProjectionLayer(nn.Module):
+class CvxpyProjectionLayer(NormalizedProjection):
     """
     QP projection with nonnegativity and slack on a soft subset of constraints.
 
@@ -243,6 +246,7 @@ class CvxpyProjectionLayer(nn.Module):
             b = b.view(-1, b.shape[-1])
             lower = lower.view(-1, lower.shape[-1])
 
+        A, b = self._normalize_constraints(A, b)
         x_proj, = self.cvxpy_layer(x_raw, A, b, lower)
 
         if needs_flattening:
@@ -250,7 +254,7 @@ class CvxpyProjectionLayer(nn.Module):
         return x_proj
 
 
-class AlphaChebyshevProjection(nn.Module):
+class AlphaChebyshevProjection(NormalizedProjection):
     """
     Chebyshev-center anchor + alpha-map, with the SAME soft slack semantics as the Chebyshev solve.
 
@@ -368,6 +372,7 @@ class AlphaChebyshevProjection(nn.Module):
         b_eff = b_BS.clone()
         b_eff[..., self.soft] = b_eff[..., self.soft] + s
 
+        A_BS, b_eff = self._normalize_constraints(A_BS, b_eff)
         out = self._alpha_map_batched(x_BS, A_BS, b_eff, x0, self.eps_inside)
 
         if self.enforce_nonneg:
@@ -380,7 +385,7 @@ class AlphaChebyshevProjection(nn.Module):
         return out.squeeze(1) if b.dim() == 2 else out
 
 
-class LogBarrierProjection(nn.Module):
+class LogBarrierProjection(NormalizedProjection):
     """
     Log-barrier solve for:
       min_x 0.5||x-x_raw||^2 - mu * sum_i log(b_i - (Ax)_i) - mu * sum_j log(x_j - lower_j)
@@ -397,16 +402,8 @@ class LogBarrierProjection(nn.Module):
         self.backtrack = float(kwargs.get("backtrack", 0.5))
         self.max_ls = int(kwargs.get("max_ls", 25))
         self.eps = float(kwargs.get("eps_inside", 1e-6))
-
-        self.row_normalize = bool(kwargs.get("row_normalize", True))
         self.cvx_solver = kwargs.get("cvx_solver", None)
         self.cvx_verbose = bool(kwargs.get("cvx_verbose", False))
-
-    def _normalize_constraints(self, A: Tensor, b: Tensor) -> Tuple[Tensor, Tensor]:
-        if not self.row_normalize:
-            return A, b
-        row_norm = torch.norm(A, dim=-1, keepdim=True).clamp(min=1e-12)
-        return A / row_norm, b / row_norm.squeeze(-1)
 
     def _chebyshev_center_one(self, A: Tensor, b: Tensor, lower: Tensor) -> Tensor:
         A_np = A.detach().cpu().numpy()
@@ -520,7 +517,7 @@ class LogBarrierProjection(nn.Module):
         return x
 
 
-class FrankWolfePolicyImprovement(nn.Module):
+class FrankWolfePolicyImprovement(NormalizedProjection):
     """
     FAIRNESS UPDATE:
       - No artificial upper bounds.
@@ -704,6 +701,7 @@ class FrankWolfePolicyImprovement(nn.Module):
             return x_feas
         g = g.detach()
 
+        A, b = self._normalize_constraints(A, b)
         c = self.lmo(g, A, b, lower=lower, upper=None, detach=detach_solvers)
         x_fw = (1.0 - self.alpha) * x_feas + self.alpha * c
         return x_fw
