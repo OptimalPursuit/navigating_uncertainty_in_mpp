@@ -281,7 +281,7 @@ def parse_args():
 
     # Algorithm parameters
     parser.add_argument('--algorithm_type', type=str, default='sac', help="Type of algorithm to use.")
-    parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
+    parser.add_argument('--feasibility_lambda', type=float, default=0., help="Lambda for feasibility.")
     parser.add_argument('--primal_dual', type=lambda x: x == 'True', default=False, help="Enable primal-dual method.")
 
     # Model parameters
@@ -296,10 +296,10 @@ def parse_args():
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
-    parser.add_argument('--projection_type', type=str, default="frank_wolfe", help="Projection type.")
+    parser.add_argument('--projection_type', type=str, default="linear_violation", help="Projection type.")
     parser.add_argument('--projection_kwargs', type=json.loads, default={
-            'alpha': 0.01, 'delta': 0.01, 'max_iter': 300, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
-            'use_spectral_eta': False, 'power_iters': 3, 'enable_alpha_map':False, 'enforce_nonneg':True, 'jacobian_correction':True},
+            'alpha': 0.01, 'delta': 0.01, 'max_iter': 30, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
+            'use_spectral_eta': True, 'power_iters': 3, 'enable_alpha_map':False, 'enforce_nonneg':True, 'jacobian_correction':True},
                         help="Projection parameters as JSON string.")
 
     # Run parameters
