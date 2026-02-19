@@ -1,53 +1,11 @@
 import yaml
 import wandb
 from dotmap import DotMap
-from main import main, adapt_env_kwargs
+from main import main, adapt_env_kwargs, parse_args
 import argparse
 
-from main import parse_args
-
 if __name__ == "__main__":
-    # add command line arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--sweep", nargs="?", default=None, const=None,
-                        help="Provide a sweep name to resume an existing sweep, or leave empty to create a new sweep.")
-    parser.add_argument('--runs_per_agent', type=int, default=100, help="Number of runs per agent.")
-    # Environment parameters
-    parser.add_argument('--env_name', type=str, default='block_mpp', help="Name of the environment.")
-    parser.add_argument('--ports', type=int, default=4, help="Number of ports in env.")
-    parser.add_argument('--bays', type=int, default=20, help="Number of bays in env.")
-    parser.add_argument('--capacity', type=list, default=[500], help="Capacity of each bay in TEU.")
-    parser.add_argument('--teu', type=int, default=20000, help="Random seed for reproducibility.")
-    parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
-    parser.add_argument('--ur', type=float, default=1.1)
-    parser.add_argument('--cv', type=float, default=0.5)
-
-    # Algorithm parameters
-    parser.add_argument('--algorithm_type', type=str, default='sac', help="Type of algorithm to use.")
-    parser.add_argument('--feasibility_lambda', type=float, default=0.2828168389831236, help="Lambda for feasibility.")
-    parser.add_argument('--primal_dual', type=lambda x: x == 'True', default=False, help="Use primal-dual method.")
-
-    # Model parameters
-    parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
-    parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
-    parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
-    parser.add_argument('--scale_max', type=float, default=20, help="Maximum scale for the model.") # PPO=1.93, SAC=9.46
-    parser.add_argument('--projection_type', type=str, default='inner_convex_violation', help="Projection type.")
-    parser.add_argument('--projection_kwargs', type=dict, default={'alpha': 0.01, 'delta': 0.01, 'max_iter': 300,
-                                                                  'slack_penalty': 1000, 'n_action': 80, 'n_constraints': 85},
-                        help="Projection kwargs.")
-    parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=True, help="Block stowage mask.")
-    parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
-    parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
-    parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
-
-    # Run parameters
-    parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty', help="Path for testing results.")
-    parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
-    parser.add_argument("--path", type=str, default="results/trained_models/AI2STOW_JOURNAL_VERSION", help="Path to the directory containing the config.yaml and sweep_config.yaml files.")
-    parser.add_argument("--folder", type=str, default="sac-vp", help="Folder to save the sweep configuration and results.")
-    parser.add_argument('--feasibility_recovery', type=lambda x: x == 'True', default=False, help="Enable feasibility recovery.")
-    args = parser.parse_args()
+    args = parse_args()
 
     def train():
         try:
@@ -57,26 +15,16 @@ if __name__ == "__main__":
                 config = DotMap(config)
                 config = adapt_env_kwargs(config)
 
-            # Parse command-line arguments for dynamic configuration
-            args = parse_args()
+            # Adjust configuration based on command line arguments
             # Env
             config.env.env_name = args.env_name
             config.env.ports = args.ports
             config.env.TEU = args.teu
+            config.env.bays = args.bays
+            config.env.capacity = args.capacity
             config.env.generalization = args.gen
             config.env.utilization_rate_initial_demand = args.ur
             config.env.cv_demand = args.cv
-            config.env.block_stowage_mask = args.block_stowage_mask
-            config.env.normalize_constraints = args.normalize_constraints
-            # Generator
-            config.env.demand_sparsity = args.demand_sparsity
-            config.env.demand_perturbation = args.demand_perturbation
-            config.env.duration_variable_revenue = args.duration_variable_revenue
-            config.env.loading_discharge_region = args.loading_discharge_region
-            config.env.use_dirichlet_partition = args.use_dirichlet_partition
-            config.env.dirichlet_alpha = args.dirichlet_alpha
-            config.env.spot_percentage = args.spot_percentage
-
             # Algorithm
             config.algorithm.type = args.algorithm_type
             config.algorithm.feasibility_lambda = args.feasibility_lambda
@@ -85,22 +33,18 @@ if __name__ == "__main__":
             config.model.encoder_type = args.encoder_type
             config.model.decoder_type = args.decoder_type
             config.model.dyn_embed = args.dyn_embed
-            config.model.embed_dim = args.embed_dim
-            config.model.hidden_dim = args.hidden_dim
-            config.model.temperature = args.temperature
             config.model.scale_max = args.scale_max
+            config.training.projection_type = args.projection_type
+            config.env.block_stowage_mask = args.block_stowage_mask
             config.model.use_mask_head = args.use_mask_head
             config.model.use_preload_mask = args.use_preload_mask
+            config.training.normalize_constraints = args.normalize_constraints
+
             # Run
-            config.training.learning_rate = args.learning_rate
-            config.training.pd_learning_rate = args.pd_learning_rate
-            config.training.projection_type = args.projection_type
-            config.training.projection_kwargs = DotMap(args.projection_kwargs)
-            config.testing.path = args.testing_path
             config.testing.folder = args.folder
             config.model.phase = args.phase
             config.testing.feasibility_recovery = args.feasibility_recovery
-            config.testing.num_episodes = args.num_episodes
+            n_constraints = config.training.projection_kwargs.n_constraints
 
             config.algorithm.type, almost_projection_type = config.testing.folder.split("-")
             if almost_projection_type == "vp" or almost_projection_type == "fr+vp":
