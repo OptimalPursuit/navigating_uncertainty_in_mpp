@@ -161,7 +161,7 @@ if __name__ == "__main__":
             wandb.finish()
 
     # Load the sweep configuration from YAML
-    with open('sweep_config.yaml') as file:
+    with open('sweep_config_lr.yaml') as file:
         sweep_config = yaml.safe_load(file)
 
     # Create lagrangian multipliers in sweep_config for each constraint
