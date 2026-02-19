@@ -514,8 +514,13 @@ def compute_strict_BS_mask(pod:th.Tensor, pod_locations:th.Tensor,) -> th.Tensor
     is_exclusive = (pod_block == 1) & pod_locations.any(dim=-3)[..., pod]
     return is_empty | is_exclusive
 
-def compute_violation(action:th.Tensor, lhs_A:th.Tensor, rhs:th.Tensor, ) -> th.Tensor:
+def compute_violation(action:th.Tensor, lhs_A:th.Tensor, rhs:th.Tensor, row_norm=False, eps_row_norm=1e-12) -> th.Tensor:
     """Compute violations and loss of compact form"""
+    if row_norm:
+        row_norm = th.norm(lhs_A, dim=-1, keepdim=True).clamp(min=eps_row_norm)  # [B,S,m,1]
+        lhs_A = lhs_A / row_norm
+        rhs = rhs / row_norm.squeeze(-1)
+
     # If dimension lhs_A is one more than action, unsqueeze action
     if (lhs_A.dim() - action.dim()) == 1:
         action = action.unsqueeze(-2)
