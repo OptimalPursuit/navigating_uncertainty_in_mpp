@@ -86,7 +86,7 @@ def loss_feasibility(td:TensorDictBase, action:Tensor, lagrange_multiplier:Optio
     time = transports * cargo_types
 
     # Violations
-    violations = compute_violation(action, lhs_A, rhs)
+    violations = compute_violation(action, lhs_A, rhs, row_norm=True)
     weighted_violations = weight_violations(violations, lagrange_multiplier)
 
     # Excess pod locations computation
