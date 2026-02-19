@@ -4,6 +4,8 @@ from dotmap import DotMap
 from main import main, adapt_env_kwargs
 import argparse
 
+from main import parse_args
+
 if __name__ == "__main__":
     # add command line arguments
     parser = argparse.ArgumentParser()
@@ -55,16 +57,26 @@ if __name__ == "__main__":
                 config = DotMap(config)
                 config = adapt_env_kwargs(config)
 
-            # Adjust configuration based on command line arguments
+            # Parse command-line arguments for dynamic configuration
+            args = parse_args()
             # Env
             config.env.env_name = args.env_name
             config.env.ports = args.ports
             config.env.TEU = args.teu
-            config.env.bays = args.bays
-            config.env.capacity = args.capacity
             config.env.generalization = args.gen
             config.env.utilization_rate_initial_demand = args.ur
             config.env.cv_demand = args.cv
+            config.env.block_stowage_mask = args.block_stowage_mask
+            config.env.normalize_constraints = args.normalize_constraints
+            # Generator
+            config.env.demand_sparsity = args.demand_sparsity
+            config.env.demand_perturbation = args.demand_perturbation
+            config.env.duration_variable_revenue = args.duration_variable_revenue
+            config.env.loading_discharge_region = args.loading_discharge_region
+            config.env.use_dirichlet_partition = args.use_dirichlet_partition
+            config.env.dirichlet_alpha = args.dirichlet_alpha
+            config.env.spot_percentage = args.spot_percentage
+
             # Algorithm
             config.algorithm.type = args.algorithm_type
             config.algorithm.feasibility_lambda = args.feasibility_lambda
@@ -73,18 +85,22 @@ if __name__ == "__main__":
             config.model.encoder_type = args.encoder_type
             config.model.decoder_type = args.decoder_type
             config.model.dyn_embed = args.dyn_embed
+            config.model.embed_dim = args.embed_dim
+            config.model.hidden_dim = args.hidden_dim
+            config.model.temperature = args.temperature
             config.model.scale_max = args.scale_max
-            config.training.projection_type = args.projection_type
-            config.env.block_stowage_mask = args.block_stowage_mask
             config.model.use_mask_head = args.use_mask_head
             config.model.use_preload_mask = args.use_preload_mask
-            config.training.normalize_constraints = args.normalize_constraints
-
             # Run
+            config.training.learning_rate = args.learning_rate
+            config.training.pd_learning_rate = args.pd_learning_rate
+            config.training.projection_type = args.projection_type
+            config.training.projection_kwargs = DotMap(args.projection_kwargs)
+            config.testing.path = args.testing_path
             config.testing.folder = args.folder
             config.model.phase = args.phase
             config.testing.feasibility_recovery = args.feasibility_recovery
-            n_constraints = config.training.projection_kwargs.n_constraints
+            config.testing.num_episodes = args.num_episodes
 
             config.algorithm.type, almost_projection_type = config.testing.folder.split("-")
             if almost_projection_type == "vp" or almost_projection_type == "fr+vp":
