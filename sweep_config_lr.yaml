@@ -1,0 +1,14 @@
+method: bayes
+metric:
+  name: validation.traj_return
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-3
