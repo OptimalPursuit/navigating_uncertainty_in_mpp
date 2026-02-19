@@ -20,7 +20,6 @@ if __name__ == "__main__":
             config.env.env_name = args.env_name
             config.env.ports = args.ports
             config.env.TEU = args.teu
-            config.env.bays = args.bays
             config.env.capacity = args.capacity
             config.env.generalization = args.gen
             config.env.utilization_rate_initial_demand = args.ur
