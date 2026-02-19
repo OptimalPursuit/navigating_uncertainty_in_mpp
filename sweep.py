@@ -5,7 +5,7 @@ from main import main, adapt_env_kwargs, parse_args
 import argparse
 
 if __name__ == "__main__":
-    args = parse_args()
+    args = parse_args(sweep=True)
 
     def train():
         try:

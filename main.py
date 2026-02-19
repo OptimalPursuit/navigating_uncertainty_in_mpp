@@ -261,8 +261,14 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
         with open(f"{path}/{file_name}", "w") as file:
                         yaml.dump(summary_stats, file)
 
-def parse_args():
+def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Script with WandB integration.")
+    # Sweep parameters
+    if sweep:
+        parser.add_argument("--sweep", nargs="?", default=None, const=None,
+                            help="Provide a sweep name to resume an existing sweep, or leave empty to create a new sweep.")
+        parser.add_argument('--runs_per_agent', type=int, default=100, help="Number of runs per agent.")
+
     # Environment parameters
     parser.add_argument('--env_name', type=str, default='mpp', help="Name of the environment.")
     parser.add_argument('--ports', type=int, default=4, help="Number of ports in env.")
