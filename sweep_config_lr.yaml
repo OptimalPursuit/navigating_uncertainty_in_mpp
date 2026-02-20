@@ -1,6 +1,6 @@
 method: bayes
 metric:
-  name: validation.traj_return
+  name: validation.total_profit
   goal: maximize
 
 early_terminate:
