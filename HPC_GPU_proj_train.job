@@ -39,15 +39,6 @@ for ALG in sac ppo; do
   echo "=== Running algorithm_type=${ALG} ==="
   echo "=============================="
 
-  for PROJ in frank_wolfe convex_program log_barrier alpha_chebyshev; do
-    echo "=== Running --projection_type ${PROJ} ==="
-
-    python3 "$SCRIPT_PATH" "$@" \
-      --algorithm_type "$ALG" \
-      --projection_type "${PROJ}"
-      --folder "${ALG}-${PROJ}"
-  done
-
   echo "=== Running penalty loss ==="
   python3 "$SCRIPT_PATH" "$@" \
     --algorithm_type "$ALG" \
@@ -92,5 +83,14 @@ for ALG in sac ppo; do
     --projection_type inner_convex_violation \
     --projection_kwargs "$PROJ_KWARGS_ICV_V4"
     --folder "${ALG}-uvp"
+
+  for PROJ in alpha_chebyshev convex_program log_barrier frank_wolfe; do
+    echo "=== Running --projection_type ${PROJ} ==="
+
+    python3 "$SCRIPT_PATH" "$@" \
+      --algorithm_type "$ALG" \
+      --projection_type "${PROJ}"
+      --folder "${ALG}-${PROJ}"
+  done
 
 done
