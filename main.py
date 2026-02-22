@@ -312,7 +312,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     # lr: 0.00014690714579803494
     # pd_lr: 0.000034690714579803494
     parser.add_argument('--optimizer', type=str, default="Adam", help="Optimizer type.")
-    parser.add_argument('--learning_rate', type=float, default=0.00015, help="Learning rate for the optimizer.")
+    parser.add_argument('--learning_rate', type=float, default=0.00003, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.0003, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty_ECML', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='sac-vp', help="Folder name for the run.")
