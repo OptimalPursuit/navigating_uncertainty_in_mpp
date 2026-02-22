@@ -44,48 +44,57 @@ for ALG in sac ppo; do
     --algorithm_type "$ALG" \
     --projection_type none \
     --feasibility_lambda 0.2828168389831236 \
-    --primal_dual false
-    --learning_rate 0.00015
+    --primal_dual false \
+    --learning_rate 0.00015 \
+    --folder "$ALG-pen"
 
   echo "=== Running primal-dual ==="
   python3 "$SCRIPT_PATH" "$@" \
     --algorithm_type "$ALG" \
     --projection_type none \
     --feasibility_lambda 0.2828168389831236 \
-    --primal_dual true
-    --learning_rate 0.00015
-    --pd_learning_rate 0.0003
+    --primal_dual true \
+    --learning_rate 0.00015 \
+    --pd_learning_rate 0.0003 \
+    --folder "$ALG-pd/"
 
   echo "=== Running --projection_type inner_convex_violation (kwargs v1) ==="
   python3 "$SCRIPT_PATH" "$@" \
     --algorithm_type "$ALG" \
     --projection_type inner_convex_violation \
-    --projection_kwargs "$PROJ_KWARGS_ICV_V1"
+    --projection_kwargs "$PROJ_KWARGS_ICV_V1" \
+    --folder "${ALG}-icv-v1"
+
 
   echo "=== Running --projection_type inner_convex_violation (kwargs v2) ==="
   python3 "$SCRIPT_PATH" "$@" \
     --algorithm_type "$ALG" \
     --projection_type inner_convex_violation \
-    --projection_kwargs "$PROJ_KWARGS_ICV_V2"
+    --projection_kwargs "$PROJ_KWARGS_ICV_V2" \
+    --folder "${ALG}-icv-v2"
 
   echo "=== Running --projection_type inner_convex_violation (kwargs v3) ==="
   python3 "$SCRIPT_PATH" "$@" \
     --algorithm_type "$ALG" \
     --projection_type inner_convex_violation \
-    --projection_kwargs "$PROJ_KWARGS_ICV_V3"
+    --projection_kwargs "$PROJ_KWARGS_ICV_V3" \
+    --folder "${ALG}-icv-v3"
 
   echo "=== Running --projection_type inner_convex_violation (kwargs v4) ==="
   python3 "$SCRIPT_PATH" "$@" \
     --algorithm_type "$ALG" \
     --projection_type inner_convex_violation \
-    --projection_kwargs "$PROJ_KWARGS_ICV_V4"
+    --projection_kwargs "$PROJ_KWARGS_ICV_V4" \
+    --folder "${ALG}-icv-v4"
 
   for PROJ in alpha_chebyshev convex_program log_barrier frank_wolfe; do
     echo "=== Running --projection_type ${PROJ} ==="
 
     python3 "$SCRIPT_PATH" "$@" \
       --algorithm_type "$ALG" \
-      --projection_type "${PROJ}"
+      --projection_type "${PROJ}" \
+      --folder "${ALG}-${PROJ}"
+
   done
 
 done
