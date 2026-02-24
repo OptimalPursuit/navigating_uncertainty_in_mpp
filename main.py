@@ -270,9 +270,9 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
         parser.add_argument('--runs_per_agent', type=int, default=100, help="Number of runs per agent.")
 
     # Environment parameters
-    parser.add_argument('--env_name', type=str, default='mpp', help="Name of the environment.")
+    parser.add_argument('--env_name', type=str, default='block_mpp', help="Name of the environment.")
     parser.add_argument('--ports', type=int, default=4, help="Number of ports in env.")
-    parser.add_argument('--teu', type=int, default=1000, help="TEU capacity of the ship.")
+    parser.add_argument('--teu', type=int, default=20000, help="TEU capacity of the ship.")
     parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
     parser.add_argument('--ur', type=float, default=1.1)
     parser.add_argument('--cv', type=float, default=0.5)
@@ -311,7 +311,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     # Run parameters
     # lr: 0.00014690714579803494
     # pd_lr: 0.000034690714579803494
-    parser.add_argument('--optimizer', type=str, default="Adam", help="Optimizer type.")
+    parser.add_argument('--optimizer', type=str, default="Kron", help="Optimizer type.")
     parser.add_argument('--learning_rate', type=float, default=0.00003, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.0003, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty_ECML', help="Path for testing results.")
