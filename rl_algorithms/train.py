@@ -38,8 +38,17 @@ from rl_algorithms.utils import inspect_tensordict
 
 # Classes
 class EarlyStopping:
-    def __init__(self, divergence_threshold=1e6, divergence_patience=10, validation_patience=3):
-        """Early stopping based on a divergence threshold and a patience parameter."""
+    def __init__(
+        self,
+        enabled: bool = True,
+        divergence_threshold: float = 1e6,
+        divergence_patience: int = 10,
+        validation_patience: int = 3,
+        val_rewards_history=None,
+    ):
+        """Early stopping based on a divergence threshold and validation patience."""
+        self.enabled = enabled
+
         # Divergence threshold and patience
         self.divergence_threshold = divergence_threshold
         self.divergence_patience = divergence_patience
@@ -48,50 +57,54 @@ class EarlyStopping:
         # Validation patience
         self.validation_patience = validation_patience
         self.val_counter = 0
-        self.val_rewards_history = []
+        self.val_rewards_history = list(val_rewards_history) if val_rewards_history is not None else []
 
-    def update_rewards(self, reward:float) -> None:
-        """
-        Add a new validation reward to the history.
-        Args:
-            reward (float): The latest validation reward.
-        """
+    def update_rewards(self, reward: float) -> None:
+        """Add a new validation reward to the history."""
+        if not self.enabled:
+            return
         self.val_rewards_history.append(reward)
 
     def validation_check(self) -> bool:
-        """
-        Check for early stopping based on consecutive decreases in validation rewards.
-        Returns:
-            bool: True if stopping criteria are met, False otherwise.
-        """
-        # Only start checking if we have enough history
+        """Return True if stopping criteria are met, False otherwise."""
+        if not self.enabled:
+            return False
+
         if len(self.val_rewards_history) < 2:
             return False
 
-        # Check the last two rewards
         if self.val_rewards_history[-1] < self.val_rewards_history[-2]:
             self.val_counter += 1
         else:
             self.val_counter = 0
 
-        # Stop if consecutive decreases exceed patience
         return self.val_counter >= self.validation_patience
 
-    def divergence_check(self, loss:torch.Tensor) -> bool:
-        """Check for early stopping based on a threshold for the loss value."""
+    def divergence_check(self, loss: torch.Tensor) -> bool:
+        """Check for early stopping based on NaN/Inf/divergence of loss."""
+        if not self.enabled:
+            return False
+
         if torch.isnan(loss):
-            print(f"Early stopping due to nan in loss.")
+            print("Early stopping due to nan in loss.")
             return True
-        elif torch.isinf(loss):
-            print(f"Early stopping due to inf in loss.")
+        if torch.isinf(loss):
+            print("Early stopping due to inf in loss.")
             return True
-        elif torch.abs(loss) > self.divergence_threshold:
+
+        # Ensure this is a scalar boolean in case loss is a tensor with shape
+        loss_abs = torch.abs(loss)
+        if loss_abs.numel() != 1:
+            loss_abs = loss_abs.mean()
+
+        if loss_abs > self.divergence_threshold:
             self.div_counter += 1
             if self.div_counter >= self.divergence_patience:
-                print(f"Early stopping at epoch due to loss divergence.")
-                return True  # Stop training
+                print("Early stopping due to loss divergence.")
+                return True
         else:
-            self.div_counter = 0  # Reset if loss is stable
+            self.div_counter = 0
+
         return False
 
 class TopKPerSampler(SamplerWithoutReplacement):
@@ -201,6 +214,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     train_data_size = kwargs["training"]["train_data_size"]
     validation_freq = kwargs["training"]["validation_freq"]
     validation_patience = kwargs["training"]["validation_patience"]
+    early_stopping_enabled = kwargs["training"].get("early_stopping_enabled", True)
     priority_alpha = kwargs["training"].get("priority_alpha", 0.5)  # 0 = uniform, 1 = fully prioritized
     top_k = kwargs["training"].get("top_k", 0.2)  # choose number % of top trajectories in buffer
 
@@ -299,7 +313,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     pbar = tqdm.tqdm(range(train_updates))
 
     # Early stopping criteria
-    early_stopping = EarlyStopping()
+    early_stopping = EarlyStopping(enabled=early_stopping_enabled)
 
     policy.train()
     # Training loop
