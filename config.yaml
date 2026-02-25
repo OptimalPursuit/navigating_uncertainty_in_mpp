@@ -108,5 +108,6 @@ training:
   train_data_size: 3600000 #7200000 #14400000 #7200000
   val_data_size: 5000
   validation_freq: 0.1
-  validation_patience: 10
+  validation_patience: 2
+  early_stopping_enabled: false
 wandb_version: 1
