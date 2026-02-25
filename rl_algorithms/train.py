@@ -332,7 +332,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
                 loss_out_critic = loss_module(subdata)  # forward #1
                 loss_out_critic["loss_qvalue"].backward()
                 qvalue_params = loss_module.qvalue_network_params.flatten_keys().values()
-                torch.nn.utils.clip_grad_norm_(qvalue_params, max_grad_norm)
+                loss_out_critic["gn_critic"] = torch.nn.utils.clip_grad_norm_(qvalue_params, max_grad_norm).item()
                 critic_optim.step()
 
                 with torch.no_grad():
@@ -358,10 +358,12 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
 
                 if primal_dual:
                     loss_out_actor["loss_feasibility"].backward()
+                    loss_out["gn_dual"] = torch.nn.utils.clip_grad_norm_(dual_params, max_grad_norm).item()
+
                 if not loss_module.fixed_alpha:
                     loss_out_actor["loss_alpha"].backward()
 
-                torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
+                loss_out_actor["gn_actor"] = torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm).item()
                 actor_optim.step()
                 if primal_dual:
                     dual_optim.step()
@@ -369,6 +371,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
                     alpha_optim.step()
 
                 loss_out = loss_out_actor  # for logging
+                loss_out["gn_critic"] = loss_out_critic["gn_critic"]
 
             elif kwargs["algorithm"]["type"] == "ppo":
                 for _ in range(num_epochs):
@@ -389,7 +392,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
                     if primal_dual:
                         dual_optim.zero_grad()
                         loss_out["loss_feasibility"].backward()
-                        loss_out["gn_dual"] = torch.nn.utils.clip_grad_norm_(dual_params, max_grad_norm)
+                        loss_out["gn_dual"] = torch.nn.utils.clip_grad_norm_(dual_params, max_grad_norm).item()
 
                     # Step optimizers
                     actor_critic_optim.step()
@@ -417,6 +420,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
             "step": step,
             "gn_actor": loss_out.get("gn_actor", 0),
             "gn_critic": loss_out.get("gn_critic", 0),
+            "gn_dual": loss_out.get("gn_dual", 0),
             "clip_fraction": loss_out.get("clip_fraction", 0),
             **train_performance,
         }
@@ -494,8 +498,6 @@ def get_performance_metrics(subdata:Dict, td:TensorDict, env:nn.Module) -> Dict:
         "pod_violation": feas_dict["total_pod_violations"].mean().item() if env.name == "block_mpp" else 0.0,
 
         # Environment
-
-
         "total_revenue": subdata["revenue"].sum(dim=(-2,-1)).mean().item(),
         "total_cost": subdata["cost"].sum(dim=(-2,-1)).mean().item(),
         "total_profit": subdata["revenue"].sum(dim=(-2,-1)).mean().item() -
