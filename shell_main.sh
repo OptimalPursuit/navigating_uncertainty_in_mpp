@@ -41,7 +41,7 @@ nohup python3 "$SCRIPT_PATH" "$@" > "$LOG_FILE" 2>&1 &
 PID=$!
 
 # Wait for the process to finish
-#wait $PID
+wait $PID
 
 # Check if the PID is a valid number
 if [[ "$PID" =~ ^[0-9]+$ ]]; then
