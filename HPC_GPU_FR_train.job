@@ -43,6 +43,8 @@ for ALG in sac ppo; do
     --learning_rate 0.00015 \
     --pd_learning_rate 0.0003 \
     --folder "$ALG-pd" \
+    --hidden_dim 512 \
+    --scale_max 2.0 \
     --feasibility_lambda 0.2828168389831236
 
   echo "=== Running penalty loss ==="
@@ -52,6 +54,8 @@ for ALG in sac ppo; do
     --primal_dual false \
     --learning_rate 0.00015 \
     --folder "$ALG-pen" \
+    --hidden_dim 512 \
+    --scale_max 2.0 \
     --feasibility_lambda 0.2828168389831236
 
 
