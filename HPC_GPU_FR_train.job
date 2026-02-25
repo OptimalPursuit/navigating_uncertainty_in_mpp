@@ -7,6 +7,7 @@
 #SBATCH --time=7-00:00:00                      # Job run time (d-hh:mm:ss)
 #SBATCH --partition=acltr                      # Partition to run on (acltr, pcn345)
 #SBATCH --mail-type=FAIL,END                   # Email notification
+#SBATCH --nodelist=cn18
 
 set -euo pipefail
 
