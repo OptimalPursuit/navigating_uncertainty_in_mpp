@@ -296,25 +296,25 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
     parser.add_argument('--embed_dim', type=int, default=128, help="Dimension of embeddings.")
-    parser.add_argument('--hidden_dim', type=int, default=512, help="Dimension of hidden layers.")
+    parser.add_argument('--hidden_dim', type=int, default=128, help="Dimension of hidden layers.")
     parser.add_argument('--temperature', type=int, default=0.11243639449117128, help="Temperature of policy.")
-    parser.add_argument('--scale_max', type=float, default=9.46, help="Maximum value of policy scale.")
+    parser.add_argument('--scale_max', type=float, default=2.0, help="Maximum value of policy scale.")
     parser.add_argument('--block_stowage_mask', type=lambda x: x == 'True', default=False, help="Block stowage mask.")
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
     parser.add_argument('--projection_type', type=str, default="linear_violation", help="Projection type.")
     parser.add_argument('--projection_kwargs', type=json.loads, default={
-        'alpha': 0.01, 'delta': 0.01, 'max_iter': 30, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
-        'spectral_norm': 'svd',  # svd, power_iters, 'frobenius'
+        'alpha': 0.01, 'delta': 0.01, 'max_iter': 100, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
+        'spectral_norm': 'svd',  # power_iters, power_iters, 'frobenius'
         'power_iters': 3, 'enable_alpha_map':False, 'enforce_nonneg':True,  'jacobian_correction':True,
         }, help="Projection parameters as JSON string.")
 
     # Run parameters
     # lr: 0.00014690714579803494
     # pd_lr: 0.000034690714579803494
-    parser.add_argument('--optimizer', type=str, default="Kron", help="Optimizer type.")
-    parser.add_argument('--learning_rate', type=float, default=0.00003, help="Learning rate for the optimizer.")
+    parser.add_argument('--optimizer', type=str, default="Adam", help="Optimizer type.")
+    parser.add_argument('--learning_rate', type=float, default=0.00002, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.0003, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty_ECML', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='sac-vp', help="Folder name for the run.")
@@ -382,6 +382,7 @@ if __name__ == "__main__":
     config.model.use_mask_head = args.use_mask_head
     config.model.use_preload_mask = args.use_preload_mask
     # Run
+    config.training.optimizer = args.optimizer
     config.training.learning_rate = args.learning_rate
     config.training.pd_learning_rate = args.pd_learning_rate
     config.training.projection_type = args.projection_type
