@@ -34,15 +34,6 @@ for ALG in sac ppo; do
   echo "=== Running algorithm_type=${ALG} ==="
   echo "=============================="
 
-  echo "=== Running penalty loss ==="
-  python3 "$SCRIPT_PATH" "$@" \
-    --algorithm_type "$ALG" \
-    --projection_type "none" \
-    --primal_dual false \
-    --learning_rate 0.00015 \
-    --folder "$ALG-pen" \
-    --feasibility_lambda 0.2828168389831236
-
   echo "=== Running primal-dual ==="
   python3 "$SCRIPT_PATH" "$@" \
     --algorithm_type "$ALG" \
@@ -52,5 +43,15 @@ for ALG in sac ppo; do
     --pd_learning_rate 0.0003 \
     --folder "$ALG-pd" \
     --feasibility_lambda 0.2828168389831236
+
+  echo "=== Running penalty loss ==="
+  python3 "$SCRIPT_PATH" "$@" \
+    --algorithm_type "$ALG" \
+    --projection_type "none" \
+    --primal_dual false \
+    --learning_rate 0.00015 \
+    --folder "$ALG-pen" \
+    --feasibility_lambda 0.2828168389831236
+
 
 done
