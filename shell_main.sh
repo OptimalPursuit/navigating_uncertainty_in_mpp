@@ -1,6 +1,5 @@
 #!/bin/bash
-
-# Script to run a Python script in the background using nohup
+set -euo pipefail
 
 # Define the path to the Python script you want to run
 SCRIPT_PATH="main.py"
@@ -27,34 +26,38 @@ done
 
 # If a GPU number was provided, export it
 if [ -n "$GPU_NUMBER" ]; then
-    export CUDA_VISIBLE_DEVICES=$GPU_NUMBER
+    export CUDA_VISIBLE_DEVICES="$GPU_NUMBER"
     echo "Using GPU $GPU_NUMBER (CUDA_VISIBLE_DEVICES=$GPU_NUMBER)."
 else
     echo "No GPU number provided. Default GPU configuration will be used."
 fi
 
-# Run the Python script in the background with nohup, logging output to the specified file
-echo "Starting the script in the background..."
-nohup python3 "$SCRIPT_PATH" "$@" > "$LOG_FILE" 2>&1 &
+echo "Starting the script..."
 
-# Capture the process ID of the last background command
+# Start in background (nohup) so it survives logout, but we will WAIT so calls serialize.
+nohup python3 "$SCRIPT_PATH" "$@" > "$LOG_FILE" 2>&1 &
 PID=$!
 
-# Wait for the process to finish
-wait $PID
-
-# Check if the PID is a valid number
-if [[ "$PID" =~ ^[0-9]+$ ]]; then
-    # Rename the log file to include the process ID for uniqueness
-    mv "$LOG_FILE" "output_files/output$PID.log"
-    LOG_FILE="output_files/output$PID.log"
-
-    # Check if the process started successfully
-    if ps -p $PID > /dev/null; then
-        echo "Script is running in the background with PID $PID. Check $LOG_FILE for output."
-    else
-        echo "Failed to start the script."
-    fi
-else
+# Ensure we got a PID
+if ! [[ "$PID" =~ ^[0-9]+$ ]]; then
     echo "Failed to capture a valid PID. The script may not have started correctly."
+    exit 1
 fi
+
+# Rename log immediately so each run gets a unique log while it's running
+mv "$LOG_FILE" "output_files/output${PID}.log"
+LOG_FILE="output_files/output${PID}.log"
+
+echo "Started PID $PID. Logging to $LOG_FILE"
+
+# Block until done (so outer loops run one-by-one)
+wait "$PID"
+STATUS=$?
+
+if [ "$STATUS" -eq 0 ]; then
+    echo "Finished successfully (PID $PID)."
+else
+    echo "Exited with code $STATUS (PID $PID). See $LOG_FILE."
+fi
+
+exit "$STATUS"
