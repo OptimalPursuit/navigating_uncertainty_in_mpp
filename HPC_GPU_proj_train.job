@@ -42,21 +42,21 @@ for ALG in sac ppo; do
   echo "=== Running penalty loss ==="
   python3 "$SCRIPT_PATH" "$@" \
     --algorithm_type "$ALG" \
-    --projection_type none \
-    --feasibility_lambda 0.2828168389831236 \
+    --projection_type "none" \
     --primal_dual false \
     --learning_rate 0.00015 \
-    --folder "$ALG-pen"
+    --folder "$ALG-pen" \
+    --feasibility_lambda 0.2828168389831236
 
   echo "=== Running primal-dual ==="
   python3 "$SCRIPT_PATH" "$@" \
     --algorithm_type "$ALG" \
-    --projection_type none \
-    --feasibility_lambda 0.2828168389831236 \
+    --projection_type "none" \
     --primal_dual true \
     --learning_rate 0.00015 \
     --pd_learning_rate 0.0003 \
-    --folder "$ALG-pd/"
+    --folder "$ALG-pd" \
+    --feasibility_lambda 0.2828168389831236
 
   echo "=== Running --projection_type inner_convex_violation (kwargs v1) ==="
   python3 "$SCRIPT_PATH" "$@" \
