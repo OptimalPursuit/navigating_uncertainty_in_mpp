@@ -270,7 +270,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
         parser.add_argument('--runs_per_agent', type=int, default=100, help="Number of runs per agent.")
 
     # Environment parameters
-    parser.add_argument('--env_name', type=str, default='block_mpp', help="Name of the environment.")
+    parser.add_argument('--env_name', type=str, default='mpp', help="Name of the environment.")
     parser.add_argument('--ports', type=int, default=4, help="Number of ports in env.")
     parser.add_argument('--teu', type=int, default=1000, help="TEU capacity of the ship.")
     parser.add_argument('--gen', type=lambda x: x == 'True', default=False, help="Whether to test generalization to different demand distributions.")
