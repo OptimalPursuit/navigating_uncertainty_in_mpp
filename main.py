@@ -272,11 +272,12 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     # Environment parameters
     parser.add_argument('--env_name', type=str, default='block_mpp', help="Name of the environment.")
     parser.add_argument('--ports', type=int, default=4, help="Number of ports in env.")
-    parser.add_argument('--teu', type=int, default=20000, help="TEU capacity of the ship.")
-    parser.add_argument('--gen', type=lambda x: x == 'True', default=False)
-    parser.add_argument('--ur', type=float, default=1.1)
-    parser.add_argument('--cv', type=float, default=0.5)
+    parser.add_argument('--teu', type=int, default=1000, help="TEU capacity of the ship.")
+    parser.add_argument('--gen', type=lambda x: x == 'True', default=False, help="Whether to test generalization to different demand distributions.")
+    parser.add_argument('--ur', type=float, default=1.1, help="Utilization rate of initial demand.")
+    parser.add_argument('--cv', type=float, default=0.5, help="Coefficient of variation for demand generation.")
     # Generator parameters
+    parser.add_argument('--seed', type=int, default=42, help="Random seed for reproducibility.")
     parser.add_argument('--demand_sparsity', type=int, default=0.3, help="Sparsity level of demand.")
     parser.add_argument('--demand_perturbation', type=float, default=0.2, help="Perturbation level of demand.")
     parser.add_argument('--duration_variable_revenue', type=lambda x: x == 'True', default=False, help="Variable revenue parameter over duration.")
@@ -356,6 +357,7 @@ if __name__ == "__main__":
     config.env.block_stowage_mask = args.block_stowage_mask
     config.env.normalize_constraints = args.normalize_constraints
     # Generator
+    config.env.seed = args.seed
     config.env.demand_sparsity = args.demand_sparsity
     config.env.demand_perturbation = args.demand_perturbation
     config.env.duration_variable_revenue = args.duration_variable_revenue
