@@ -38,6 +38,7 @@ class InnerConvexViolationProjection(NormalizedProjection):
 
         # step size controls
         self.use_spectral_eta = bool(kwargs.get("use_spectral_eta", True))
+        self.spectral_norm = kwargs.get("spectral_norm", "power_iters")  # "svd", "power_iters", "frobenius"
         self.power_iters = int(kwargs.get("power_iters", 5))
         self.eta_margin = float(kwargs.get("eta_margin", 0.99))
 
@@ -58,14 +59,28 @@ class InnerConvexViolationProjection(NormalizedProjection):
         b_ = b.unsqueeze(1) if b.dim() == 2 else b
         A_ = A.unsqueeze(1) if A.dim() == 3 else A
         A_work, _ = self._normalize_constraints(A_, b_)
-        eta = (self._eta_spectral(A_work) if self.use_spectral_eta else self._eta_frobenius(A_work)).unsqueeze(-1)
+        if self.spectral_norm == "svd":
+            eta = self._eta_svd(A_work).unsqueeze(-1)
+        elif self.spectral_norm == "power_iters":
+            eta = self._eta_power_iters(A_work).unsqueeze(-1)
+        elif self.spectral_norm == "frobenius":
+            eta = self._eta_frobenius(A_work).unsqueeze(-1)
+        else:
+            raise ValueError(f"Unknown spectral_norm={self.spectral_norm}")
         return eta
 
     def _eta_frobenius(self, A: Tensor) -> Tensor:
         denom = torch.sum(A * A, dim=(-2, -1)) + self.rho  # [B,S]
         return 1.0 / denom
 
-    def _eta_spectral(self, A: Tensor) -> Tensor:
+    def _eta_svd(self, A: Tensor) -> Tensor:
+        # A: [B, S, m, n]
+        # torch.linalg.norm with ord=2 over the last two dims gives the matrix spectral norm (largest singular value)
+        sigma = torch.linalg.norm(A, ord=2, dim=(-2, -1))  # [B, S] = ||A||_2
+        num = sigma * sigma  # [B, S] = ||A||_2^2
+        return self.eta_margin / (num + self.rho)
+
+    def _eta_power_iters(self, A: Tensor) -> Tensor:
         B, S, m, n = A.shape
         v = torch.ones((B, S, n, 1), device=A.device, dtype=A.dtype)
         v = v / (torch.norm(v, dim=-2, keepdim=True) + 1e-12)
@@ -125,8 +140,14 @@ class InnerConvexViolationProjection(NormalizedProjection):
         b_tight = b_work - self.mu_inside
 
         # step-size
-        eta = (self._eta_spectral(A_work) if self.use_spectral_eta else self._eta_frobenius(A_work)).unsqueeze(
-            -1)  # [B,S,1]
+        if self.spectral_norm == "svd":
+            eta = self._eta_svd(A_work).unsqueeze(-1)
+        elif self.spectral_norm == "power_iters":
+            eta = self._eta_power_iters(A_work).unsqueeze(-1)
+        elif self.spectral_norm == "frobenius":
+            eta = self._eta_frobenius(A_work).unsqueeze(-1)
+        else:
+            raise ValueError(f"Unknown spectral_norm={self.spectral_norm}")
 
         B, S, m, n = A_work.shape
         BS = B * S
