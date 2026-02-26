@@ -716,7 +716,7 @@ class FrankWolfePolicyImprovement(NormalizedProjection):
         s2["action"] = x_for_grad
 
         q_out = critic_fn(s2)
-        q = q_out["state_action_value"]
+        q = q_out["state_action_value"] if "state_action_value" in q_out else q_out["state_value"]
         g = torch.autograd.grad(q.sum(), x_for_grad, create_graph=False, allow_unused=True)[0]
         if g is None:
             return x_feas
