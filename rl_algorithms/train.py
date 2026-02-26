@@ -107,34 +107,62 @@ class EarlyStopping:
 
         return False
 
+import torch
+from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
+
 class TopKPerSampler(SamplerWithoutReplacement):
-    def __init__(self, top_k: int, alpha: float = 0.6):
+    def __init__(self, top_k: int, alpha: float = 0.6, eps: float = 1e-6, sample_only_topk: bool = True):
         super().__init__()
+        assert alpha >= 0, "alpha must be nonnegative"
         self.top_k = top_k
-        self.alpha = alpha
+        self.alpha = float(alpha)
+        self.eps = float(eps)
+        self.sample_only_topk = sample_only_topk
 
     def sample(self, storage: "LazyTensorStorage", batch_size):
-        # Get the underlying TensorDict and device
         td = storage._storage
         device = storage.device
 
-        # Compute total return per trajectory, get top-K indices
-        traj_returns = td["next", "profit"].sum(dim=(-2, -1)).clamp(min=0.0)
-        k = min(self.top_k, traj_returns.size(0))
-        topk_indices = traj_returns.topk(k=k, largest=True).indices
+        # 1) robust return computation
+        profit = td["next", "profit"]
+        traj_returns = profit.sum(dim=(-2, -1))
+        traj_returns = torch.nan_to_num(traj_returns, nan=0.0, posinf=0.0, neginf=0.0).clamp(min=0.0)
 
-        # Assign scores: top-K get their return, rest are zero
-        scores = torch.zeros(traj_returns.size(0), device=device)
-        scores[topk_indices] = torch.clamp(traj_returns[topk_indices], min=1e-6)
+        n = traj_returns.numel()
+        if n == 0:
+            raise RuntimeError("Empty storage")
 
-        # Compute probabilities safely
-        probs = scores.pow(self.alpha).clamp(min=1e-6)
-        probs /= probs.sum()
+        k = min(self.top_k, n)
+        topk_idx = traj_returns.topk(k=k, largest=True).indices
 
-        # Sample batch indices
-        sampled_indices = torch.multinomial(probs, batch_size, replacement=True).long()
-        return sampled_indices, {}
+        # 2) define weights on the support you actually want to sample from
+        if self.sample_only_topk:
+            weights = (traj_returns[topk_idx] + self.eps).pow(self.alpha)
+            weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+            s = weights.sum()
+            if not torch.isfinite(s) or s <= 0:
+                probs = torch.full((k,), 1.0 / k, device=device)
+            else:
+                probs = weights / s
 
+            chosen = torch.multinomial(probs, batch_size, replacement=True)
+            sampled_indices = topk_idx[chosen].long()
+            return sampled_indices, {}
+
+        else:
+            scores = torch.zeros(n, device=device)
+            scores[topk_idx] = traj_returns[topk_idx].clamp(min=0.0)
+
+            weights = (scores + self.eps).pow(self.alpha)
+            weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0)
+            s = weights.sum()
+            if not torch.isfinite(s) or s <= 0:
+                probs = torch.full((n,), 1.0 / n, device=device)
+            else:
+                probs = weights / s
+
+            sampled_indices = torch.multinomial(probs, batch_size, replacement=True).long()
+            return sampled_indices, {}
 
 # Functions
 def convert_to_dict(obj:object) -> Union[Dict, List]:
