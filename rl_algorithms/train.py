@@ -201,12 +201,6 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
     gamma = kwargs["algorithm"]["gamma"]
     gae_lambda = kwargs["algorithm"]["gae_lambda"]
     primal_dual = kwargs["algorithm"]["primal_dual"]
-    print(f"Training with algorithm: {kwargs['algorithm']['type']},"
-            f"primal_dual: {primal_dual}, "
-            f"lr: {lr}, "
-            f"pd_lr: {pd_lr}, "
-            )
-    breakpoint()
     # Loss hyperparameters
     vf_lambda = kwargs["algorithm"]["vf_lambda"]
     feasibility_lambda = kwargs["algorithm"]["feasibility_lambda"]
