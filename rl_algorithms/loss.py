@@ -454,7 +454,7 @@ class FeasibilitySACLoss(SACLoss):
             tensordict.set("action", action)
 
         tensordict = self.actor_network(tensordict) # Perform projection
-        log_prob = tensordict["adj_sample_log_prob"] if "adj_sample_log_prob" in tensordict else tensordict[self.tensor_keys.sample_log_prob]
+        log_prob = tensordict["adj_sample_log_prob"] if "adj_sample_log_prob" in tensordict else tensordict["sample_log_prob"]
         # (non projection on SAC)
         # log_prob = compute_log_prob(dist, tensordict["action"], self.tensor_keys.log_prob)
 
