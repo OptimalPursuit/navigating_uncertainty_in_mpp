@@ -40,7 +40,7 @@ for ALG in sac ppo; do
     --algorithm_type "$ALG" \
     --projection_type "none" \
     --primal_dual true \
-    --learning_rate 0.0001 \
+    --learning_rate 0.0009 \
     --pd_learning_rate 0.0003 \
     --folder "$ALG-pd" \
     --hidden_dim 512 \
@@ -52,7 +52,7 @@ for ALG in sac ppo; do
     --algorithm_type "$ALG" \
     --projection_type "none" \
     --primal_dual false \
-    --learning_rate 0.0001 \
+    --learning_rate 0.0009 \
     --folder "$ALG-pen" \
     --hidden_dim 512 \
     --scale_max 2.0 \
