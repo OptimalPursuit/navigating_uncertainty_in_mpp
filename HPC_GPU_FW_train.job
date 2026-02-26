@@ -35,7 +35,7 @@ for ALG in ppo; do
   echo "=== Running algorithm_type=${ALG} ==="
   echo "=============================="
 
-    echo "=== Running --projection_type ${PROJ} ==="
+    echo "=== Running --projection_type frank_wolfe ==="
 
     python3 "$SCRIPT_PATH" "$@" \
       --algorithm_type "$ALG" \
