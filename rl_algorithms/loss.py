@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import Dict, List, Optional, Tuple, Union, Callable
 from tensordict import (
+    is_tensor_collection,
     TensorDict,
     TensorDictBase,
     TensorDictParams,
@@ -655,7 +656,7 @@ class FeasibilityClipPPOLoss(PPOLoss):
         td_out.set("clip_fraction", clip_fraction)
 
         if self.entropy_bonus:
-            entropy = self.get_entropy_bonus(dist)
+            entropy = self.get_entropy_bonus(dist, adj_log_prob=tensordict.get("adj_sample_log_prob", None))
             td_out.set("entropy", entropy.detach().mean())  # for logging
             td_out.set("kl_approx", kl_approx.detach().mean())  # for logging
             td_out.set("loss_entropy", -self.entropy_coef * entropy)
@@ -729,3 +730,17 @@ class FeasibilityClipPPOLoss(PPOLoss):
         kl_approx = (prev_log_prob - log_prob).unsqueeze(-1)
 
         return log_weight, dist, kl_approx
+
+    def get_entropy_bonus(self, dist: d.Distribution, adj_log_prob: Tensor) -> torch.Tensor:
+        if adj_log_prob is not None:
+            entropy = -adj_log_prob.mean()
+            return entropy.unsqueeze(-1)
+        try:
+            entropy = dist.entropy()
+        except NotImplementedError:
+            x = dist.rsample((self.samples_mc_entropy,))
+            log_prob = dist.log_prob(x)
+            if is_tensor_collection(log_prob):
+                log_prob = log_prob.get(self.tensor_keys.sample_log_prob)
+            entropy = -log_prob.mean(0)
+        return entropy.unsqueeze(-1)
