@@ -303,7 +303,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
-    parser.add_argument('--projection_type', type=str, default="linear_violation", help="Projection type.")
+    parser.add_argument('--projection_type', type=str, default="none", help="Projection type.")
     parser.add_argument('--projection_kwargs', type=json.loads, default={
         'alpha': 0.01, 'delta': 0.01, 'max_iter': 100, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
         'spectral_norm': 'svd',  # power_iters, power_iters, 'frobenius'
@@ -371,6 +371,7 @@ if __name__ == "__main__":
     config.algorithm.type = args.algorithm_type
     config.algorithm.feasibility_lambda = args.feasibility_lambda
     config.algorithm.primal_dual = args.primal_dual
+    print(f"Feasibility lambda: {config.algorithm.feasibility_lambda}, Primal-dual: {config.algorithm.primal_dual}")
     # Model
     config.model.encoder_type = args.encoder_type
     config.model.decoder_type = args.decoder_type
