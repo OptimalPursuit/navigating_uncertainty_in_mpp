@@ -65,9 +65,9 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
         self.jacobian_methods = {
             "weighted_scaling": self.jacobian_weighted_scaling,
+            "weighted_scaling_policy_clipping": self.jacobian_weighted_scaling,
             "linear_violation": self.jacobian_uvp_K_steps,
             "inner_convex_violation": self.jacobian_uvp_K_steps,
-            "weighted_scaling_policy_clipping": self.jacobian_weighted_scaling,
         }
 
     def get_logprobs(self, action:Tensor, dist:Distribution) -> Tensor:
@@ -148,7 +148,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         projection_fn = self.projection_methods.get(self.projection_type, self.identity_fn)
         return projection_fn(out)
 
-    def jacobian_weighted_scaling(self, out:TensorDict, epsilon:float=1e-8) -> Tensor:
+    def jacobian_weighted_scaling(self, out:TensorDict, epsilon:float=1e-8) -> Tuple[Tensor, Tensor]:
         """Compute the Jacobian of the direct scaling projection:
             J_g(x) = y / sum(x)^2 * (diag(sum(x)) - x * 1^T)"""
         # Input
@@ -176,9 +176,11 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         jacobian = scaling_factor.unsqueeze(-1) * (kronecker_delta * sum_x.unsqueeze(-1)) - x_product # Shape: (batch_size, n, n)
         if x_dim == 3:
             jacobian = jacobian.view(batch, seq, n, n)
-        return jacobian
 
-    def jacobian_uvp_K_steps(self, out: TensorDict) -> torch.Tensor:
+        _, logabsdet = torch.linalg.slogdet(jacobian)
+        return jacobian, logabsdet
+
+    def jacobian_uvp_K_steps(self, out: TensorDict) -> Tuple[Tensor, Tensor]:
         """
         Exact Jacobian of the K-step UVP loop, by re-simulating x_k.
         Returns:
@@ -202,6 +204,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
         I = torch.eye(n, device=x.device, dtype=x.dtype).view(1, 1, n, n).expand(B, S, n, n)
         J = I.clone()
+        total_logabsdet = torch.zeros(B, S, device=x.device, dtype=x.dtype)
 
         for _ in range(proj.K):
             r = (A_work @ x.unsqueeze(-1)).squeeze(-1) - b_tight  # [B,S,m]
@@ -215,61 +218,20 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             g = (A_work.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1)
             x = x - eta.squeeze(-1) * g  # eta back to [B,S,1]
 
+            sign, logabsdet = torch.linalg.slogdet(J)  # logabsdet = log|det J|
+            total_logabsdet = total_logabsdet + logabsdet
+
         if A.dim() == 3:
             J = J.squeeze(1)
-        return J
+        return J, total_logabsdet
 
-    def jacobian_violation_bound(self, out:TensorDict) -> Tensor:
-        """
-           Compute the Jacobian of a two-sided violation projection:
-               J_g(x) = I + lr * A^T D A
-           where D = diag(g'(r)), with g'(r_i) = 1 if r_i>0, -1 if r_i<-epsilon, else 0.
-
-           Supports batch and optional sequence dimensions:
-             A: [batch, m, n] or [batch, seq, m, n]
-             x: [batch, n] or [batch, seq, n]
-             b: [batch, m] or [batch, seq, m]
-           """
-        # Input
-        x = out["action"]
-        A = out["lhs_A"]
-        b = out["rhs"]
-        epsilon = 1e-6
-        lr = self.projection_layer.lr
-
-        # Compute residual
-        r = torch.matmul(x.unsqueeze(-2), A.transpose(-2, -1)).squeeze(-2) - b  # [batch, n_step, m]
-
-        # Compute signed derivative
-        D = torch.zeros_like(r)
-        D[r > 0] = 1.0
-        D[r < -epsilon] = -1.0  # negative side
-        # D[r in [-epsilon, 0]] = 0 implicitly
-
-        # Embed into diagonal matrices
-        D_diag = torch.diag_embed(D)  # [batch, m, m] or [batch, seq, m, m]
-
-        # Identity matrix
-        n = x.shape[-1]
-        if x.dim() == 2:
-            I = torch.eye(n, device=x.device).unsqueeze(0)  # [1, n, n]
-            jacobian = I + lr * torch.bmm(A.transpose(1, 2), torch.bmm(D_diag, A))  # [batch, n, n]
-        elif x.dim() == 3:
-            batch, seq, n = x.shape
-            I = torch.eye(n, device=x.device).view(1, 1, n, n)  # [1,1,n,n]
-            jacobian = I + lr * torch.matmul(A.transpose(-2, -1), torch.matmul(D_diag, A))  # [batch, seq, n, n]
-        else:
-            raise ValueError(f"Unsupported x dimension: {x.shape}")
-
-        return jacobian
-
-    def handle_jacobian_adjustment(self, out:TensorDict) -> Optional[Tensor]:
+    def handle_jacobian_adjustment(self, out:TensorDict) -> Optional[Tuple[Tensor,Tensor]]:
         """Handle with Jacobian adjustment of projection methods;
         We only have Jacobian for weighted scaling and linear violation."""
         jacobian_fn = self.jacobian_methods.get(self.projection_type, None)
         return jacobian_fn(out) if jacobian_fn else None
 
-    def jacobian_adaptation(self, sample_logp: Tensor, jacobian: Tensor) -> Tensor:
+    def jacobian_adaptation(self, sample_logp: Tensor, jacobian: Tensor, log_abs_det: Tensor) -> Tensor:
         """
         sample_logp: [B] or [B,T] (already summed over action dims)
         jacobian:    [B,N,N] or [B,T,N,N]
@@ -277,15 +239,22 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         if jacobian is None:
             return sample_logp
 
-        sign, log_abs_det = torch.linalg.slogdet(jacobian)
-        valid = sign != 0
+        if log_abs_det is None:
+            _, log_abs_det = torch.linalg.slogdet(jacobian)
+        # valid = sign != 0
         # sign > 0 can be considered
 
         # if invalid: no correction (or clamp)
-        log_abs_det = torch.where(valid, log_abs_det, torch.zeros_like(log_abs_det))
+        # log_abs_det = torch.where(valid, log_abs_det, torch.zeros_like(log_abs_det))
 
         # CoV correction
-        return sample_logp - log_abs_det
+        # todo: there is an error here!
+        #in mpp: batch | batch, action , action | batch
+        #in block_mpp: batch, var | batch, var , var | batch --> Fix this!
+        # print("shapes", sample_logp.shape, jacobian.shape, log_abs_det.shape)
+        # print("Mean log_abs_det:", log_abs_det.mean().item())
+
+        return sample_logp - log_abs_det.squeeze(-1)
 
 
     def forward(self, *args, **kwargs,) -> TensorDict:
@@ -327,17 +296,13 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             # todo: check if jacobian adjustment is added effectively!
             # Ensure sample_log_prob exists
             logp_full = out["log_prob"]  # shape [..., N]
-            sample_logp = logp_full.sum(dim=-1)  # shape [...]
+            out["sample_log_prob"] = logp_full.sum(dim=-1)  # shape [...]
 
             # Apply jacobian correction in full space if implemented for projection_type
             if self.jacobian_correction:
-                J = self.handle_jacobian_adjustment(out)  # returns [..., N, N] or None
+                J, log_abs_det = self.handle_jacobian_adjustment(out)  # returns [..., N, N] or None
                 if J is not None:
-                    sample_logp = logp_full.sum(dim=-1)
-                    sample_logp = self.jacobian_adaptation(sample_logp, jacobian=J).clamp(min=-50.0)
-
-            # out["log_prob"] = logp_full
-            out["sample_log_prob"] = sample_logp
+                    out["adj_sample_log_prob"]  = self.jacobian_adaptation(out["sample_log_prob"], jacobian=J, log_abs_det=log_abs_det).clamp(min=-20.0, max=20)
 
         # Use critic for FW improvement direction if implemented
         if self.projection_type == "frank_wolfe":
@@ -421,12 +386,14 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         sample = action.new_zeros(M)
 
         # Group by unique mask patterns
-        packed = torch.packbits(mask.to(torch.uint8), dim=-1)             # [M, ceil(N/8)]
+        packed = torch_packbits_bool(mask, dim=-1)             # [M, ceil(N/8)]
         _, inv = torch.unique(packed, dim=0, return_inverse=True)         # [M]
         n_groups = int(inv.max().item()) + 1
+        print(f"Unique mask patterns: {n_groups} (out of {2**N} possible)")
 
         for g in range(n_groups):
             rows = (inv == g).nonzero(as_tuple=True)[0]
+            print(f"Group {g}: {rows.numel()} rows")
             active = mask[rows[0]].nonzero(as_tuple=True)[0]
             if active.numel() == 0:
                 continue
@@ -448,4 +415,24 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
             logp_out[rows[:, None], active[None, :]] = logp_active
             sample[rows] = logp_active.sum(-1)
 
+        print("Final logp_out shape:", logp_out.shape)
+        print("Final sample_logp shape:", sample.shape)
+        breakpoint()
+
         return logp_out.reshape(*batch_shape, N), sample.reshape(*batch_shape)
+
+def torch_packbits_bool(x: torch.Tensor, dim:int) -> torch.Tensor:
+    """
+    x: bool tensor [..., N]
+    returns: uint8 tensor [..., ceil(N/8)] packed along last dim (LSB-first within each byte)
+    """
+    assert x.dtype == torch.bool
+    N = x.size(-1)
+    nbytes = (N + 7) // 8
+    pad = nbytes * 8 - N
+    if pad:
+        x = F.pad(x, (0, pad), value=False)
+
+    x = x.reshape(*x.shape[:-1], nbytes, 8).to(torch.uint8)
+    weights = (1 << torch.arange(8, device=x.device, dtype=torch.uint8))  # [8]
+    return (x * weights).sum(dim=dim)  # [..., nbytes]
