@@ -386,7 +386,7 @@ def run_training(policy: nn.Module, critic: nn.Module, device:str="cuda", **kwar
 
                 if primal_dual:
                     loss_out_actor["loss_feasibility"].backward()
-                    loss_out["gn_dual"] = torch.nn.utils.clip_grad_norm_(dual_params, max_grad_norm).item()
+                    loss_out_actor["gn_dual"] = torch.nn.utils.clip_grad_norm_(dual_params, max_grad_norm).item()
 
                 if not loss_module.fixed_alpha:
                     loss_out_actor["loss_alpha"].backward()
