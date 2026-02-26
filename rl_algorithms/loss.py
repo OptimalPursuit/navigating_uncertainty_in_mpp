@@ -453,7 +453,7 @@ class FeasibilitySACLoss(SACLoss):
             tensordict.set("action", action)
 
         tensordict = self.actor_network(tensordict) # Perform projection
-        log_prob = tensordict["sample_log_prob"] # Use sample log prob
+        log_prob = tensordict["adj_sample_log_prob"] if "adj_sample_log_prob" in tensordict else tensordict[self.tensor_keys.sample_log_prob]
         # (non projection on SAC)
         # log_prob = compute_log_prob(dist, tensordict["action"], self.tensor_keys.log_prob)
 
@@ -723,6 +723,8 @@ class FeasibilityClipPPOLoss(PPOLoss):
             else:
                 log_prob = maybe_log_prob
 
+        # no Jacobian adjustment in ratio, as the adjustment cancels out between new and old log probs
+        # Both are based on the same state and action.
         log_weight = (log_prob - prev_log_prob).unsqueeze(-1)
         kl_approx = (prev_log_prob - log_prob).unsqueeze(-1)
 
