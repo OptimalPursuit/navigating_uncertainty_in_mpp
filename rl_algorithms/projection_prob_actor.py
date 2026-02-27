@@ -99,51 +99,59 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         return revenue_action
 
 
-    def weighted_scaling_projection(self, out:TensorDict) -> Tensor:
-        return self.weighted_scaling(out["action"], ub=out["ub"])
+    def weighted_scaling_projection(self, out:TensorDict) -> TensorDict:
+        out["action"] = self.weighted_scaling(out["action"], ub=out["ub"])
+        return out
 
-    def policy_clipping_projection(self, out:TensorDict) -> Tensor:
-        return out["action"].clamp(min=out["clip_min"], max=out["clip_max"])
+    def policy_clipping_projection(self, out:TensorDict) -> TensorDict:
+        out["action"] = out["action"].clamp(min=out["clip_min"], max=out["clip_max"])
+        return out
 
-    def weighted_scaling_policy_clipping_projection(self, out:TensorDict) -> Tensor:
+    def weighted_scaling_policy_clipping_projection(self, out:TensorDict) -> TensorDict:
         out["action"] = self.weighted_scaling_projection(out)
-        return self.policy_clipping_projection(out)
+        out["action"] = self.policy_clipping_projection(out)
+        return out
 
-    def quadratic_program(self, out:TensorDict) -> Tensor:
-        return self.projection_layer(out["action"], out["lhs_A"], out["rhs"])
-
-    def convex_program(self, out:TensorDict) -> Tensor:
+    def quadratic_program(self, out:TensorDict) -> TensorDict:
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"])
-        return out["action"]
+        return out
 
-    def convex_program_policy_clipping(self, out:TensorDict) -> Tensor:
+    def convex_program(self, out:TensorDict) -> TensorDict:
+        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"])
+        return out
+
+    def convex_program_policy_clipping(self, out:TensorDict) -> TensorDict:
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"])
         out["action"] = self.policy_clipping_projection(out)
-        return out["action"]
+        return out
 
-    def violation_projection(self, out:TensorDict) -> Tensor:
+    def violation_projection(self, out:TensorDict) -> TensorDict:
         var_mask = out["observation", "action_mask"].float() if "action_mask" in out["observation"] else None
-        out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=var_mask)
-        return out["action"]
+        shared = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=var_mask, return_uvp_masks=self.jacobian_correction)
+        if self.jacobian_correction:
+            out["action"], out["violation_mask"] = shared
+        else:
+            out["action"] = shared
+        return out
 
-    def franke_wolfe_improvement(self, out:TensorDict) -> Tensor:
+    def franke_wolfe_improvement(self, out:TensorDict) -> TensorDict:
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], s=out, critic_fn=out["critic_fn"])
-        return out["action"]
+        return out
 
-    def alpha_cheby_projection(self, out:TensorDict) -> Tensor:
+    def alpha_cheby_projection(self, out:TensorDict) -> TensorDict:
         var_mask = out["observation", "action_mask"].float() if "action_mask" in out["observation"] else None
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], var_mask=var_mask)
-        return out["action"]
+        return out
 
-    def violation_projection_policy_clipping(self, out:TensorDict) -> Tensor:
+    def violation_projection_policy_clipping(self, out:TensorDict) -> TensorDict:
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"])
         out["action"] = self.policy_clipping_projection(out)
-        return out["action"]
+        return out
 
-    def identity_fn(self, out:TensorDict) -> Tensor:
-        return out["action"]
+    def identity_fn(self, out:TensorDict) -> TensorDict:
+        return out
 
-    def handle_action_projection(self, out:TensorDict) -> Tensor:
+    def handle_action_projection(self, out:TensorDict) -> TensorDict:
         """Handle with policy projection"""
         projection_fn = self.projection_methods.get(self.projection_type, self.identity_fn)
         return projection_fn(out)
@@ -180,50 +188,135 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         _, logabsdet = torch.linalg.slogdet(jacobian)
         return jacobian, logabsdet
 
+    # def jacobian_uvp_K_steps(self, out: TensorDict):
+    #     """
+    #     Optimized exact Jacobian given precomputed per-step masks (active-set indicators).
+    #     Returns:
+    #       J: [B,n,n] or [B,S,n,n]
+    #       total_logabsdet: [B] or [B,S]  (log|det J|), accumulated as sum_k log|det J_step,k|
+    #     """
+    #     x0 = out.get("raw_action", out["action"])
+    #     A = out["lhs_A"]
+    #     b = out["rhs"]
+    #     masks = out.get("uvp_masks", out.get("violation_mask", None))
+    #     if masks is None:
+    #         raise ValueError("Need uvp_masks/violation_mask for this optimized Jacobian path.")
+    #
+    #     proj = self.projection_layer
+    #
+    #     # unify shapes -> [B,S,...]
+    #     b_ = b.unsqueeze(1) if b.dim() == 2 else b
+    #     A_ = A.unsqueeze(1) if A.dim() == 3 else A
+    #     x = x0.unsqueeze(1) if x0.dim() == 2 else x0  # only for dtype/device
+    #
+    #     B, S, m, n = A_.shape
+    #     dtype, device = x.dtype, x.device
+    #
+    #     A_work, _ = proj._normalize_constraints(A_, b_)
+    #
+    #     # eta -> [B,S,1,1]
+    #     eta = proj.get_eta(A, b)
+    #     if eta.dim() == 1:
+    #         eta = eta[:, None]  # [B,1]
+    #     eta = eta.unsqueeze(-1).unsqueeze(-1)  # [B,S,1,1] (or [B,1,1,1])
+    #     if eta.shape[1] == 1 and S != 1:
+    #         eta = eta.expand(B, S, 1, 1)
+    #
+    #     # masks expected [B,K,S,m] or [B,K,m]; unify -> [B,K,S,m] then flatten to [BS,K,m]
+    #     masks = masks.to(dtype)
+    #     K = proj.K
+    #
+    #     # flatten batch dims for bmm
+    #     BS = B * S
+    #     Aflat = A_work.reshape(BS, m, n).contiguous()
+    #     ATflat = Aflat.transpose(1, 2).contiguous()
+    #     etaf = eta.reshape(BS, 1, 1).contiguous()
+    #
+    #     # J init (no giant [B,S,n,n] eye allocation inside the loop)
+    #     J = torch.eye(n, device=device, dtype=dtype).expand(BS, n, n).clone()
+    #
+    #     # Pre-scale AT by eta once: AT_eta = eta * A^T
+    #     AT_eta = ATflat * etaf  # [BS,n,m]
+    #
+    #     # logdet accumulation: use Sylvester: det(I_n - eta A^T D A) = det(I_m - eta D (A A^T) D)
+    #     # Option A (compute-efficient, memory-heavy): precompute G = A A^T once.
+    #     # Option B (memory-light): compute Gk each step via (D*A)(D*A)^T.
+    #     precompute_gram = True
+    #     if precompute_gram:
+    #         G = torch.bmm(Aflat, Aflat.transpose(1, 2))  # [BS,m,m]
+    #     I_m = torch.eye(m, device=device, dtype=dtype).expand(BS, m, m)
+    #     total_logabsdet = torch.zeros(BS, device=device, dtype=dtype)
+    #
+    #     masks_f = masks.reshape(BS, K, m).contiguous()
+    #
+    #     for k in range(K):
+    #         d = masks_f[:, k, :]  # [BS,m]
+    #         d_col = d.unsqueeze(-1)  # [BS,m,1]
+    #
+    #         # J <- (I - eta A^T D A) J  ==  J - eta A^T (D (A J))
+    #         AJ = torch.bmm(Aflat, J)  # [BS,m,n]
+    #         AJ.mul_(d_col)  # apply D without forming [m,m]
+    #         torch.baddbmm(J, AT_eta, AJ, beta=1.0, alpha=-1.0, out=J)
+    #
+    #         # log|det J_step,k| in m-space
+    #         if precompute_gram:
+    #             # D G D via elementwise scaling (since D is diagonal with 0/1 entries)
+    #             Gk = G * (d.unsqueeze(2) * d.unsqueeze(1))  # [BS,m,m]
+    #         else:
+    #             AD = Aflat * d_col  # [BS,m,n]
+    #             Gk = torch.bmm(AD, AD.transpose(1, 2))  # [BS,m,m]
+    #
+    #         Mk = I_m - etaf * Gk  # [BS,m,m]
+    #         _, lad = torch.linalg.slogdet(Mk)
+    #         total_logabsdet.add_(lad)
+    #
+    #     # reshape back
+    #     J = J.view(B, S, n, n)
+    #     total_logabsdet = total_logabsdet.view(B, S)
+    #
+    #     if A.dim() == 3:
+    #         J = J.squeeze(1)
+    #         total_logabsdet = total_logabsdet.squeeze(1)
+    #
+    #     return J, total_logabsdet
+
     def jacobian_uvp_K_steps(self, out: TensorDict) -> Tuple[Tensor, Tensor]:
         """
         Exact Jacobian of the K-step UVP loop, by re-simulating x_k.
         Returns:
           - [B,n,n] or [B,S,n,n]
         """
-        x0 = out["action"]
+        # Use pre-projection action if available
+        x0 = out.get("raw_action", out["action"])
         A = out["lhs_A"]
         b = out["rhs"]
-
+        masks = out.get("uvp_masks", out.get("violation_mask", None))
         proj = self.projection_layer
+        eps = 1e-6
 
+        # Shapes
         b_ = b.unsqueeze(1) if b.dim() == 2 else b
         A_ = A.unsqueeze(1) if A.dim() == 3 else A
         x = x0.unsqueeze(1) if x0.dim() == 2 else x0
-
         B, S, m, n = A_.shape
 
         A_work, b_work = proj._normalize_constraints(A_, b_)
-        b_tight = b_work - proj.mu_inside
-        eta = proj.get_eta(A, b).unsqueeze(-1)  # [B,S,1,1]
+        At = A_work.transpose(-2, -1)  # [B,S,n,m]
+        eta = proj.get_eta(A_work, b_work).unsqueeze(-1)  # [B,S,1,1]
 
         I = torch.eye(n, device=x.device, dtype=x.dtype).view(1, 1, n, n).expand(B, S, n, n)
         J = I.clone()
-        total_logabsdet = torch.zeros(B, S, device=x.device, dtype=x.dtype)
 
-        for _ in range(proj.K):
-            r = (A_work @ x.unsqueeze(-1)).squeeze(-1) - b_tight  # [B,S,m]
-            D = torch.diag_embed((r > 0).to(x.dtype))  # [B,S,m,m]
-
-            J_step = I - eta * (A_work.transpose(-2, -1) @ (D @ A_work))  # [B,S,n,n]
-            J = J_step @ J  # composition
-
-            # advance x (match forward)
-            v = torch.relu(r)
-            g = (A_work.transpose(-2, -1) @ v.unsqueeze(-1)).squeeze(-1)
-            x = x - eta.squeeze(-1) * g  # eta back to [B,S,1]
-
-            sign, logabsdet = torch.linalg.slogdet(J)  # logabsdet = log|det J|
-            total_logabsdet = total_logabsdet + logabsdet
+        for k in range(proj.K):
+            d = masks[..., k, :].to(x.dtype).view(B, S, m, 1)  # [B,S,m] (0/1)
+            DA = A_work * d  # [B,S,m,n] == D @ A_work (without [m,m])
+            M = At @ DA  # [B,S,n,n] == A^T D A
+            J_step = (I - eta * M) + eps * I
+            J = J_step @ J
 
         if A.dim() == 3:
             J = J.squeeze(1)
-        return J, total_logabsdet
+        return J
 
     def handle_jacobian_adjustment(self, out:TensorDict) -> Optional[Tuple[Tensor,Tensor]]:
         """Handle with Jacobian adjustment of projection methods;
@@ -231,7 +324,7 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         jacobian_fn = self.jacobian_methods.get(self.projection_type, None)
         return jacobian_fn(out) if jacobian_fn else None
 
-    def jacobian_adaptation(self, sample_logp: Tensor, jacobian: Tensor, log_abs_det: Tensor) -> Tensor:
+    def jacobian_adaptation(self, sample_logp: Tensor, jacobian: Tensor) -> Tensor:
         """
         sample_logp: [B] or [B,T] (already summed over action dims)
         jacobian:    [B,N,N] or [B,T,N,N]
@@ -239,81 +332,31 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         if jacobian is None:
             return sample_logp
 
-        if log_abs_det is None:
-            _, log_abs_det = torch.linalg.slogdet(jacobian)
-        # valid = sign != 0
-        # sign > 0 can be considered
-
-        # if invalid: no correction (or clamp)
-        # log_abs_det = torch.where(valid, log_abs_det, torch.zeros_like(log_abs_det))
-
         # CoV correction
+        lad = torch.linalg.slogdet(jacobian)[1]  # [B,S] or [B]
+        lad_clamped = torch.nan_to_num(lad, neginf=-20.0, posinf=20.0).clamp(-20.0, 20.0)
+        output = sample_logp - lad_clamped
+
+        # “no update from invalid”:
+        valid = torch.isfinite(lad)
+        output = torch.where(valid, output, torch.zeros_like(output))
+
+
+        # # and track how many got dropped
+        # drop_frac = (~valid).float().mean()
+        # print(f"Jacobian adaptation: dropping {drop_frac:.2%} of samples due to invalid Jacobian (log|det|={lad_clamped})")
+
         # todo: there is an error here!
         #in mpp: batch | batch, action , action | batch
         #in block_mpp: batch, var | batch, var , var | batch --> Fix this!
         # print("shapes", sample_logp.shape, jacobian.shape, log_abs_det.shape)
-        # print("Mean log_abs_det:", log_abs_det.mean().item())
+        # print("Means:",
+        #         "jacobian mean:", jacobian.mean().item(),
+        #         "sample_logp mean:", sample_logp.mean().item(),
+        #         "log_abs_det mean:", lad.mean().item(),
+        #         "output mean:", output.mean().item())
 
-        return sample_logp - log_abs_det.squeeze(-1)
-
-
-    def forward(self, *args, **kwargs,) -> TensorDict:
-        out = args[0] if "action" in kwargs else super().forward(*args, **kwargs)
-
-        # Raise error for projection layers without log prob adaptation implementations
-        if self.projection_type not in self.projection_methods.keys():
-            raise ValueError(f"Log prob adaptation for projection type \'{self.projection_type}\' not supported.")
-
-        # Get distribution
-        dist = self.get_dist(out)
-
-        # Get log probabilities
-        if self.projection_type in ["policy_clipping", "weighted_scaling_policy_clipping"]:
-            # Apply log_prob adjustment of clipping based on https://arxiv.org/pdf/1802.07564v2.pdf
-            self.clipped_gaussian.mean = out["loc"]
-            self.clipped_gaussian.var = out["scale"]
-            self.clipped_gaussian.low = out["clip_min"]
-            self.clipped_gaussian.high = out["clip_max"]
-            out["log_prob"] = self.clipped_gaussian.log_prob(out["action"])
-        else:
-            out["log_prob"] = self.get_logprobs(out["action"], dist)
-
-        # Pre-compute upper bound for weighted_scaling
-        timestep_idx = out["observation", "timestep"].squeeze(0)
-        out["ub"] = out["observation", "realized_demand"].gather(-1, timestep_idx.unsqueeze(-1)).squeeze(-1)
-
-        # Store raw action before projection
-        raw = out["action"].clone()
-        out["raw_action"] = raw
-
-        # compute jacobian using active raw action
-        if ("action_mask" in out["observation"]):
-            # todo: check if this is generally effective
-            out["log_prob"], out["sample_log_prob"] = self.masked_subspace_logprobs(
-                out, raw, clamp_min=-50.0, handle_jacobian_adjustment=self.handle_jacobian_adjustment, jacobian_adaptation=self.jacobian_adaptation
-            )
-        else:
-            # todo: check if jacobian adjustment is added effectively!
-            # Ensure sample_log_prob exists
-            logp_full = out["log_prob"]  # shape [..., N]
-            out["sample_log_prob"] = logp_full.sum(dim=-1)  # shape [...]
-
-            # Apply jacobian correction in full space if implemented for projection_type
-            if self.jacobian_correction:
-                J, log_abs_det = self.handle_jacobian_adjustment(out)  # returns [..., N, N] or None
-                if J is not None:
-                    out["adj_sample_log_prob"]  = self.jacobian_adaptation(out["sample_log_prob"], jacobian=J, log_abs_det=log_abs_det).clamp(min=-20.0, max=20)
-
-        # Use critic for FW improvement direction if implemented
-        if self.projection_type == "frank_wolfe":
-            out["critic_fn"] = out.get("critic_fn", None)
-
-
-        # project once before env execution
-        proj_action = self.handle_action_projection(out)
-        out["action"] = proj_action
-        out["observation", "env_action"] = proj_action
-        return out
+        return output
 
     @staticmethod
     def _expand_mask(mask: Tensor, batch_shape: torch.Size, N: int) -> Tensor:
@@ -345,12 +388,12 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         return A, b
 
     def masked_subspace_logprobs(
-        self,
-        out: TensorDict,
-        action: Tensor,               # [B,N] or [B,T,N]
-        handle_jacobian_adjustment: Optional[Callable] = None,
-        jacobian_adaptation: Optional[Callable] = None,
-        clamp_min: float = -50.0,
+            self,
+            out: TensorDict,
+            action: Tensor,               # [B,N] or [B,T,N]
+            handle_jacobian_adjustment: Optional[Callable] = None,
+            jacobian_adaptation: Optional[Callable] = None,
+            clamp_min: float = -50.0,
     ) -> Tuple[Tensor, Tensor]:
         """
         Returns:
@@ -421,18 +464,128 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
         return logp_out.reshape(*batch_shape, N), sample.reshape(*batch_shape)
 
-def torch_packbits_bool(x: torch.Tensor, dim:int) -> torch.Tensor:
+    def forward(self, *args, **kwargs) -> TensorDict:
+        out = args[0] if "action" in kwargs else super().forward(*args, **kwargs)
+        dist = self.get_dist(out)
+
+        # ---- move UB computation UP (needed for weighted_scaling projection) ----
+        timestep_idx = out["observation", "timestep"].squeeze(0)
+        out["ub"] = out["observation", "realized_demand"].gather(-1, timestep_idx.unsqueeze(-1)).squeeze(-1)
+
+        # ---- store raw action BEFORE any projection ----
+        out["raw_action"] = out["action"]  # no need to clone unless you mutate it elsewhere
+
+        # ---- project NOW (so it can store masks into out) ----
+        out = self.handle_action_projection(out)
+        out["observation", "env_action"] = out["action"]
+
+        # ---- compute log-prob using raw action (policy sample space) ----
+        raw = out["raw_action"]
+
+        if self.projection_type in ["policy_clipping", "weighted_scaling_policy_clipping"]:
+            # For clipping-style distributions, you probably want log_prob at the *clipped* action.
+            # Keep your existing behavior or switch to out["action"] depending on your ClippedGaussian definition.
+            self.clipped_gaussian.mean = out["loc"]
+            self.clipped_gaussian.var = out["scale"]
+            self.clipped_gaussian.low = out["clip_min"]
+            self.clipped_gaussian.high = out["clip_max"]
+            out["log_prob"] = self.clipped_gaussian.log_prob(out["action"])
+        else:
+            out["log_prob"] = self.get_logprobs(raw, dist)
+
+        # ---- sample_log_prob should also be based on raw ----
+        logp_full = out["log_prob"]
+        out["sample_log_prob"] = logp_full.sum(dim=-1)
+
+        # ---- jacobian correction uses raw_action implicitly (via patch #1) ----
+        if self.jacobian_correction:
+            J = self.handle_jacobian_adjustment(out)
+            if J is not None:
+                out["adj_sample_log_prob"] = self.jacobian_adaptation(out["sample_log_prob"], jacobian=J).clamp(min=-20.0, max=20.0)
+
+        return out
+
+    # def forward(self, *args, **kwargs,) -> TensorDict:
+    #     out = args[0] if "action" in kwargs else super().forward(*args, **kwargs)
+    #
+    #     # Raise error for projection layers without log prob adaptation implementations
+    #     if self.projection_type not in self.projection_methods.keys():
+    #         raise ValueError(f"Log prob adaptation for projection type \'{self.projection_type}\' not supported.")
+    #
+    #     # Get distribution
+    #     dist = self.get_dist(out)
+    #
+    #     # Get log probabilities
+    #     if self.projection_type in ["policy_clipping", "weighted_scaling_policy_clipping"]:
+    #         # Apply log_prob adjustment of clipping based on https://arxiv.org/pdf/1802.07564v2.pdf
+    #         self.clipped_gaussian.mean = out["loc"]
+    #         self.clipped_gaussian.var = out["scale"]
+    #         self.clipped_gaussian.low = out["clip_min"]
+    #         self.clipped_gaussian.high = out["clip_max"]
+    #         out["log_prob"] = self.clipped_gaussian.log_prob(out["action"])
+    #     else:
+    #         out["log_prob"] = self.get_logprobs(out["action"], dist)
+    #
+    #     # Pre-compute upper bound for weighted_scaling
+    #     timestep_idx = out["observation", "timestep"].squeeze(0)
+    #     out["ub"] = out["observation", "realized_demand"].gather(-1, timestep_idx.unsqueeze(-1)).squeeze(-1)
+    #
+    #     # Store raw action before projection
+    #     raw = out["action"].clone()
+    #     out["raw_action"] = raw
+    #
+    #     # compute jacobian using active raw action
+    #     if ("action_mask" in out["observation"]):
+    #         # todo: check if this is generally effective
+    #         out["log_prob"], out["sample_log_prob"] = self.masked_subspace_logprobs(
+    #             out, raw, clamp_min=-50.0, handle_jacobian_adjustment=self.handle_jacobian_adjustment, jacobian_adaptation=self.jacobian_adaptation
+    #         )
+    #     else:
+    #         # todo: check if jacobian adjustment is added effectively!
+    #         # Ensure sample_log_prob exists
+    #         logp_full = out["log_prob"]  # shape [..., N]
+    #         out["sample_log_prob"] = logp_full.sum(dim=-1)  # shape [...]
+    #
+    #         # Apply jacobian correction in full space if implemented for projection_type
+    #         if self.jacobian_correction:
+    #             J, log_abs_det = self.handle_jacobian_adjustment(out)  # returns [..., N, N] or None
+    #             if J is not None:
+    #                 out["adj_sample_log_prob"]  = self.jacobian_adaptation(out["sample_log_prob"], jacobian=J, log_abs_det=log_abs_det).clamp(min=-20.0, max=20)
+    #
+    #     # Use critic for FW improvement direction if implemented
+    #     if self.projection_type == "frank_wolfe":
+    #         out["critic_fn"] = out.get("critic_fn", None)
+    #
+    #
+    #     # project once before env execution
+    #     out = self.handle_action_projection(out)
+    #     out["observation", "env_action"] = out["action"]
+    #     return out
+
+def torch_packbits_bool(x: torch.Tensor) -> torch.Tensor:
     """
-    x: bool tensor [..., N]
-    returns: uint8 tensor [..., ceil(N/8)] packed along last dim (LSB-first within each byte)
+    x: bool tensor [..., m]
+    returns: uint8 tensor [..., ceil(m/8)] packed along last dim
     """
     assert x.dtype == torch.bool
-    N = x.size(-1)
-    nbytes = (N + 7) // 8
-    pad = nbytes * 8 - N
+    m = x.size(-1)
+    nbytes = (m + 7) // 8
+    pad = nbytes * 8 - m
     if pad:
         x = F.pad(x, (0, pad), value=False)
 
-    x = x.reshape(*x.shape[:-1], nbytes, 8).to(torch.uint8)
-    weights = (1 << torch.arange(8, device=x.device, dtype=torch.uint8))  # [8]
-    return (x * weights).sum(dim=dim)  # [..., nbytes]
+    x = x.reshape(*x.shape[:-1], nbytes, 8).to(torch.uint8)  # 0/1
+    weights = (1 << torch.arange(8, device=x.device, dtype=torch.uint8))  # [8] uint8
+    packed = (x * weights).sum(dim=-1)  # becomes int64 by reduction
+    return packed.to(torch.uint8)       # safe: values in [0,255]
+
+def torch_unpackbits_uint8(packed: torch.Tensor, m: int) -> torch.Tensor:
+    """
+    packed: uint8 tensor [P, nbytes]
+    returns: bool tensor [P, m]
+    """
+    assert packed.dtype == torch.uint8
+    device = packed.device
+    bits = ((packed.unsqueeze(-1) >> torch.arange(8, device=device, dtype=torch.uint8)) & 1).to(torch.bool)
+    bits = bits.reshape(packed.shape[0], -1)
+    return bits[:, :m]

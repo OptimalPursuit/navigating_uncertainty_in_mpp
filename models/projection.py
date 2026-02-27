@@ -118,20 +118,33 @@ class InnerConvexViolationProjection(NormalizedProjection):
             x_new = x_new.clamp_min(0.0)
         return x_new
 
-    def forward(self, x: Tensor, A: Tensor, b: Tensor, var_mask: Optional[Tensor] = None, **kwargs) -> Tensor:
+    def forward(
+            self,
+            x: Tensor,
+            A: Tensor,
+            b: Tensor,
+            var_mask: Optional[Tensor] = None,
+            return_uvp_masks: bool = True,
+            **kwargs
+    ):
         if b.dim() not in (2, 3) or A.dim() not in (3, 4):
             raise ValueError("Invalid dimensions: b dim 2/3, A dim 3/4 expected.")
 
         # normalize shapes to [B,S,*]
-        b_BS = b.unsqueeze(1) if b.dim() == 2 else b  # [B,S,m]
-        A_BS = A.unsqueeze(1) if A.dim() == 3 else A  # [B,S,m,n]
-        x_BS = x.unsqueeze(1) if x.dim() == 2 else x  # [B,S,n]
+        b_BS = b.unsqueeze(1) if b.dim() == 2 else b
+        A_BS = A.unsqueeze(1) if A.dim() == 3 else A
+        x_BS = x.unsqueeze(1) if x.dim() == 2 else x
 
         if torch.isnan(x_BS).any():
             out = x_BS.squeeze(1) if b.dim() == 2 else x_BS
             if self.enforce_nonneg:
                 out = out.clamp_min(0.0)
-            return out * var_mask if var_mask is not None else out
+            out = out * var_mask if var_mask is not None else out
+            if return_uvp_masks:
+                # Cannot infer meaningful masks on NaN early-exit; return empty.
+                masks = torch.empty(0, device=out.device, dtype=torch.bool)
+                return out, masks
+            return out
 
         if self.enforce_nonneg:
             x_BS = x_BS.clamp_min(0.0)
@@ -159,18 +172,26 @@ class InnerConvexViolationProjection(NormalizedProjection):
         eta_f = eta.reshape(BS, 1, 1)  # [BS,1,1]
 
         if var_mask is not None:
-            vm = var_mask.unsqueeze(1) if var_mask.dim() == 2 else var_mask  # [B,S,n]
-            vm_f = vm.reshape(BS, n, 1)  # [BS,n,1]
+            vm = var_mask.unsqueeze(1) if var_mask.dim() == 2 else var_mask
+            vm_f = vm.reshape(BS, n, 1)
         else:
             vm_f = None
 
-        # ---- UVP loop (bmm) ----
-        for _ in range(self.K):
+        masks_f = None
+        if return_uvp_masks:
+            masks_f = torch.empty((BS, self.K, m), device=x.device, dtype=torch.bool)
+
+        # ---- UVP loop ----
+        for t in range(self.K):
             Ax = torch.bmm(A_f, x_f)  # [BS,m,1]
             r = Ax - b_f  # [BS,m,1]
+
+            if return_uvp_masks:
+                masks_f[:, t, :] = (r.squeeze(-1) > 0)
+
             v = torch.relu(r)  # [BS,m,1]
             g = torch.bmm(A_f.transpose(1, 2), v)  # [BS,n,1]
-            x_f = x_f - eta_f * g  # [BS,n,1]
+            x_f = x_f - eta_f * g
 
             if self.enforce_nonneg:
                 x_f = x_f.clamp_min(0.0)
@@ -194,16 +215,19 @@ class InnerConvexViolationProjection(NormalizedProjection):
                 x_alpha = self._alpha_map_from_anchor(x_, x_target, A_work, b_work)
                 x_ = torch.where(do_alpha, x_alpha, x_)
 
-                if self.enforce_nonneg:
-                    x_ = x_.clamp_min(0.0)
-                if var_mask is not None:
-                    x_ = x_ * (var_mask.unsqueeze(1) if var_mask.dim() == 2 else var_mask)
-
         if b.dim() == 2:
             x_ = x_.squeeze(1)
         if self.enforce_nonneg:
             x_ = x_.clamp_min(0.0)
-        return x_
+
+        if not return_uvp_masks:
+            return x_
+
+        masks_out = masks_f.reshape(B, S, self.K, m)
+        if b.dim() == 2:
+            masks_out = masks_out.squeeze(1)  # -> [B,K,m]
+
+        return x_, masks_out
 
 
 class CvxpyProjectionLayer(NormalizedProjection):
