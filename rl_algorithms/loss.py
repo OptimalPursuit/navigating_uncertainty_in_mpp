@@ -733,7 +733,7 @@ class FeasibilityClipPPOLoss(PPOLoss):
 
     def get_entropy_bonus(self, dist: d.Distribution, adj_log_prob: Tensor) -> torch.Tensor:
         if adj_log_prob is not None:
-            entropy = -adj_log_prob.mean()
+            entropy = -adj_log_prob
             return entropy.unsqueeze(-1)
         try:
             entropy = dist.entropy()
