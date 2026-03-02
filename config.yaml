@@ -1,7 +1,7 @@
 algorithm:
   clip_range: 0.2
   demand_lambda: 1.0
-  entropy_lambda: 0.010071090711145904
+  entropy_lambda: 0.0010071090711145904
   feasibility_lambda: 0.2828168389831236 #VP: 0.2828168389831236 #FR: 0.19541109874275892
   gae_lambda: 0.95
   gamma: 0.99
