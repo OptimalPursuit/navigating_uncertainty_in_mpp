@@ -68,58 +68,6 @@ if __name__ == "__main__":
             #  Maybe they can be merged into one function that also handles the command-line arguments?
             config = adapt_env_kwargs(config)
 
-            # # Adjust configuration based on command line arguments
-            # # Env
-            # config.env.env_name = args.env_name
-            # config.env.ports = args.ports
-            # config.env.TEU = args.teu
-            # config.env.capacity = args.capacity
-            # config.env.generalization = args.gen
-            # config.env.utilization_rate_initial_demand = args.ur
-            # config.env.cv_demand = args.cv
-            # # Algorithm
-            # config.algorithm.type = args.algorithm_type
-            # config.algorithm.feasibility_lambda = args.feasibility_lambda
-            # config.algorithm.primal_dual = args.primal_dual
-            # # Model
-            # config.model.encoder_type = args.encoder_type
-            # config.model.decoder_type = args.decoder_type
-            # config.model.dyn_embed = args.dyn_embed
-            # config.model.scale_max = args.scale_max
-            # config.training.projection_type = args.projection_type
-            # config.env.block_stowage_mask = args.block_stowage_mask
-            # config.model.use_mask_head = args.use_mask_head
-            # config.model.use_preload_mask = args.use_preload_mask
-            # config.training.normalize_constraints = args.normalize_constraints
-            #
-            # # Run
-            # config.testing.folder = args.folder
-            # config.model.phase = args.phase
-            # config.testing.feasibility_recovery = args.feasibility_recovery
-            # n_constraints = config.training.projection_kwargs.n_constraints
-            #
-            # config.algorithm.type, almost_projection_type = config.testing.folder.split("-")
-            # if almost_projection_type == "vp" or almost_projection_type == "fr+vp":
-            #     config.training.projection_type = "linear_violation"
-            # elif almost_projection_type == "bvp" or almost_projection_type == "fr+bvp":
-            #     config.training.projection_type = "bound_convex_violation"
-            # elif almost_projection_type == "ws+pc" or almost_projection_type == "fr+ws+pc":
-            #     config.training.projection_type = "weighted_scaling_policy_clipping"
-            # elif almost_projection_type == "vp+cp":
-            #     config.training.projection_type = "convex_program"
-            #     config.testing.folder = config.algorithm.type + "-vp"
-            # elif almost_projection_type == "ws+pc+cp":
-            #     config.training.projection_type = "convex_program"
-            #     config.testing.folder = config.algorithm.type + "-ws+pc"
-            # elif almost_projection_type == "fr" or almost_projection_type == "pen":
-            #     config.training.projection_type = "None"
-            # elif almost_projection_type == "pd":
-            #     config.training.projection_type = "None"
-            #     config.algorithm.primal_dual = True
-            # elif almost_projection_type == "cp":
-            #     config.training.projection_type = "convex_program"
-            # else:
-            #     raise ValueError(f"Unsupported projection type: {almost_projection_type}")
             print(f"Running with folder: {config.testing.folder}, "
                   f"algorithm type: {config.algorithm.type},"
                   f"generalization: {config.env.generalization},"
@@ -128,17 +76,6 @@ if __name__ == "__main__":
             # Initialize W&B
             wandb.init(config=config)
             sweep_config = wandb.config
-
-            # if almost_projection_type == "pd":
-            #     config['training']['pd_lr'] = sweep_config.pd_lr
-            #     config['algorithm']['feasibility_lambda'] = 1.0
-            # elif almost_projection_type == "fr":
-            #     config['algorithm']['feasibility_lambda'] = sweep_config.feasibility_lambda
-            #     for i in range(n_constraints):
-            #         # Error handling for missing lagrangian multipliers
-            #         if f'lagrangian_multiplier_{i}' not in sweep_config:
-            #             raise ValueError(f"Missing lagrangian_multiplier_{i} in sweep configuration")
-            #         config['algorithm'][f'lagrangian_multiplier_{i}'] = sweep_config[f'lagrangian_multiplier_{i}']
 
             # Dynamic code to check if keys exist in sweep_config and update config accordingly
             for key in sweep_config.keys():
@@ -173,7 +110,7 @@ if __name__ == "__main__":
             wandb.finish()
 
     # Load the sweep configuration from YAML
-    with open('sweep_config_lr.yaml') as file:
+    with open('sweep_config_lr_lambda.yaml') as file:
         sweep_config = yaml.safe_load(file)
 
     # Create lagrangian multipliers in sweep_config for each constraint
