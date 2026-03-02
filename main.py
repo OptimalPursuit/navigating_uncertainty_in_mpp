@@ -289,7 +289,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     # Algorithm parameters
     parser.add_argument('--algorithm_type', type=str, default='sac', help="Type of algorithm to use.")
     parser.add_argument('--feasibility_lambda', type=float, default=0.28, help="Lambda for feasibility.")
-    parser.add_argument('--primal_dual', type=bool, default=True, help="Enable primal-dual method.")
+    parser.add_argument('--primal_dual', type=bool, default=False, help="Enable primal-dual method.")
 
     # Model parameters
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
