@@ -89,7 +89,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
         "stability_violations": torch.zeros(num_episodes, device=device),  # [num_episodes]
         "pbs_violations": torch.zeros(num_episodes, device=device),  # [num_episodes]
         "max_revenues": torch.zeros(num_episodes, device=device),  # [num_episodes]
-        "utilization_rate": torch.zeros(num_episodes, device=device),  # [num_episodes]
+        "residual_capacity": torch.zeros((num_episodes, n_step), device=device),  # [num_episodes]
     }
 
     with torch.no_grad():
@@ -138,10 +138,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
                 violation[zero_idx] = 0.0
 
                 # Utilization rate calculation
-                total_capacity = traj["observation", "capacity"][0].sum().item()
-                total_demand = traj["observation", "realized_demand"][0].sum().item()
-                utilization_rate = total_demand / total_capacity if total_capacity > 0 else 0.0
-
+                residual_capacity = traj["observation", "residual_capacity"][0].sum(dim=-1)
 
                 # Determine is_feasible and total_violation for metrics
                 total_violation = violation.sum().item()
@@ -154,7 +151,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
                     "total_violation": total_violation,
                     "feasible": is_feasible,
                     "max_revenue": max_revenue,
-                    "utilization_rate": utilization_rate,
+                    "residual_capacity": residual_capacity,
                 }
 
                 if is_feasible:
@@ -178,7 +175,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
             metrics["inference_times"][episode] = end_time - start_time
             metrics["feasible_instance"][episode] = 1.0 if best["feasible"] else 0.0
             metrics["max_revenues"][episode] = best["max_revenue"]
-            metrics["utilization_rate"][episode] = best["utilization_rate"]
+            metrics["residual_capacity"][episode] = best["residual_capacity"]
 
             # Detailed violation metrics
             violation = best["violation"]
