@@ -288,7 +288,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
 
     # Algorithm parameters
     parser.add_argument('--algorithm_type', type=str, default='sac', help="Type of algorithm to use.")
-    parser.add_argument('--feasibility_lambda', type=float, default=0., help="Lambda for feasibility.")
+    parser.add_argument('--feasibility_lambda', type=float, default=0.28, help="Lambda for feasibility.")
     parser.add_argument('--primal_dual', type=bool, default=False, help="Enable primal-dual method.")
 
     # Model parameters
@@ -314,8 +314,8 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     # lr: 0.00014690714579803494
     # pd_lr: 0.000034690714579803494
     parser.add_argument('--optimizer', type=str, default="Adam", help="Optimizer type.")
-    parser.add_argument('--learning_rate', type=float, default=0.000012, help="Learning rate for the optimizer.")
-    parser.add_argument('--pd_learning_rate', type=float, default=0.0003, help="Learning rate for primal-dual optimizer.")
+    parser.add_argument('--learning_rate', type=float, default=0.00015, help="Learning rate for the optimizer.")
+    parser.add_argument('--pd_learning_rate', type=float, default=0.001, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty_ECML', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='sac-vp', help="Folder name for the run.")
     parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
