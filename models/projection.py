@@ -248,6 +248,7 @@ class CvxpyProjectionLayer(NormalizedProjection):
         self.m = int(n_constraints)
         self.slack_penalty = float(slack_penalty)
         self.stab_idx = int(stab_idx)
+        # self.feasible_recovery = bool(kwargs.get("feasible_recovery", False))
 
         x = cp.Variable(self.n)
         soft_dim = abs(self.stab_idx) if self.stab_idx < 0 else (self.m - self.stab_idx)
