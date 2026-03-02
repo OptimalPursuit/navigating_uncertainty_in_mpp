@@ -305,7 +305,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
     parser.add_argument('--projection_type', type=str, default="none", help="Projection type.")
     parser.add_argument('--projection_kwargs', type=json.loads, default={
-        'alpha': 0.01, 'delta': 0.01, 'max_iter': 100, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
+        'alpha': 0.01, 'delta': 0.01, 'max_iter': 200, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
         'spectral_norm': 'svd',  # power_iters, power_iters, 'frobenius'
         'power_iters': 3, 'enable_alpha_map':False, 'enforce_nonneg':True,  'jacobian_correction':True,
         }, help="Projection parameters as JSON string.")
