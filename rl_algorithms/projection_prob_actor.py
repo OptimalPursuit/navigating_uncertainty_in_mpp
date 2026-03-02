@@ -135,6 +135,9 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
         return out
 
     def franke_wolfe_improvement(self, out:TensorDict) -> TensorDict:
+        if "critic_fn" not in out:
+            out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], s=out, critic_fn=None, mode="proj")
+            return out
         out["action"] = self.projection_layer(out["action"], out["lhs_A"], out["rhs"], s=out, critic_fn=out["critic_fn"])
         return out
 
@@ -187,98 +190,6 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
 
         _, logabsdet = torch.linalg.slogdet(jacobian)
         return jacobian, logabsdet
-
-    # def jacobian_uvp_K_steps(self, out: TensorDict):
-    #     """
-    #     Optimized exact Jacobian given precomputed per-step masks (active-set indicators).
-    #     Returns:
-    #       J: [B,n,n] or [B,S,n,n]
-    #       total_logabsdet: [B] or [B,S]  (log|det J|), accumulated as sum_k log|det J_step,k|
-    #     """
-    #     x0 = out.get("raw_action", out["action"])
-    #     A = out["lhs_A"]
-    #     b = out["rhs"]
-    #     masks = out.get("uvp_masks", out.get("violation_mask", None))
-    #     if masks is None:
-    #         raise ValueError("Need uvp_masks/violation_mask for this optimized Jacobian path.")
-    #
-    #     proj = self.projection_layer
-    #
-    #     # unify shapes -> [B,S,...]
-    #     b_ = b.unsqueeze(1) if b.dim() == 2 else b
-    #     A_ = A.unsqueeze(1) if A.dim() == 3 else A
-    #     x = x0.unsqueeze(1) if x0.dim() == 2 else x0  # only for dtype/device
-    #
-    #     B, S, m, n = A_.shape
-    #     dtype, device = x.dtype, x.device
-    #
-    #     A_work, _ = proj._normalize_constraints(A_, b_)
-    #
-    #     # eta -> [B,S,1,1]
-    #     eta = proj.get_eta(A, b)
-    #     if eta.dim() == 1:
-    #         eta = eta[:, None]  # [B,1]
-    #     eta = eta.unsqueeze(-1).unsqueeze(-1)  # [B,S,1,1] (or [B,1,1,1])
-    #     if eta.shape[1] == 1 and S != 1:
-    #         eta = eta.expand(B, S, 1, 1)
-    #
-    #     # masks expected [B,K,S,m] or [B,K,m]; unify -> [B,K,S,m] then flatten to [BS,K,m]
-    #     masks = masks.to(dtype)
-    #     K = proj.K
-    #
-    #     # flatten batch dims for bmm
-    #     BS = B * S
-    #     Aflat = A_work.reshape(BS, m, n).contiguous()
-    #     ATflat = Aflat.transpose(1, 2).contiguous()
-    #     etaf = eta.reshape(BS, 1, 1).contiguous()
-    #
-    #     # J init (no giant [B,S,n,n] eye allocation inside the loop)
-    #     J = torch.eye(n, device=device, dtype=dtype).expand(BS, n, n).clone()
-    #
-    #     # Pre-scale AT by eta once: AT_eta = eta * A^T
-    #     AT_eta = ATflat * etaf  # [BS,n,m]
-    #
-    #     # logdet accumulation: use Sylvester: det(I_n - eta A^T D A) = det(I_m - eta D (A A^T) D)
-    #     # Option A (compute-efficient, memory-heavy): precompute G = A A^T once.
-    #     # Option B (memory-light): compute Gk each step via (D*A)(D*A)^T.
-    #     precompute_gram = True
-    #     if precompute_gram:
-    #         G = torch.bmm(Aflat, Aflat.transpose(1, 2))  # [BS,m,m]
-    #     I_m = torch.eye(m, device=device, dtype=dtype).expand(BS, m, m)
-    #     total_logabsdet = torch.zeros(BS, device=device, dtype=dtype)
-    #
-    #     masks_f = masks.reshape(BS, K, m).contiguous()
-    #
-    #     for k in range(K):
-    #         d = masks_f[:, k, :]  # [BS,m]
-    #         d_col = d.unsqueeze(-1)  # [BS,m,1]
-    #
-    #         # J <- (I - eta A^T D A) J  ==  J - eta A^T (D (A J))
-    #         AJ = torch.bmm(Aflat, J)  # [BS,m,n]
-    #         AJ.mul_(d_col)  # apply D without forming [m,m]
-    #         torch.baddbmm(J, AT_eta, AJ, beta=1.0, alpha=-1.0, out=J)
-    #
-    #         # log|det J_step,k| in m-space
-    #         if precompute_gram:
-    #             # D G D via elementwise scaling (since D is diagonal with 0/1 entries)
-    #             Gk = G * (d.unsqueeze(2) * d.unsqueeze(1))  # [BS,m,m]
-    #         else:
-    #             AD = Aflat * d_col  # [BS,m,n]
-    #             Gk = torch.bmm(AD, AD.transpose(1, 2))  # [BS,m,m]
-    #
-    #         Mk = I_m - etaf * Gk  # [BS,m,m]
-    #         _, lad = torch.linalg.slogdet(Mk)
-    #         total_logabsdet.add_(lad)
-    #
-    #     # reshape back
-    #     J = J.view(B, S, n, n)
-    #     total_logabsdet = total_logabsdet.view(B, S)
-    #
-    #     if A.dim() == 3:
-    #         J = J.squeeze(1)
-    #         total_logabsdet = total_logabsdet.squeeze(1)
-    #
-    #     return J, total_logabsdet
 
     def jacobian_uvp_K_steps(self, out: TensorDict) -> Tuple[Tensor, Tensor]:
         """
@@ -467,6 +378,10 @@ class ProjectionProbabilisticActor(ProbabilisticActor):
     def forward(self, *args, **kwargs) -> TensorDict:
         out = args[0] if "action" in kwargs else super().forward(*args, **kwargs)
         dist = self.get_dist(out)
+
+        # print(out.keys())
+        # breakpoint()
+            # tensordict.set("critic_fn", self.qvalue_network)
 
         # ---- move UB computation UP (needed for weighted_scaling projection) ----
         timestep_idx = out["observation", "timestep"].squeeze(0)
