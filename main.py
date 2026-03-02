@@ -234,10 +234,10 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
     elif config.model.phase == "test":
         alpha = config.training.projection_kwargs.alpha
         delta = config.training.projection_kwargs.delta
-        use_spectral_eta = config.training.projection_kwargs.use_spectral_eta
+        spectral_norm = config.training.projection_kwargs.spectral_norm
         max_iter = config.training.projection_kwargs.max_iter
         power_iters = config.training.projection_kwargs.power_iters
-        vp_str = f"{max_iter}_{power_iters}_spectr{use_spectral_eta}_alpha{config.training.projection_kwargs.enable_alpha_map}"
+        vp_str = f"{max_iter}_{power_iters}_spectr{spectral_norm}_alpha{config.training.projection_kwargs.enable_alpha_map}"
         policy, critic = initialize_policy_and_critic(config, env, device)
 
         # Evaluate policy
@@ -314,7 +314,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     # lr: 0.00014690714579803494
     # pd_lr: 0.000034690714579803494
     parser.add_argument('--optimizer', type=str, default="Adam", help="Optimizer type.")
-    parser.add_argument('--learning_rate', type=float, default=0.00015, help="Learning rate for the optimizer.")
+    parser.add_argument('--learning_rate', type=float, default=3e-6, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.001, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty_ECML', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='sac-pen', help="Folder name for the run.")
