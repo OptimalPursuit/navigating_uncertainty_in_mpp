@@ -656,7 +656,7 @@ class FeasibilityClipPPOLoss(PPOLoss):
         td_out.set("clip_fraction", clip_fraction)
 
         if self.entropy_bonus:
-            entropy = self.get_entropy_bonus(dist, adj_log_prob=tensordict.get("adj_sample_log_prob", None))
+            entropy = self.get_entropy_bonus(dist)
             td_out.set("entropy", entropy.detach().mean())  # for logging
             td_out.set("kl_approx", kl_approx.detach().mean())  # for logging
             td_out.set("loss_entropy", -self.entropy_coef * entropy)
@@ -731,10 +731,7 @@ class FeasibilityClipPPOLoss(PPOLoss):
 
         return log_weight, dist, kl_approx
 
-    def get_entropy_bonus(self, dist: d.Distribution, adj_log_prob: Tensor) -> torch.Tensor:
-        if adj_log_prob is not None:
-            entropy = -adj_log_prob
-            return entropy.unsqueeze(-1)
+    def get_entropy_bonus(self, dist: d.Distribution) -> torch.Tensor:
         try:
             entropy = dist.entropy()
         except NotImplementedError:
