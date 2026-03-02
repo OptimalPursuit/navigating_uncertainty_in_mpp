@@ -289,7 +289,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     # Algorithm parameters
     parser.add_argument('--algorithm_type', type=str, default='sac', help="Type of algorithm to use.")
     parser.add_argument('--feasibility_lambda', type=float, default=0.28, help="Lambda for feasibility.")
-    parser.add_argument('--primal_dual', type=bool, default=False, help="Enable primal-dual method.")
+    parser.add_argument('--primal_dual', type=bool, default=True, help="Enable primal-dual method.")
 
     # Model parameters
     parser.add_argument('--encoder_type', type=str, default='attention', help="Type of encoder to use.")
@@ -317,7 +317,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser.add_argument('--learning_rate', type=float, default=0.00015, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.001, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty_ECML', help="Path for testing results.")
-    parser.add_argument('--folder', type=str, default='sac-pen', help="Folder name for the run.")
+    parser.add_argument('--folder', type=str, default='sac-lag', help="Folder name for the run.")
     parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=bool, default=False, help="Enable feasibility recovery.")
     parser.add_argument('--num_episodes', type=int, default=30, help="Number of test episodes.")
