@@ -297,13 +297,13 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
     parser.add_argument('--embed_dim', type=int, default=128, help="Dimension of embeddings.")
     parser.add_argument('--hidden_dim', type=int, default=512, help="Dimension of hidden layers.")
-    parser.add_argument('--temperature', type=int, default=1.0, help="Temperature of policy.")
-    parser.add_argument('--scale_max', type=float, default=2.0, help="Maximum value of policy scale.")
+    parser.add_argument('--temperature', type=int, default=0.1, help="Temperature of policy.")
+    parser.add_argument('--scale_max', type=float, default=9.46, help="Maximum value of policy scale.")
     parser.add_argument('--block_stowage_mask', type=bool, default=False, help="Block stowage mask.")
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
-    parser.add_argument('--projection_type', type=str, default="inner_convex_violation", help="Projection type.")
+    parser.add_argument('--projection_type', type=str, default="none", help="Projection type.")
     parser.add_argument('--projection_kwargs', type=json.loads, default={
         'alpha': 0.01, 'delta': 0.01, 'max_iter': 100, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25,
         'spectral_norm': 'svd',  # power_iters, power_iters, 'frobenius'
