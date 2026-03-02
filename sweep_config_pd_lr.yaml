@@ -1,0 +1,14 @@
+method: bayes
+metric:
+  name: validation.total_profit
+  goal: maximize
+
+early_terminate:
+  type: hyperband
+  min_iter: 10
+
+parameters:
+  pd_lr:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-3
