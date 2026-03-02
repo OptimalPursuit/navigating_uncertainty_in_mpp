@@ -61,7 +61,7 @@ model:
   dyn_embed: self_attention # ffn, self_attention
   embed_dim: 128
   encoder_type: attention # mlp, attention
-  hidden_dim: 128
+  hidden_dim: 512
   init_dim: 8
   logger: wandb
   lr_end_factor: 0.5

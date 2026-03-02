@@ -296,7 +296,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser.add_argument('--decoder_type', type=str, default='attention', help="Type of decoder to use.")
     parser.add_argument('--dyn_embed', type=str, default='self_attention', help="Dynamic embedding type.")
     parser.add_argument('--embed_dim', type=int, default=128, help="Dimension of embeddings.")
-    parser.add_argument('--hidden_dim', type=int, default=128, help="Dimension of hidden layers.")
+    parser.add_argument('--hidden_dim', type=int, default=512, help="Dimension of hidden layers.")
     parser.add_argument('--temperature', type=int, default=1.0, help="Temperature of policy.")
     parser.add_argument('--scale_max', type=float, default=2.0, help="Maximum value of policy scale.")
     parser.add_argument('--block_stowage_mask', type=bool, default=False, help="Block stowage mask.")
