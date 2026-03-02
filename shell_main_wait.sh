@@ -51,6 +51,7 @@ LOG_FILE="output_files/output${PID}.log"
 echo "Started PID $PID. Logging to $LOG_FILE"
 
 # Block until done (so outer loops run one-by-one)
+wait "$PID"
 STATUS=$?
 
 if [ "$STATUS" -eq 0 ]; then
