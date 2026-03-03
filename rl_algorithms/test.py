@@ -153,8 +153,8 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
 
                 # Determine is_feasible and total_violation for metrics
                 total_violation = violation.sum().item()
-                total_feasibility_violation = feas_violation.sum(dim=-1)
-                is_feasible = (total_feasibility_violation <= delta).all().item()
+                total_feasibility_violation = feas_violation.sum().item()
+                is_feasible = (feas_violation.sum(dim=-1) <= delta).all().item()
 
                 rollout_info = {
                     "trajectory": traj,
