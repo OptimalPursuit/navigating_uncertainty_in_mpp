@@ -72,7 +72,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
     max_paths = 2 # Run small batch, as we care about instances
     test_env = make_env(env_kwargs, batch_size=[max_paths], device=device)
     n_step = test_env.T * test_env.K  # Maximum steps per episode (T x K)
-    delta = 0.1
+    delta = 1/8  # Feasibility violation threshold
     num_rollouts = 1  # Number of rollouts per episode
 
     # Set policy to evaluation mode
@@ -154,7 +154,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
                 # Determine is_feasible and total_violation for metrics
                 total_violation = violation.sum().item()
                 total_feasibility_violation = feas_violation.sum().item()
-                is_feasible = (feas_violation.sum(dim=-1) <= delta).all().item()
+                is_feasible = (feas_violation <= delta).all().item()
 
                 rollout_info = {
                     "trajectory": traj,
