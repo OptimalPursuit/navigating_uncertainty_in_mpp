@@ -82,6 +82,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
     metrics = {
         "total_profit": torch.zeros(num_episodes, device=device),  # [num_episodes]
         "total_violations": torch.zeros(num_episodes, device=device),  # [num_episodes]
+        "total_feasibility_violations": torch.zeros(num_episodes, device=device),  # [num_episodes]
         "inference_times": torch.zeros(num_episodes, device=device),  # [num_episodes]
         "feasible_instance":torch.zeros(num_episodes, device=device),  # [num_episodes]
         "demand_violations": torch.zeros(num_episodes, device=device),  # [num_episodes]
@@ -137,18 +138,30 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
                 zero_idx = torch.where((traj["action"][0] == 0.0) & (traj["clip_max"][0] == 0.0))
                 violation[zero_idx] = 0.0
 
-                # Utilization rate calculation
+                # Residual capacity calculation
                 residual_capacity = traj["observation", "residual_capacity"][0].sum(dim=-1)
+
+                # Relevant stability steps: (P-p) * K: (P-1)*K, (P-2)*K, ..., 1*K
+                # Get vector of stability steps
+                feas_violation = violation.clone()
+                mask = test_env.next_port_mask.bool()
+                feas_violation[:, -4:] = torch.where(
+                    mask[:, None],
+                    feas_violation[:, -4:],
+                    torch.zeros_like(feas_violation[:, -4:])
+                )
 
                 # Determine is_feasible and total_violation for metrics
                 total_violation = violation.sum().item()
-                is_feasible = total_violation <= delta
+                total_feasibility_violation = feas_violation.sum().item()
+                is_feasible = total_feasibility_violation <= delta
 
                 rollout_info = {
                     "trajectory": traj,
                     "profit": profit,
                     "violation": violation,
                     "total_violation": total_violation,
+                    "total_feasibility_violation": total_feasibility_violation,
                     "feasible": is_feasible,
                     "max_revenue": max_revenue,
                     "residual_capacity": residual_capacity,
@@ -172,6 +185,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
             # Metrics
             metrics["total_profit"][episode] = best["profit"]
             metrics["total_violations"][episode] = best["total_violation"]
+            metrics["total_feasibility_violations"][episode] = best["total_feasibility_violation"]
             metrics["inference_times"][episode] = end_time - start_time
             metrics["feasible_instance"][episode] = 1.0 if best["feasible"] else 0.0
             metrics["max_revenues"][episode] = best["max_revenue"]
