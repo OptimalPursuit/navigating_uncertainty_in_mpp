@@ -287,8 +287,8 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser.add_argument('--spot_percentage', type=float, default=0.3, help="Percentage of spot demand.")
 
     # Algorithm parameters
-    parser.add_argument('--algorithm_type', type=str, default='sac', help="Type of algorithm to use.")
-    parser.add_argument('--feasibility_lambda', type=float, default=0.28, help="Lambda for feasibility.")
+    parser.add_argument('--algorithm_type', type=str, default='ppo', help="Type of algorithm to use.")
+    parser.add_argument('--feasibility_lambda', type=float, default=0.02267691433060797, help="Lambda for feasibility.")
     parser.add_argument('--primal_dual', type=bool, default=False, help="Enable primal-dual method.")
 
     # Model parameters
@@ -314,10 +314,10 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     # lr: 0.00014690714579803494
     # pd_lr: 0.000034690714579803494
     parser.add_argument('--optimizer', type=str, default="Adam", help="Optimizer type.")
-    parser.add_argument('--learning_rate', type=float, default=3e-6, help="Learning rate for the optimizer.")
+    parser.add_argument('--learning_rate', type=float, default=0.00001297388880834932, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.001, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty_ECML', help="Path for testing results.")
-    parser.add_argument('--folder', type=str, default='sac-pen', help="Folder name for the run.")
+    parser.add_argument('--folder', type=str, default='ppo-pen', help="Folder name for the run.")
     parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=bool, default=False, help="Enable feasibility recovery.")
     parser.add_argument('--num_episodes', type=int, default=30, help="Number of test episodes.")
@@ -330,6 +330,9 @@ def deep_update(base, updates):
         else:
             base[key] = value
 
+# SAC-Pen:
+# lr:0.00001297388880834932
+# feasibility_lambda:0.02267691433060797
 
 if __name__ == "__main__":
     # Load static configuration from the YAML file
@@ -371,6 +374,15 @@ if __name__ == "__main__":
     config.algorithm.type = args.algorithm_type
     config.algorithm.feasibility_lambda = args.feasibility_lambda
     config.algorithm.primal_dual = args.primal_dual
+    if args.projection_type == "none":
+        lag_mul = [0.331570986, 0.032759339, 0.001531288, 0.003548948, 0.666216504, 0.005192451, 0.017794303, 0.195144919,
+                   0.006129159, 0.002895218, 0.039993503, 0.414487149, 0.051484553, 0.003055576, 0.353628328, 0.115804592,
+                   0.003862152, 0.063443368, 0.320380299, 0.303596665, 0.029632107, 0.328031857, 0.002295253, 0.717863671,
+                   0.001551359]
+        for i in range(len(lag_mul)):
+            key = f"lagrangian_multiplier_{i}"
+            config.algorithm[key] = lag_mul[i]
+
     # Model
     config.model.encoder_type = args.encoder_type
     config.model.decoder_type = args.decoder_type
