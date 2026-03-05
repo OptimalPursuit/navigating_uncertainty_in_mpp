@@ -6,6 +6,7 @@
 #SBATCH --time=7-00:00:00                       # Run time (d-hh:mm:ss)
 #SBATCH --partition=cores_any                   # Select the cores_any partition
 #SBATCH --mail-type=FAIL,END                    # Send an email when the job finishes or fails
+#SBATCH --nodelist=cn8                          # Run only on cn8
 
 # Usage check
 if [ $# -lt 1 ]; then
