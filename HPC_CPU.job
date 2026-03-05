@@ -1,41 +1,32 @@
 #!/bin/bash
-#SBATCH --job-name=scenario_tree_mip.py         # Job name
-#SBATCH --output=output_files/cpu_job.%j.out    # Name of output file (%j expands to jobId)
-#SBATCH --error=output_files/cpu_job.%j.err     # Separate error log
-#SBATCH --cpus-per-task=32                      # Use fewer CPUs to fit into `mix` nodes
-#SBATCH --time=7-00:00:00                       # Run time (d-hh:mm:ss)
-#SBATCH --partition=cores                       # Select the cores_any partition
-#SBATCH --mail-type=FAIL,END                    # Send an email when the job finishes or fails
-#SBATCH --nodelist=cn8                          # Run only on cn8
+#SBATCH --job-name=scenario_tree_mip.py
+#SBATCH --output=output_files/cpu_job.%j.out
+#SBATCH --error=output_files/cpu_job.%j.err
+#SBATCH --cpus-per-task=32
+#SBATCH --time=7-00:00:00
+#SBATCH --partition=cores
+#SBATCH --mail-type=FAIL,END
+#SBATCH --nodelist=cn8
 
-# Usage check
-if [ $# -lt 1 ]; then
-    echo "Usage: sbatch $0 <output_name>"
-    exit 1
-fi
-
-OUTPUT_NAME=$1
+# Auto output name (unique per job)
+OUTPUT_NAME="scenario_tree_mip.${SLURM_JOB_ID}"
 OUTPUT_FILE="output_files/${OUTPUT_NAME}.out"
 
-# Create folder if it doesn't exist
 mkdir -p output_files
 
-# Use tmp in own memory
-TMP_BASE="${SCRATCH:-$HOME/tmp}"          # prefer $SCRATCH if defined
+TMP_BASE="${SCRATCH:-$HOME/tmp}"
 mkdir -p "$TMP_BASE"
 JOB_TMPDIR="$(mktemp -d "$TMP_BASE/${SLURM_JOB_ID}.XXXX")"
 
 export TMPDIR="$JOB_TMPDIR"
 export TMP="$JOB_TMPDIR"
 export TEMP="$JOB_TMPDIR"
-export TMP_DIR="$JOB_TMPDIR"              # matches admin’s check
+export TMP_DIR="$JOB_TMPDIR"
 
 cleanup() { rm -rf "$JOB_TMPDIR"; }
 trap cleanup EXIT
 echo "Using TMPDIR=$TMPDIR"
 
-# Print node hostname
 hostname
 
-# Run Python and redirect stdout + stderr
 python -u scenario_tree_mip.py > "$OUTPUT_FILE" 2>&1
