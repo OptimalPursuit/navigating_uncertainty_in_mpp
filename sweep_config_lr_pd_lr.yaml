@@ -8,6 +8,11 @@ early_terminate:
   min_iter: 10
 
 parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-3
+
   pd_lr:
     distribution: log_uniform_values
     min: 1e-6
