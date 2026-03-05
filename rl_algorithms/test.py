@@ -1,4 +1,5 @@
 import time
+import numpy as np
 import torch
 import torch.nn as nn
 import math
@@ -55,7 +56,7 @@ def compute_summary_stats(metrics:Dict, confidence_level:float=0.95) -> Dict:
     return summary_stats
 
 # Main function
-def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.device]="cuda", **kwargs) -> Tuple[Dict, Dict]:
+def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.device]="cuda", **kwargs) -> Tuple[Dict, Dict, Optional[np.ndarray]]:
     """
     Evaluate the policy and critic on the test environment.
     Args:
@@ -91,6 +92,7 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
         "pbs_violations": torch.zeros(num_episodes, device=device),  # [num_episodes]
         "max_revenues": torch.zeros(num_episodes, device=device),  # [num_episodes]
         "residual_capacity": torch.zeros((num_episodes, n_step), device=device),  # [num_episodes]
+        "real_demand": torch.zeros((num_episodes, n_step), device=device),  # [num_episodes, n_step]
     }
 
     with torch.no_grad():
@@ -126,6 +128,9 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
                     auto_reset=False,
                     tensordict=td_r,
                 )
+
+                # Store real demand for analysis
+                metrics["real_demand"][episode] = traj["observation", "realized_demand"][0,0]
 
                 # Calculate profit and max revenue
                 profit = traj["profit"][0].sum().item()
@@ -207,4 +212,6 @@ def evaluate_model(policy:nn.Module, config:DotMap, device:Union[str,torch.devic
     # Summarize episode-level metrics (mean and std)
     summary_stats = compute_summary_stats(metrics)
     test_env.close()
-    return metrics, summary_stats
+
+    real_demand = metrics["real_demand"].cpu().numpy()
+    return metrics, summary_stats, real_demand
