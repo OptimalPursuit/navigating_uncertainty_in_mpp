@@ -16,7 +16,7 @@ algorithm:
 env:
   CI_target: 1.25
   LCG_target: 0.95
-  TEU: 20000 # 20000, 1000
+  TEU: 1000 # 20000, 1000
   VCG_target: 1.05
   bays: 20 #10, 20
   blocks: 2
@@ -30,8 +30,8 @@ env:
   demand_perturbation: 0.2
   distribution: lognormal # normal, uniform, poisson, lognormal, fixed
   dirichlet_alpha: 0.3
-  duration_variable_revenue: true # only true AI2STOW
-  env_name: block_mpp #block_mpp #mpp
+  duration_variable_revenue: false # only true AI2STOW
+  env_name: mpp #block_mpp #mpp
   episode_order: standard
   generalization: false
   hatch_overstowage_costs: 0.333333
