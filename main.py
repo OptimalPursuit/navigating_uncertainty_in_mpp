@@ -244,7 +244,7 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
         policy_load_path = f"{path}/policy.pth"
         missing, unexpected = policy.load_state_dict(torch.load(policy_load_path, map_location=device), strict=False)
 
-        metrics, summary_stats = evaluate_model(policy, config, device=device, critic=critic, **config.testing)
+        metrics, summary_stats, real_demand = evaluate_model(policy, config, device=device, critic=critic, **config.testing)
         print(summary_stats)
 
         # Save summary statistics in path
@@ -260,6 +260,10 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
                         f"_UR{config.env.utilization_rate_initial_demand}_VP{vp_str}.yaml"
         with open(f"{path}/{file_name}", "w") as file:
                         yaml.dump(summary_stats, file)
+
+        # Save real demand in csv, shape: (N, steps)
+        # Save numpy array as csv
+        np.savetxt(f"{path}/demand_P{config.env.ports}_gen{config.env.generalization}_UR{config.env.utilization_rate_initial_demand}_cv{config.env.cv_demand}.csv", real_demand, delimiter=",")
 
 def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Script with WandB integration.")
@@ -318,7 +322,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser.add_argument('--pd_learning_rate', type=float, default=0.001, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty_ECML', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='ppo-pen', help="Folder name for the run.")
-    parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
+    parser.add_argument('--phase', type=str, default='test', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=bool, default=False, help="Enable feasibility recovery.")
     parser.add_argument('--num_episodes', type=int, default=30, help="Number of test episodes.")
     return parser.parse_args()
