@@ -1,5 +1,6 @@
 # Imports
 import numpy as np
+import pandas as pd
 import torch as th
 import torch.nn as nn
 import random
@@ -447,84 +448,81 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                             mixing[stage, node_id, bay, block] = \
                                 mdl.binary_var(name=f'mixing_{start_stage}_{stage}_{node_id}_{bay}_{block}')
 
-    def add_non_anticipativity(stage, node_ids, load_moves, demand, parent):
-        # Only for multistage stochastic program, and only from stage 1 onwards
-        if perfect_information or stochastic_algorithm not in ["multi_stage", "mpc"] or stage == 0:
+    def info_key(stage: int, node_id: int, parent):
+        chain = []
+        s, n = stage, node_id
+        while s > 0:
+            p = parent.get((s, n), None)
+            if p is None:
+                break
+            if not (isinstance(p, tuple) and len(p) == 2):
+                raise TypeError(f"Bad parent entry at {(s, n)}: {p} (type={type(p)})")
+            ps, pn = p
+            chain.append((ps, pn))
+            s, n = ps, pn
+        chain.reverse()
+        return tuple(chain)
+
+    def add_non_anticipativity(stage, node_ids, load_moves, parent, block_mpp: bool):
+        if perfect_information or stochastic_algorithm != "multi_stage" or stage == 0:
             return
 
-        for idx1, n1 in enumerate(node_ids):
-            h1 = get_demand_history(stage, n1, demand, parent)
-            for n2 in node_ids[idx1 + 1:]:
-                h2 = get_demand_history(stage, n2, demand, parent)
-                if np.allclose(h1, h2, atol=1e-5):
+        groups = defaultdict(list)
+        for n in node_ids:
+            groups[info_key(stage, n, parent)].append(n)
+
+        for _, g in groups.items():
+            if len(g) <= 1:
+                continue
+            base = g[0]
+            for other in g[1:]:
+                # 1) NA for x (your existing constraints)
+                for b in range(B):
+                    for bl in range(BL):
+                        for d in range(D):
+                            for k in range(K):
+                                for (i, j) in load_moves:
+                                    mdl.add_constraint(
+                                        x[stage, base, b, d, bl, k, i, j] ==
+                                        x[stage, other, b, d, bl, k, i, j],
+                                        ctname=f"na_x_{stage}_{base}_{other}_{b}_{d}_{bl}_{k}_{i}_{j}"
+                                    )
+
+                # 2) NA for hatch decisions/cost drivers
+                for b in range(B):
+                    for bl in range(BL):
+                        mdl.add_constraint(
+                            HM[stage, base, b, bl] == HM[stage, other, b, bl],
+                            ctname=f"na_HM_{stage}_{base}_{other}_{b}_{bl}"
+                        )
+                        mdl.add_constraint(
+                            HO[stage, base, b, bl] == HO[stage, other, b, bl],
+                            ctname=f"na_HO_{stage}_{base}_{other}_{b}_{bl}"
+                        )
+
+                # 3) NA for crane-related scalars (per node)
+                mdl.add_constraint(
+                    CI[stage, base] == CI[stage, other],
+                    ctname=f"na_CI_{stage}_{base}_{other}"
+                )
+                mdl.add_constraint(
+                    CM[stage, base] == CM[stage, other],
+                    ctname=f"na_CM_{stage}_{base}_{other}"
+                )
+
+                # 4) NA for block_mpp-only binaries
+                if block_mpp:
                     for b in range(B):
                         for bl in range(BL):
-                            for d in range(D):
-                                for k in range(K):
-                                    for (i, j) in load_moves:
-                                        mdl.add_constraint(
-                                            x[stage, n1, b, d, bl, k, i, j]
-                                            == x[stage, n2, b, d, bl, k, i, j],
-                                            ctname=(f'non_anticipation_{stage}_{n1}_{n2}_'
-                                                    f'{b}_{d}_{bl}_{k}_{i}_{j}')
-                                        )
-
-    # def add_non_anticipativity(stage: int,
-    #                            node_ids: List[int],
-    #                            load_moves: List[Tuple[int, int]],
-    #                            parent: Dict[Tuple[int, int], Optional[Tuple[int, int]]]
-    #                            ) -> None:
-    #     """
-    #     Enforce non-anticipativity at a given stage.
-    #
-    #     For all nodes at this stage that share the same history (same ancestor chain up to stage-1), we impose:
-    #         x[stage, n1, ...] == x[stage, n2, ...]
-    #     for all (i, j) in load_moves (TR^+(p) in the formulation).
-    #
-    #     This implements:
-    #         \tilde u^{b,d,φ}_{tr,k} = \tilde u^{b,d,φ'}_{tr,k}
-    #     whenever q^{φ}_{[p-1]} = q^{φ'}_{[p-1]}.
-    #     """
-    #     # Only for genuine multi-stage problems with partial information,
-    #     # and only from stage 1 onwards (no history at stage 0).
-    #     if perfect_information or stochastic_algorithm not in ["multi_stage", "mpc"] or stage == 0:
-    #         return
-    #
-    #     # Group nodes by their "information set" = full ancestor chain up to stage-1.
-    #     info_sets: Dict[Tuple[Tuple[int, int], ...], List[int]] = defaultdict(list)
-    #
-    #     for node_id in node_ids:
-    #         s_cur, n_cur = stage, node_id
-    #         ancestors = []
-    #
-    #         # Walk back to the root, collecting (stage, node) pairs of ancestors.
-    #         while s_cur > 0:
-    #             s_prev, n_prev = parent[(s_cur, n_cur)]
-    #             ancestors.append((s_prev, n_prev))
-    #             s_cur, n_cur = s_prev, n_prev
-    #
-    #         # History is the ordered tuple of ancestors from stage 0 up to stage-1.
-    #         info_key = tuple(reversed(ancestors))
-    #         info_sets[info_key].append(node_id)
-    #
-    #     # For each information set with more than one node, enforce equality of x.
-    #     for info_key, nodes in info_sets.items():
-    #         if len(nodes) <= 1:
-    #             continue
-    #
-    #         base = nodes[0]
-    #         for other in nodes[1:]:
-    #             for b in range(B):
-    #                 for bl in range(BL):
-    #                     for d in range(D):
-    #                         for k in range(K):
-    #                             for (i, j) in load_moves:
-    #                                 mdl.add_constraint(
-    #                                     x[stage, base, b, d, bl, k, i, j] ==
-    #                                     x[stage, other, b, d, bl, k, i, j],
-    #                                     ctname=(f'non_anticipation_{stage}_{base}_{other}_'
-    #                                             f'{b}_{d}_{bl}_{k}_{i}_{j}')
-    #                                 )
+                            mdl.add_constraint(
+                                mixing[stage, base, b, bl] == mixing[stage, other, b, bl],
+                                ctname=f"na_mix_{stage}_{base}_{other}_{b}_{bl}"
+                            )
+                            for pod in range(P):
+                                mdl.add_constraint(
+                                    PD[stage, base, b, bl, pod] == PD[stage, other, b, bl, pod],
+                                    ctname=f"na_PD_{stage}_{base}_{other}_{b}_{bl}_{pod}"
+                                )
 
     def build_tree(stages: int,
                    input_demand: np.array,
@@ -656,7 +654,7 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                 # Ensure CI[stage] is bounded by CI_target
                 mdl.add_constraint(
                     CI_target[stage, node_id] ==
-                    CI_target_parameter * 2 / B * mdl.sum(demand[stage, node_id][k, j]
+                    CI_target_parameter * 2 / B * mdl.sum(d_stage_node[k, j]
                                                           for (i, j) in port_moves for k in range(K)),
                     ctname=f'crane_intensity_target_{stage}_{node_id}'
                 )
@@ -690,8 +688,7 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                 #     mdl.sum(mixing[stage, node_id, b, bl,] for b in range(B) for bl in range(BL)) <= int(BL * B * bay_mix)
                 # )
 
-            add_non_anticipativity(stage, sn[stage], load_moves, demand, parent)
-            # add_non_anticipativity(stage, sn[stage], load_moves, parent)
+            add_non_anticipativity(stage, sn[stage], load_moves, parent, block_mpp=block_mpp)
 
         # Add mip start
         if warm_solution:
@@ -844,7 +841,7 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                            stage_nodes_current: Optional[Dict[int, List[int]]] = None) -> Any:
         sn = stage_nodes_current if stage_nodes_current is not None else stage_nodes
 
-        def revenue_term(stage, node_id, with_blocks: bool):
+        def revenue_term(stage, node_id):
             return mdl.sum(
                 revenues[stage, k, j] * x[stage, node_id, b, d, bl, k, stage, j]
                 for j in range(stage + 1, P)
@@ -854,8 +851,8 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                 for bl in range(BL)
             )
 
-        def ho_cost_term(stage, node_id, with_blocks: bool):
-            return mdl.sum(env.ho_costs * HO[stage, node_id, b, 0] for b in range(B))
+        def ho_cost_term(stage, node_id):
+            return mdl.sum(env.ho_costs * HO[stage, node_id, b, bl] for b in range(B) for bl in range(BL))
 
         def cm_cost_term(stage, node_id):
             return env.cm_costs * CM[stage, node_id]
@@ -870,11 +867,10 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                 for node_id in nodes:
                     probabilities[stage, node_id] = p
 
-            with_blocks = config.env.env_name == "block_mpp"
             objective = mdl.sum(
                 probabilities[stage, node_id] *
-                (revenue_term(stage, node_id, with_blocks)
-                 - ho_cost_term(stage, node_id, with_blocks)
+                (revenue_term(stage, node_id)
+                 - ho_cost_term(stage, node_id)
                  - cm_cost_term(stage, node_id))
                 for stage in range(stages)
                 for node_id in sn[stage]
@@ -897,8 +893,8 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                 for n in nodes:
                     terms.append(
                         p * (
-                                revenue_term(s, n, with_blocks=True)
-                                - ho_cost_term(s, n, with_blocks=True)
+                                revenue_term(s, n)
+                                - ho_cost_term(s, n)
                                 - cm_cost_term(s, n)
                         )
                     )
@@ -1118,15 +1114,16 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument("--env_name", type=str, default="mpp")
     parser.add_argument("--ports", type=int, default=4)
     parser.add_argument("--teu", type=int, default=1000) #20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
+    parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=True)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--scenarios", type=int, default=28)
+    parser.add_argument("--scenarios", type=int, default=20)
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--num_episodes", type=int, default=5)
-    parser.add_argument("--start_episode", type=int, default=4)
+    parser.add_argument("--num_episodes", type=int, default=1)
+    parser.add_argument("--start_episode", type=int, default=0)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
     parser.add_argument("--look_ahead", type=int, default=4)
@@ -1136,7 +1133,7 @@ if __name__ == "__main__":
     # Load the configuration file
     path = f'{path_to_main}/config.yaml'
     config = load_config(path)
-    env_name = config.env.env_name
+    env_name = parser.env_name if parser.env_name else config.env.env_name
     if env_name == "mpp":
         output_path = f"{path_to_main}/results/SMIP/navigating_uncertainty/teu1k"
     elif env_name == "block_mpp":
@@ -1146,7 +1143,7 @@ if __name__ == "__main__":
 
     # Add the arguments to the configuration
     config.env.ports = parser.ports
-    config.env.teu = parser.teu
+    config.env.TEU = parser.teu
     config.env.perfect_information = parser.perfect_information
     config.env.deterministic = parser.deterministic
     config.env.generalization = parser.generalization
@@ -1172,7 +1169,7 @@ if __name__ == "__main__":
 
     # Precompute largest scenario tree
     stages = config.env.ports - 1
-    teu = config.env.teu
+    teu = config.env.TEU
     max_scenarios_per_stage = max(num_scenarios)
 
     if deterministic:
@@ -1200,6 +1197,11 @@ if __name__ == "__main__":
     if not os.path.exists(f"{output_path}/{stochastic_algorithm_path}/instances/"):
         os.makedirs(f"{output_path}/{stochastic_algorithm_path}/instances/")
 
+    # Load demand from csv file (pre-generated to ensure comparability across algorithms and episodes)
+    df = pd.read_csv(
+        f"{output_path}/demand_P{config.env.ports}_gen{generalization}_UR{parser.utilization_rate_initial_demand}_cv{parser.cv_demand}.csv")
+    real_demand = df.to_numpy()
+
     # Main loop over episodes and scenarios
     start_ep = parser.start_episode
     t = tqdm(range(start_ep, start_ep+num_episodes), desc="Episodes", unit="ep")
@@ -1210,7 +1212,8 @@ if __name__ == "__main__":
         set_unique_seed(seed)
         env = make_env(config.env, batch_size=[max_paths], device='cpu')
         # Precompute for each episode
-        demand_tree, real_demand = precompute_demand(
+        real_demand_episode = real_demand[x]
+        demand_tree, _ = precompute_demand(
             node_list=node_list,
             max_paths=max_paths,
             stages=stages,
@@ -1227,7 +1230,7 @@ if __name__ == "__main__":
             demand_sub_tree = get_scenario_tree_indices(demand_tree, scen_sub_tree, real_out_tree=real_out_tree,)
 
             # Run the main logic and get results and variables
-            result, var = main(env=env, demand=demand_sub_tree, real_demand=real_demand,
+            result, var = main(env=env, demand=demand_sub_tree, real_demand=real_demand_episode,
                                scenarios_per_stage=scen, stages=stages, max_paths=max_paths,
                                seed=seed, perfect_information=perfect_information, look_ahead=look_ahead, print_results=False)
             # log result as error (to show in .err file):
