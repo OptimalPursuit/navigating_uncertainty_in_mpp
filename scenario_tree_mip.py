@@ -170,6 +170,125 @@ def onboard_groups(ports:int, pol:int, transport_indices:list) -> np.array:
     on_board = [(i, j) for i in range(ports) for j in range(ports) if i <= pol and j > pol]  # List of cargo groups to load
     return np.array(on_board), port_moves, load
 
+def parent_node_id(parent: Dict[Tuple[int,int], Optional[Tuple[int,int]]],
+                   stage: int,
+                   node_id: int) -> int:
+    p = parent[(stage, node_id)]
+    if p is None:
+        raise ValueError(f"Requested parent of root node {(stage,node_id)}")
+    ps, pn = p
+    if ps != stage - 1:
+        raise ValueError(f"Bad parent stage for {(stage,node_id)}: {p}")
+    return pn
+
+
+def debug_info_sets(stage_nodes: Dict[int, List[int]],
+                    parent: Dict[Tuple[int,int], Optional[Tuple[int,int]]],
+                    stages: int) -> None:
+    """
+    Prints how many distinct information sets exist per stage and the max group size.
+    If every node is its own info set at stage>0, NA is effectively trivial.
+    """
+    def info_key(stage: int, node_id: int) -> Tuple[Tuple[int,int], ...]:
+        chain = []
+        s, n = stage, node_id
+        while s > 0:
+            p = parent.get((s,n), None)
+            if p is None:
+                break
+            chain.append(p)
+            s, n = p
+        chain.reverse()
+        return tuple(chain)
+
+    for s in range(stages):
+        nodes = stage_nodes.get(s, [])
+        if s == 0 or len(nodes) == 0:
+            print(f"[NA DEBUG] stage {s}: nodes={len(nodes)} (root/no nodes)")
+            continue
+
+        groups = defaultdict(list)
+        for n in nodes:
+            groups[info_key(s, n)].append(n)
+
+        sizes = sorted((len(g) for g in groups.values()), reverse=True)
+        print(f"[NA DEBUG] stage {s}: nodes={len(nodes)}, info_sets={len(groups)}, "
+              f"max_group={sizes[0] if sizes else 0}, group_sizes_top5={sizes[:5]}")
+
+
+def check_state_linking_solution(x_val: Dict[Tuple, float],
+                                 parent: Dict[Tuple[int,int], Optional[Tuple[int,int]]],
+                                 stages: int,
+                                 stage_nodes: Dict[int, List[int]],
+                                 B: int,
+                                 D: int,
+                                 BL: int,
+                                 K: int,
+                                 P: int,
+                                 atol: float = 1e-6,
+                                 max_violations_to_print: int = 10) -> bool:
+    """
+    Verifies the intended carry + auto-discharge relations on a solved solution.
+
+    Inputs:
+      x_val: dictionary mapping full x-index keys to numeric values, e.g.
+             x_val[(stage,node,b,d,bl,k,pol,pod)] = value
+             You can build this from docplex via:
+               x_val[key] = x[key].solution_value
+
+    Checks for each stage p>0 and each node:
+      - if pod == p and pol < p: x[p,*,pol,p] == 0
+      - if pod > p and pol < p: x[p,node,...,pol,pod] == x[p-1,parent(node),...,pol,pod]
+    """
+    violations = 0
+
+    for p in range(1, stages):
+        for n in stage_nodes.get(p, []):
+            pn = parent_node_id(parent, p, n)
+
+            for b in range(B):
+                for d in range(D):
+                    for bl in range(BL):
+                        for k in range(K):
+                            for pol in range(p):
+                                for pod in range(pol + 1, P):
+                                    key_now = (p, n, b, d, bl, k, pol, pod)
+                                    v_now = float(x_val.get(key_now, 0.0))
+
+                                    if pod == p:
+                                        if abs(v_now) > atol:
+                                            violations += 1
+                                            if violations <= max_violations_to_print:
+                                                print(f"[LINK VIOL] discharge not zero: "
+                                                      f"x{key_now}={v_now}")
+                                    elif pod > p:
+                                        key_prev = (p-1, pn, b, d, bl, k, pol, pod)
+                                        v_prev = float(x_val.get(key_prev, 0.0))
+                                        if abs(v_now - v_prev) > atol:
+                                            violations += 1
+                                            if violations <= max_violations_to_print:
+                                                print(f"[LINK VIOL] carry mismatch: "
+                                                      f"x{key_now}={v_now} vs x{key_prev}={v_prev}")
+
+    ok = (violations == 0)
+    print(f"[LINK DEBUG] state-linking check: {'OK' if ok else 'FAILED'} "
+          f"(violations={violations})")
+    return ok
+
+
+def count_na_constraints(mdl: Model, prefix: str = "na_") -> int:
+    """
+    Counts constraints whose names start with `prefix`.
+    Useful to sanity-check that NA constraints are being added.
+    """
+    cnt = 0
+    for ct in mdl.iter_constraints():
+        name = ct.name
+        if name and name.startswith(prefix):
+            cnt += 1
+    print(f"[NA DEBUG] constraints with prefix '{prefix}': {cnt}")
+    return cnt
+
 # Main function
 def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:int=28, stages:int=3, max_paths:int=784, seed:int=42,
          perfect_information:bool=False, warm_solution:bool=False, look_ahead:int=2, print_results:bool=False) -> Tuple[Dict, Dict]:
@@ -228,6 +347,8 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
             raise ValueError(f"No nodes at stage {s}")
         # Pick the first node at that stage as realized scenario (can be refined later)
         realized_node[s] = 0
+
+    debug_info_sets(stage_nodes=stage_nodes, parent=parent, stages=stages)
 
     # Problem parameters
     P = env.P
@@ -555,6 +676,26 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                     d_stage_node = real_demand[stage]
                 else:
                     d_stage_node = demand[stage, node_id]  # original scenario demand
+
+                if stage > 0:
+                    ps, pn = parent[(stage, node_id)]  # pn is parent node id at stage-1
+                    for b in range(B):
+                        for bl in range(BL):
+                            for d in range(D):
+                                for k in range(K):
+                                    for pol in range(stage):  # loaded earlier ports
+                                        for pod in range(pol + 1, P):
+                                            if pod == stage:
+                                                mdl.add_constraint(
+                                                    x[stage, node_id, b, d, bl, k, pol, pod] == 0,
+                                                    ctname=f"auto_discharge_{stage}_{node_id}_{b}_{d}_{bl}_{k}_{pol}_{pod}"
+                                                )
+                                            elif pod > stage:
+                                                mdl.add_constraint(
+                                                    x[stage, node_id, b, d, bl, k, pol, pod] ==
+                                                    x[stage - 1, pn, b, d, bl, k, pol, pod],
+                                                    ctname=f"carry_{stage}_{node_id}_{b}_{d}_{bl}_{k}_{pol}_{pod}"
+                                                )
 
                 # Demand satisfaction now uses d_stage_node instead of demand[stage, node_id]
                 for (i, j) in load_moves:
@@ -930,6 +1071,8 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
     if stochastic_algorithm == "multi_stage":
         initialize_vars_tree(stages, block_mpp=block_mpp)
         build_tree(stages, demand, warm_solution, block_mpp=block_mpp)
+        count_na_constraints(mdl, prefix="na_")
+
         objective = objective_function(x, HO, CM, revenues_)
         solution = solve_model(mdl, objective)
     elif stochastic_algorithm == "mpc":
@@ -944,6 +1087,18 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
         raise ValueError("Invalid stochastic algorithm")
 
     elapsed = time.perf_counter() - t_start
+
+    if solution is not None:
+        # build x_val dictionary from docplex vars
+        x_val = {key: var.solution_value for key, var in x.items()}
+        check_state_linking_solution(
+            x_val=x_val,
+            parent=parent,
+            stages=stages,
+            stage_nodes=stage_nodes,
+            B=B, D=D, BL=BL, K=K, P=P,
+            atol=1e-6
+        )
 
     # Print the solution # todo: fix this properly for mpp and block_mpp; now set to block_mpp
     if solution:
@@ -1107,6 +1262,7 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
         results = {}
         vars = {}
 
+
     mdl.end()
     del mdl
     return results, vars
@@ -1118,7 +1274,7 @@ if __name__ == "__main__":
     parser.add_argument("--ports", type=int, default=4)
     parser.add_argument("--teu", type=int, default=1000) #20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=True)
+    parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--scenarios", type=int, default=20)
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
