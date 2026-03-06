@@ -1274,7 +1274,7 @@ if __name__ == "__main__":
     parser.add_argument("--ports", type=int, default=4)
     parser.add_argument("--teu", type=int, default=1000) #20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
-    parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=True)
+    parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=True)
     parser.add_argument("--scenarios", type=int, default=80)
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
