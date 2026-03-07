@@ -4,7 +4,8 @@ from torch import Tensor
 import cvxpy as cp
 from cvxpylayers.torch import CvxpyLayer
 from typing import Optional, Tuple
-
+from diffcp.cone_program import SolverError as DiffcpSolverError
+import warnings
 
 class NormalizedProjection(nn.Module):
     def __init__(self, row_normalize: bool = True, eps_row_norm: float = 1e-12, **kwargs):
@@ -250,7 +251,18 @@ class CvxpyProjectionLayer(NormalizedProjection):
         self.stab_idx = int(stab_idx)
 
         x = cp.Variable(self.n)
-        soft_dim = abs(self.stab_idx) if self.stab_idx < 0 else (self.m - self.stab_idx)
+
+        if self.stab_idx < 0:
+            hard = slice(0, self.stab_idx)
+            soft = slice(self.stab_idx, None)
+            soft_dim = abs(self.stab_idx)
+            n_hard = self.m - soft_dim
+        else:
+            hard = slice(0, self.stab_idx)
+            soft = slice(self.stab_idx, self.m)
+            soft_dim = self.m - self.stab_idx
+            n_hard = self.stab_idx
+
         s = cp.Variable(soft_dim)
 
         x_raw_param = cp.Parameter(self.n)
@@ -258,21 +270,21 @@ class CvxpyProjectionLayer(NormalizedProjection):
         b_param = cp.Parameter(self.m)
         lower_param = cp.Parameter(self.n)
 
-        objective = cp.Minimize(0.5 * cp.sum_squares(x - x_raw_param) + self.slack_penalty * cp.sum_squares(s))
+        objective = cp.Minimize(
+            0.5 * cp.sum_squares(x - x_raw_param) +
+            self.slack_penalty * cp.sum_squares(s)
+        )
 
-        if self.stab_idx < 0:
-            hard = slice(0, self.stab_idx)
-            soft = slice(self.stab_idx, None)
-        else:
-            hard = slice(0, self.stab_idx)
-            soft = slice(self.stab_idx, self.m)
+        constraints = [x >= lower_param]
 
-        constraints = [
-            A_param[hard, :] @ x <= b_param[hard],
-            A_param[soft, :] @ x <= b_param[soft] + s,
-            s >= 0,
-            x >= lower_param,
-        ]
+        if n_hard > 0:
+            constraints.append(A_param[hard, :] @ x <= b_param[hard])
+
+        if soft_dim > 0:
+            constraints += [
+                A_param[soft, :] @ x <= b_param[soft] + s,
+                s >= 0,
+            ]
 
         problem = cp.Problem(objective, constraints)
         self.cvxpy_layer = CvxpyLayer(problem, parameters=[x_raw_param, A_param, b_param, lower_param], variables=[x])
@@ -302,11 +314,6 @@ class CvxpyProjectionLayer(NormalizedProjection):
 class AlphaChebyshevProjection(NormalizedProjection):
     """
     Chebyshev-center anchor + alpha-map, with the SAME soft slack semantics as the Chebyshev solve.
-
-    IMPORTANT FIX (consistency):
-      - If you allow slack 's' on soft constraints when computing the anchor, then the alpha-map must
-        be computed against the relaxed RHS b_eff = b + s on those SAME rows.
-      - Otherwise you can anchor in a relaxed polytope but map against the hard one (undefined when hard is empty).
 
     Chebyshev (soft):
       max_{x,r,s>=0}  radius_weight*r - slack_penalty*||s||^2
@@ -345,33 +352,59 @@ class AlphaChebyshevProjection(NormalizedProjection):
         self.cvx_verbose = bool(cvx_verbose)
         self.enforce_nonneg = bool(enforce_nonneg)
 
+        # Compute counts explicitly; less brittle than relying on empty slices.
         if self.stab_idx < 0:
-            self.hard = slice(0, self.stab_idx)
-            self.soft = slice(self.stab_idx, None)
             self.soft_dim = abs(self.stab_idx)
+            self.hard_dim = self.m - self.soft_dim
         else:
-            self.hard = slice(0, self.stab_idx)
-            self.soft = slice(self.stab_idx, self.m)
-            self.soft_dim = self.m - self.stab_idx
+            self.hard_dim = self.stab_idx
+            self.soft_dim = self.m - self.hard_dim
+
+        self.hard = slice(0, self.hard_dim)
+        self.soft = slice(self.hard_dim, self.m)
 
         x = cp.Variable(self.n)
         r = cp.Variable()
-        s = cp.Variable(self.soft_dim)
 
         A_param = cp.Parameter((self.m, self.n))
         b_param = cp.Parameter(self.m)
         d_param = cp.Parameter(self.m, nonneg=True)
 
-        obj = cp.Maximize(self.radius_weight * r - self.slack_penalty * cp.sum_squares(s))
+        cons = [r >= 0]
 
-        cons = [r >= 0, s >= 0]
-        cons += [A_param[self.hard, :] @ x + cp.multiply(d_param[self.hard], r) <= b_param[self.hard]]
-        cons += [A_param[self.soft, :] @ x + cp.multiply(d_param[self.soft], r) <= b_param[self.soft] + s]
+        if self.hard_dim > 0:
+            cons.append(
+                A_param[:self.hard_dim, :] @ x
+                + cp.multiply(d_param[:self.hard_dim], r)
+                <= b_param[:self.hard_dim]
+            )
+
+        if self.soft_dim > 0:
+            s = cp.Variable(self.soft_dim)
+            cons += [
+                s >= 0,
+                A_param[self.hard_dim:, :] @ x
+                + cp.multiply(d_param[self.hard_dim:], r)
+                <= b_param[self.hard_dim:] + s,
+            ]
+            slack_term = cp.sum_squares(s)
+            variables = [x, r, s]
+        else:
+            s = None
+            slack_term = 0
+            variables = [x, r]
+
         if self.add_nonnegativity:
-            cons += [x >= 0]
+            cons.append(x >= 0)
+
+        obj = cp.Maximize(self.radius_weight * r - self.slack_penalty * slack_term)
 
         prob = cp.Problem(obj, cons)
-        self.cheby_layer = CvxpyLayer(prob, parameters=[A_param, b_param, d_param], variables=[x, r, s])
+        self.cheby_layer = CvxpyLayer(
+            prob,
+            parameters=[A_param, b_param, d_param],
+            variables=variables,
+        )
 
     @staticmethod
     def _alpha_map_batched(x_hat: Tensor, A: Tensor, b_eff: Tensor, x0: Tensor, eps_inside: float) -> Tensor:
@@ -430,138 +463,6 @@ class AlphaChebyshevProjection(NormalizedProjection):
         return out.squeeze(1) if b.dim() == 2 else out
 
 
-class LogBarrierProjection(NormalizedProjection):
-    """
-    Log-barrier solve for:
-      min_x 0.5||x-x_raw||^2 - mu * sum_i log(b_i - (Ax)_i) - mu * sum_j log(x_j - lower_j)
-
-    NOTE: This is a hard-feasibility method; if your environment has empty polytopes, it can fail
-    unless you provide a feasible initialization. This implementation uses a Chebyshev init (loop).
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__()
-        self.K = int(kwargs.get("max_iter", 30))
-        self.mu = float(kwargs.get("mu", 1e-2))
-        self.lr = float(kwargs.get("lr", 1.0))
-        self.backtrack = float(kwargs.get("backtrack", 0.5))
-        self.max_ls = int(kwargs.get("max_ls", 25))
-        self.eps = float(kwargs.get("eps_inside", 1e-6))
-        self.cvx_solver = kwargs.get("cvx_solver", None)
-        self.cvx_verbose = bool(kwargs.get("cvx_verbose", False))
-
-    def _chebyshev_center_one(self, A: Tensor, b: Tensor, lower: Tensor) -> Tensor:
-        A_np = A.detach().cpu().numpy()
-        b_np = b.detach().cpu().numpy()
-        lo_np = lower.detach().cpu().numpy()
-
-        m, n = A_np.shape
-        x = cp.Variable(n)
-        r = cp.Variable()
-
-        row_norms = (A_np**2).sum(axis=1) ** 0.5
-        constraints = [
-            A_np @ x + r * row_norms <= b_np,
-            x >= lo_np + r,
-            r >= 0,
-        ]
-        prob = cp.Problem(cp.Maximize(r), constraints)
-        if self.cvx_solver is None:
-            prob.solve(verbose=self.cvx_verbose)
-        else:
-            prob.solve(solver=self.cvx_solver, verbose=self.cvx_verbose)
-
-        if x.value is None:
-            return torch.tensor(lo_np, dtype=torch.float32)
-        return torch.tensor(x.value, dtype=torch.float32)
-
-    def _is_strictly_feasible(self, x: Tensor, A: Tensor, b: Tensor, lower: Tensor) -> Tensor:
-        Ax = torch.matmul(A, x.unsqueeze(-1)).squeeze(-1)
-        c1 = (Ax <= (b - self.eps)).all(dim=-1, keepdim=True)
-        c2 = (x >= (lower + self.eps)).all(dim=-1, keepdim=True)
-        return (c1 & c2)
-
-    def forward(
-        self,
-        x_raw: Tensor,
-        A: Tensor,
-        b: Tensor,
-        lower: Optional[Tensor] = None,
-        upper: Optional[Tensor] = None,  # ignored
-        var_mask: Optional[Tensor] = None,
-        **kwargs,
-    ) -> Tensor:
-        if b.dim() not in (2, 3) or A.dim() not in (3, 4):
-            raise ValueError("Invalid dimensions: b dim 2/3 and A dim 3/4 expected.")
-
-        b_ = b.unsqueeze(1) if b.dim() == 2 else b
-        A_ = A.unsqueeze(1) if A.dim() == 3 else A
-        x0 = x_raw.unsqueeze(1) if x_raw.dim() == 2 else x_raw
-        B, S, m, n = A_.shape
-
-        if lower is None:
-            lower_ = torch.zeros((B, S, n), device=x0.device, dtype=x0.dtype)
-        else:
-            lower_ = lower
-            if lower_.dim() == 1:
-                lower_ = lower_.view(1, 1, n).expand(B, S, n)
-            elif lower_.dim() == 2:
-                lower_ = lower_.unsqueeze(1).expand(B, S, n)
-            lower_ = lower_.to(device=x0.device, dtype=x0.dtype)
-
-        if var_mask is not None:
-            vm = var_mask.unsqueeze(1) if var_mask.dim() == 2 else var_mask
-        else:
-            vm = None
-
-        A_work, b_work = self._normalize_constraints(A_, b_)
-
-        x = torch.empty_like(x0)
-        for bi in range(B):
-            for si in range(S):
-                x_cs = self._chebyshev_center_one(A_work[bi, si], b_work[bi, si], lower_[bi, si])
-                x[bi, si] = x_cs.to(device=x0.device, dtype=x0.dtype)
-
-        feas = self._is_strictly_feasible(x, A_work, b_work, lower_)
-        if not feas.all():
-            x = torch.where(feas, x, (x.clamp_min(0.0) + lower_) * 0.5)
-
-        for _ in range(self.K):
-            grad = (x - x0)
-
-            Ax = torch.matmul(A_work, x.unsqueeze(-1)).squeeze(-1)
-            slack = (b_work - Ax).clamp(min=1e-12)
-            g_bar = torch.matmul(A_work.transpose(-2, -1), (self.mu / slack).unsqueeze(-1)).squeeze(-1)
-            grad = grad + g_bar
-
-            s_lo = (x - lower_).clamp(min=1e-12)
-            grad = grad + self.mu * (1.0 / s_lo)
-
-            if vm is not None:
-                grad = grad * vm
-
-            step = self.lr
-            x_new = x
-            for _ls in range(self.max_ls):
-                cand = x - step * grad
-                if vm is not None:
-                    cand = torch.where(vm.bool(), cand, x)
-                ok = self._is_strictly_feasible(cand, A_work, b_work, lower_)
-                if ok.all():
-                    x_new = cand
-                    break
-                step *= self.backtrack
-            x = x_new
-
-        if vm is not None:
-            x = torch.where(vm.bool(), x, x0)
-
-        x = x.clamp_min(0.0)
-        if b.dim() == 2:
-            x = x.squeeze(1)
-        return x
-
-
 class FrankWolfePolicyImprovement(NormalizedProjection):
     """
     FAIRNESS UPDATE:
@@ -593,65 +494,79 @@ class FrankWolfePolicyImprovement(NormalizedProjection):
         self.cvx_solver = kwargs.get("cvx_solver", None)
         self.cvx_verbose = bool(kwargs.get("cvx_verbose", False))
 
-        # hard/soft slices
         if self.stab_idx < 0:
-            self.hard = slice(0, self.stab_idx)
-            self.soft = slice(self.stab_idx, None)
-            soft_dim = abs(self.stab_idx)
+            self.soft_dim = abs(self.stab_idx)
+            self.hard_dim = self.m - self.soft_dim
         else:
-            self.hard = slice(0, self.stab_idx)
-            self.soft = slice(self.stab_idx, self.m)
-            soft_dim = self.m - self.stab_idx
+            self.hard_dim = self.stab_idx
+            self.soft_dim = self.m - self.hard_dim
 
-        # (1) Feasible anchor QP repair (soft slack allowed)
+        # -----------------------------
+        # (1) Anchor problem with slackness
+        # -----------------------------
         x = cp.Variable(self.n)
-        s = cp.Variable(soft_dim)
 
         x_raw_param = cp.Parameter(self.n)
         A_param = cp.Parameter((self.m, self.n))
         b_param = cp.Parameter(self.m)
         lower_param = cp.Parameter(self.n)
 
-        obj = cp.Minimize(0.5 * cp.sum_squares(x - x_raw_param) + self.slack_penalty * cp.sum_squares(s))
-        cons = [
-            A_param[self.hard, :] @ x <= b_param[self.hard],
-            A_param[self.soft, :] @ x <= b_param[self.soft] + s,
-            s >= 0,
-            x >= lower_param,
-        ]
-        anchor_problem = cp.Problem(obj, cons)
-        self.anchor_layer = CvxpyLayer(anchor_problem, parameters=[x_raw_param, A_param, b_param, lower_param], variables=[x])
+        anchor_cons = [x >= lower_param]
 
-        # (2) Soft LMO: approx argmax <c,g> with slack on constraints
+        if self.hard_dim > 0:
+            anchor_cons.append(A_param[:self.hard_dim, :] @ x <= b_param[:self.hard_dim])
+
+        if self.soft_dim > 0:
+            s = cp.Variable(self.soft_dim)
+            anchor_cons += [
+                A_param[self.hard_dim:, :] @ x <= b_param[self.hard_dim:] + s,
+                s >= 0,
+            ]
+            slack_term = self.slack_penalty * cp.sum_squares(s)
+        else:
+            slack_term = 0
+
+        # force all params to be present in the problem
+        anchor_dummy = 0 * (
+            cp.sum(x_raw_param) + cp.sum(A_param) + cp.sum(b_param) + cp.sum(lower_param)
+        )
+
+        anchor_obj = cp.Minimize(
+            0.5 * cp.sum_squares(x - x_raw_param) + slack_term + anchor_dummy
+        )
+
+        anchor_problem = cp.Problem(anchor_obj, anchor_cons)
+        self.anchor_layer = CvxpyLayer(
+            anchor_problem,
+            parameters=[x_raw_param, A_param, b_param, lower_param],
+            variables=[x],
+        )
+
+        # -----------------------------
+        # (2) LMO over hard feasible set only
+        # -----------------------------
         c = cp.Variable(self.n)
-        s2 = cp.Variable(soft_dim)  # slack for soft constraints only (match your soft index set)
 
         g_param = cp.Parameter(self.n)
         A2_param = cp.Parameter((self.m, self.n))
         b2_param = cp.Parameter(self.m)
         lower2_param = cp.Parameter(self.n)
 
-        lmo_obj = cp.Minimize(
-            -g_param @ c
-            + self.slack_penalty  * cp.sum(s2)  # L1 slack penalty
+        lmo_cons = [c >= lower2_param]
+        lmo_cons.append(A2_param @ c <= b2_param)
+
+        # force all params to be present
+        lmo_dummy = 0 * (
+            cp.sum(g_param) + cp.sum(A2_param) + cp.sum(b2_param) + cp.sum(lower2_param)
         )
 
-        lmo_cons = [
-            # hard constraints must hold
-            A2_param[self.hard, :] @ c <= b2_param[self.hard],
-            # soft constraints may violate with nonnegative slack
-            A2_param[self.soft, :] @ c <= b2_param[self.soft] + s2,
-            s2 >= 0,
-
-            # bounds (keep as-is)
-            c >= lower2_param,
-        ]
-
+        lmo_obj = cp.Minimize(-g_param @ c + lmo_dummy)
         lmo_problem = cp.Problem(lmo_obj, lmo_cons)
+
         self.lmo_layer = CvxpyLayer(
             lmo_problem,
             parameters=[g_param, A2_param, b2_param, lower2_param],
-            variables=[c],  # return c; include s2 too if you want to monitor violations
+            variables=[c],
         )
 
     def _broadcast_lower(self, lower: Optional[Tensor], ref: Tensor) -> Tensor:
@@ -667,7 +582,15 @@ class FrankWolfePolicyImprovement(NormalizedProjection):
             lower = lower.to(device=device, dtype=dtype)
         return lower
 
-    def feasible_anchor(self, x: Tensor, A: Tensor, b: Tensor, lower: Optional[Tensor] = None, upper: Optional[Tensor] = None, detach: bool = True) -> Tensor:
+    def feasible_anchor(
+            self,
+            x: Tensor,
+            A: Tensor,
+            b: Tensor,
+            lower: Optional[Tensor] = None,
+            upper: Optional[Tensor] = None,
+            detach: bool = True,
+    ) -> Tensor:
         b_BS = b.unsqueeze(1) if b.dim() == 2 else b
         A_BS = A.unsqueeze(1) if A.dim() == 3 else A
         x_raw_BS = x.unsqueeze(1) if x.dim() == 2 else x
@@ -680,13 +603,27 @@ class FrankWolfePolicyImprovement(NormalizedProjection):
         b_f = b_BS.reshape(-1, m)
         lo_f = lower_BS.reshape(-1, n)
 
-        x_feas_f, = self.anchor_layer(x_f, A_f, b_f, lo_f)
+        try:
+            x_feas_f, = self.anchor_layer(x_f, A_f, b_f, lo_f)
+        except (DiffcpSolverError, RuntimeError, ValueError) as e:
+            warnings.warn(f"Anchor solve failed; falling back to lower-clamped raw action. Error: {e}")
+            x_feas_f = torch.maximum(x_f, lo_f)
+
         x_feas = x_feas_f.view(B, S, n)
         if detach:
             x_feas = x_feas.detach()
-        return x_feas.squeeze(1)
+        return x_feas.squeeze(1) if x.dim() == 2 else x_feas
 
-    def lmo(self, g: Tensor, A: Tensor, b: Tensor, lower: Optional[Tensor] = None, upper: Optional[Tensor] = None, detach: bool = True) -> Tensor:
+    def lmo(
+            self,
+            g: Tensor,
+            A: Tensor,
+            b: Tensor,
+            lower: Optional[Tensor] = None,
+            upper: Optional[Tensor] = None,
+            detach: bool = True,
+            fallback: Optional[Tensor] = None,
+    ) -> Tensor:
         g_BS = g.unsqueeze(1) if g.dim() == 2 else g
         A_BS = A.unsqueeze(1) if A.dim() == 3 else A
         b_BS = b.unsqueeze(1) if b.dim() == 2 else b
@@ -701,23 +638,32 @@ class FrankWolfePolicyImprovement(NormalizedProjection):
         b_f = b_BS.reshape(-1, m)
         lo_f = lower_BS.reshape(-1, n)
 
-        c_f, = self.lmo_layer(g_f, A_f, b_f, lo_f)
+        try:
+            c_f, = self.lmo_layer(g_f, A_f, b_f, lo_f)
+        except (DiffcpSolverError, RuntimeError, ValueError) as e:
+            warnings.warn(f"LMO solve failed; falling back to anchor/no-op direction. Error: {e}")
+            if fallback is None:
+                c_f = lo_f
+            else:
+                fb_BS = fallback.unsqueeze(1) if fallback.dim() == 2 else fallback
+                c_f = fb_BS.reshape(-1, n)
+
         c = c_f.view(B, S, n)
         if detach:
             c = c.detach()
         return c.squeeze(1) if g.dim() == 2 else c
 
     def forward(
-        self,
-        x_raw: Tensor,
-        A: Tensor,
-        b: Tensor,
-        critic_fn,
-        s,  # TensorDict
-        lower: Optional[Tensor] = None,
-        upper: Optional[Tensor] = None,  # ignored
-        detach_solvers: bool = True,
-        mode: str = "auto",
+            self,
+            x_raw: Tensor,
+            A: Tensor,
+            b: Tensor,
+            critic_fn,
+            s,
+            lower: Optional[Tensor] = None,
+            upper: Optional[Tensor] = None,
+            detach_solvers: bool = True,
+            mode: str = "auto",
     ) -> Tensor:
         x_feas = self.feasible_anchor(x_raw, A, b, lower=lower, upper=None, detach=detach_solvers)
 
@@ -726,7 +672,10 @@ class FrankWolfePolicyImprovement(NormalizedProjection):
         if mode == "proj":
             return x_feas
 
-        want_fw = (mode == "fw") or (mode == "auto" and self.training and torch.is_grad_enabled() and critic_fn is not None)
+        want_fw = (
+                mode == "fw"
+                or (mode == "auto" and self.training and torch.is_grad_enabled() and critic_fn is not None)
+        )
         if not want_fw:
             return x_feas
 
@@ -747,7 +696,7 @@ class FrankWolfePolicyImprovement(NormalizedProjection):
         g = g.detach()
 
         A, b = self._normalize_constraints(A, b)
-        c = self.lmo(g, A, b, lower=lower, upper=None, detach=detach_solvers)
+        c = self.lmo(g, A, b, lower=lower, upper=None, detach=detach_solvers, fallback=x_feas, )
         x_fw = (1.0 - self.alpha) * x_feas + self.alpha * c
         return x_fw
 
@@ -762,7 +711,6 @@ class ProjectionFactory:
         "convex_program": CvxpyProjectionLayer,
         "convex_program_policy_clipping": CvxpyProjectionLayer,
         "frank_wolfe": FrankWolfePolicyImprovement,
-        "log_barrier": LogBarrierProjection,
     }
 
     @staticmethod
