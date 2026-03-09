@@ -93,7 +93,7 @@ training:
   priority_alpha: 0.5
   top_k: 0.2
   projection_kwargs:
-    alpha: 0.01 #0.050 #0.01 #0.00987804770039214
+    eta: 0.01 #0.050 #0.01 #0.00987804770039214
     delta: 0.01 #0.050 #0.01 #0.023908679032053855
     max_iter: 300 #300 #273
     n_action: 80 #20 #80        # todo: has dependency on main.py (make sure arguments have this role); set to 80 for AI2STOW

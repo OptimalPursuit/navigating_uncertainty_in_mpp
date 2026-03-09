@@ -38,7 +38,7 @@ class InnerConvexViolationProjection(NormalizedProjection):
         self.rho = float(kwargs.get("rho", 1e-12))
 
         # step size controls
-        self.use_spectral_eta = bool(kwargs.get("use_spectral_eta", True))
+        self.eta = float(kwargs.get("eta", 0.01))
         self.spectral_norm = kwargs.get("spectral_norm", "power_iters")  # "svd", "power_iters", "frobenius"
         self.power_iters = int(kwargs.get("power_iters", 5))
         self.eta_margin = float(kwargs.get("eta_margin", 0.99))
@@ -66,6 +66,8 @@ class InnerConvexViolationProjection(NormalizedProjection):
             eta = self._eta_power_iters(A_work).unsqueeze(-1)
         elif self.spectral_norm == "frobenius":
             eta = self._eta_frobenius(A_work).unsqueeze(-1)
+        elif self.spectral_norm == "none":
+            eta = self.eta
         else:
             raise ValueError(f"Unknown spectral_norm={self.spectral_norm}")
         return eta

@@ -307,10 +307,10 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser.add_argument('--use_mask_head', type=bool, default=False, help="Learn mask to optimize paired block stowage.")
     parser.add_argument('--use_preload_mask', type=bool, default=False, help="Use preloaded mask for paired block stowage.")
     parser.add_argument('--normalize_constraints', type=bool, default=False, help="Normalize constraints.")
-    parser.add_argument('--projection_type', type=str, default="convex_program", help="Projection type.")
+    parser.add_argument('--projection_type', type=str, default="inner_convex_violation", help="Projection type.")
     parser.add_argument('--projection_kwargs', type=json.loads, default={
-        'alpha': 0.01, 'delta': 0.01, 'max_iter': 100, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'stab_idx': 0, # use 0 during training, -4 during testing
-        'spectral_norm': 'svd', 'power_iters': 3, 'enable_alpha_map':False, 'enforce_nonneg':True,  'jacobian_correction':True,
+        'eta': 0.01, 'delta': 0.01, 'max_iter': 100, 'slack_penalty': 10000, 'n_action': 20, 'n_constraints': 25, 'stab_idx': -4, # use 0 during training, -4 during testing
+        'spectral_norm': 'static', 'power_iters': 3, 'enable_alpha_map':False, 'enforce_nonneg':True,  'jacobian_correction':True,
         }, help="Projection parameters as JSON string.")
 
     # Run parameters
@@ -321,7 +321,7 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
     parser.add_argument('--pd_learning_rate', type=float, default=0.001, help="Learning rate for primal-dual optimizer.")
     parser.add_argument('--testing_path', type=str, default='results/trained_models/navigating_uncertainty_ECML', help="Path for testing results.")
     parser.add_argument('--folder', type=str, default='sac-cp', help="Folder name for the run.")
-    parser.add_argument('--phase', type=str, default='train', help="WandB project name.")
+    parser.add_argument('--phase', type=str, default='test', help="WandB project name.")
     parser.add_argument('--feasibility_recovery', type=bool, default=False, help="Enable feasibility recovery.")
     parser.add_argument('--num_episodes', type=int, default=30, help="Number of test episodes.")
     return parser.parse_args()
