@@ -66,7 +66,7 @@ class InnerConvexViolationProjection(NormalizedProjection):
             eta = self._eta_power_iters(A_work).unsqueeze(-1)
         elif self.spectral_norm == "frobenius":
             eta = self._eta_frobenius(A_work).unsqueeze(-1)
-        elif self.spectral_norm == "none":
+        elif self.spectral_norm == "static":
             eta = self.eta
         else:
             raise ValueError(f"Unknown spectral_norm={self.spectral_norm}")
@@ -162,6 +162,8 @@ class InnerConvexViolationProjection(NormalizedProjection):
             eta = self._eta_power_iters(A_work).unsqueeze(-1)
         elif self.spectral_norm == "frobenius":
             eta = self._eta_frobenius(A_work).unsqueeze(-1)
+        elif self.spectral_norm == "static":
+            eta = self.eta
         else:
             raise ValueError(f"Unknown spectral_norm={self.spectral_norm}")
 
