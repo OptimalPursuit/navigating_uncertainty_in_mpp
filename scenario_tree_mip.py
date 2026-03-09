@@ -1276,7 +1276,7 @@ if __name__ == "__main__":
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=True)
     parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=True)
-    parser.add_argument("--scenarios", type=int, default=30)
+    parser.add_argument("--scenarios", type=int, default=20)
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--num_episodes", type=int, default=30)
     parser.add_argument("--start_episode", type=int, default=0)
