@@ -1471,7 +1471,7 @@ if __name__ == "__main__":
     parser.add_argument("--scenarios", type=int, default=80)
     parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=True)
     parser.add_argument("--num_episodes", type=int, default=15)
-    parser.add_argument("--start_episode", type=int, default=0)
+    parser.add_argument("--start_episode", type=int, default=15)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
     parser.add_argument("--cv_demand", type=float, default=0.5)
     parser.add_argument("--look_ahead", type=int, default=4)
