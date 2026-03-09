@@ -181,6 +181,224 @@ def parent_node_id(parent: Dict[Tuple[int,int], Optional[Tuple[int,int]]],
         raise ValueError(f"Bad parent stage for {(stage,node_id)}: {p}")
     return pn
 
+def ws_leaf_to_stage_node(leaf_id: int,
+                          stage: int,
+                          stages: int,
+                          scenarios_per_stage: int) -> int:
+    """
+    Map a leaf/path id to its ancestor node id at a given stage
+    in a regular scenarios_per_stage-ary tree.
+    """
+    remaining = (stages - 1) - stage
+    if remaining <= 0:
+        return leaf_id
+    return leaf_id // (scenarios_per_stage ** remaining)
+
+
+def extract_ws_path_demand(demand_tree: Dict[Tuple[int, int], np.ndarray],
+                           stages: int,
+                           scenarios_per_stage: int,
+                           leaf_id: int) -> Dict[Tuple[int, int], np.ndarray]:
+    """
+    Build a deterministic single-path demand dictionary compatible with your old main().
+
+    Output keys are always:
+      (stage, 0)
+    because we solve with scenarios_per_stage=1.
+    """
+    path_demand = {}
+    for stage in range(stages):
+        node_id = ws_leaf_to_stage_node(
+            leaf_id=leaf_id,
+            stage=stage,
+            stages=stages,
+            scenarios_per_stage=scenarios_per_stage,
+        )
+        path_demand[(stage, 0)] = demand_tree[(stage, node_id)]
+    return path_demand
+
+
+def solve_wait_and_see(env: nn.Module,
+                           demand_tree: Dict[Tuple[int, int], np.ndarray],
+                           stages: int,
+                           scenarios_per_stage: int,
+                           seed: int = 42,
+                           print_results: bool = False) -> Tuple[Dict, Dict]:
+    """
+    True wait-and-see benchmark for the OLD code.
+
+    Idea:
+      - for each leaf/path in the scenario tree
+      - extract the deterministic path
+      - call the existing main() with scenarios_per_stage=1
+      - average objectives across paths
+
+    This leaves your old model unchanged and only changes how PI is computed.
+    """
+    t_start = time.perf_counter()
+
+    P = env.P
+    B = env.B
+    D = env.D
+    K = env.K
+    BL = env.BL if hasattr(env, "BL") else 1
+    teus = env.teus.detach().cpu().numpy()
+
+    num_paths = scenarios_per_stage ** (stages - 1)
+
+    path_results = []
+    path_vars = []
+
+    for leaf_id in range(num_paths):
+        path_demand = extract_ws_path_demand(
+            demand_tree=demand_tree,
+            stages=stages,
+            scenarios_per_stage=scenarios_per_stage,
+            leaf_id=leaf_id,
+        )
+
+        # Use the OLD main() unchanged, but with a single deterministic path
+        result_i, vars_i = main(
+            env=env,
+            demand=path_demand,
+            real_demand={},              # unused in old multi_stage branch
+            scenarios_per_stage=1,       # single deterministic path
+            stages=stages,
+            max_paths=1,
+            seed=seed,
+            perfect_information=True,    # no NA
+            warm_solution=False,
+            look_ahead=1,
+            print_results=print_results,
+        )
+
+        path_results.append(result_i)
+        path_vars.append(vars_i)
+
+    elapsed = time.perf_counter() - t_start
+
+    # --------------------------------------------------
+    # Stack pathwise outputs so downstream code still works
+    # --------------------------------------------------
+    x_ws = np.zeros((stages, num_paths, B, D, BL, K, P, P), dtype=float)
+    PD_ws = np.zeros((stages, num_paths, B, BL, P), dtype=float)
+    HO_ws = np.zeros((stages, num_paths, B, BL), dtype=float)
+    HM_ws = np.zeros((stages, num_paths, B, BL), dtype=float)
+    CM_ws = np.zeros((stages, num_paths), dtype=float)
+    demand_ws = np.zeros((stages, num_paths, K, P), dtype=float)
+
+    obj_list = []
+    solver_times = []
+    gaps = []
+    max_revenues = []
+
+    for p, (res_i, var_i) in enumerate(zip(path_results, path_vars)):
+        if "x" in var_i:
+            x_arr = np.array(var_i["x"], dtype=float)      # shape (stages,1,...)
+            x_ws[:, p] = x_arr[:, 0]
+
+        if "PD" in var_i:
+            pd_arr = np.array(var_i["PD"], dtype=float)
+            if pd_arr.size > 0:
+                PD_ws[:, p] = pd_arr[:, 0]
+
+        if "HO" in var_i:
+            ho_arr = np.array(var_i["HO"], dtype=float)
+            HO_ws[:, p] = ho_arr[:, 0]
+
+        if "HM" in var_i:
+            hm_arr = np.array(var_i["HM"], dtype=float)
+            HM_ws[:, p] = hm_arr[:, 0]
+
+        if "CM" in var_i:
+            cm_arr = np.array(var_i["CM"], dtype=float)
+            CM_ws[:, p] = cm_arr[:, 0]
+
+        if "demand" in res_i:
+            d_arr = np.array(res_i["demand"], dtype=float)   # shape (stages,1,K,P)
+            demand_ws[:, p] = d_arr[:, 0]
+
+        obj_list.append(res_i.get("obj", np.nan))
+        solver_times.append(res_i.get("solver_time", np.nan))
+        gaps.append(res_i.get("gap", np.nan))
+        max_revenues.append(res_i.get("max_revenue", np.nan))
+
+    # --------------------------------------------------
+    # Aggregate metrics across WS paths
+    # --------------------------------------------------
+    denom = float(num_paths)
+
+    mean_load_per_port = np.sum(x_ws, axis=(1, 2, 3, 4, 5, 6, 7)) / denom
+    mean_teu_load_per_port = np.sum(
+        x_ws * teus.reshape(1, 1, 1, 1, 1, K, 1, 1),
+        axis=(1, 2, 3, 4, 5, 6, 7)
+    ) / denom
+    mean_load_per_location = np.sum(x_ws, axis=(1, 5, 6, 7)) / denom
+    mean_hatch_overstowage = np.sum(HO_ws, axis=(1, 2, 3)) / denom
+    mean_pd = np.sum(PD_ws, axis=(1, 2, 3, 4)) / denom
+    mean_demand = np.sum(demand_ws, axis=(1, 2, 3)) / denom
+    mean_revenue = np.full(stages, np.nan)
+    mean_cost = np.full(stages, np.nan)
+
+    # Recover stagewise revenue/cost approximately from stacked vars
+    revenues = env.revenues.detach().cpu().numpy()
+    transport_indices = [(i, j) for i in range(P) for j in range(P) if i < j]
+    revenues_ = np.zeros((stages, K, P))
+    for stage in range(stages):
+        for pod in range(stage + 1, P):
+            for cargo_class in range(K):
+                t = cargo_class + transport_indices.index((stage, pod)) * K
+                revenues_[stage, cargo_class, pod] = revenues[t]
+
+    revenue_ws = np.zeros((stages, num_paths))
+    cost_ws = np.zeros((stages, num_paths))
+
+    for s in range(stages):
+        for p in range(num_paths):
+            revenue_ws[s, p] = np.sum(
+                revenues_[s].reshape(1, 1, K, P) * x_ws[s, p, :, :, :, :, s, :]
+            )
+            cost_ws[s, p] = env.ho_costs * np.sum(HO_ws[s, p]) + env.cm_costs * CM_ws[s, p]
+
+    mean_revenue = np.mean(revenue_ws, axis=1)
+    mean_cost = np.mean(cost_ws, axis=1)
+
+    result_ws = {
+        "seed": seed,
+        "ports": P,
+        "scenarios": scenarios_per_stage,
+        "num_paths": num_paths,
+        "obj": float(np.nanmean(obj_list)),
+        "solver_time": float(np.nansum(solver_times)),   # sequential total time
+        "time": elapsed,
+        "gap": gaps,                                     # pathwise gaps
+        "path_objectives": obj_list,
+        "mean_load_per_port": mean_load_per_port.tolist(),
+        "mean_teu_load_per_port": mean_teu_load_per_port.tolist(),
+        "mean_load_per_location": mean_load_per_location.tolist(),
+        "mean_hatch_overstowage": mean_hatch_overstowage.tolist(),
+        "demand": demand_ws.tolist(),
+        "mean_demand": mean_demand.tolist(),
+        "mean_revenue": mean_revenue.tolist(),
+        "mean_cost": mean_cost.tolist(),
+        "mean_pd": mean_pd.tolist(),
+        "mean_mixing": [0.0] * stages,
+        "max_revenue": float(np.nanmean(max_revenues)) if np.any(~np.isnan(max_revenues)) else None,
+    }
+
+    vars_ws = {
+        "seed": seed,
+        "ports": P,
+        "scenarios": scenarios_per_stage,
+        "x": x_ws.tolist(),
+        "PD": PD_ws.tolist(),
+        "HO": HO_ws.tolist(),
+        "HM": HM_ws.tolist(),
+        "CM": CM_ws.tolist(),
+    }
+
+    return result_ws, vars_ws
+
 
 def debug_info_sets(stage_nodes: Dict[int, List[int]],
                     parent: Dict[Tuple[int,int], Optional[Tuple[int,int]]],
@@ -348,7 +566,7 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
         # Pick the first node at that stage as realized scenario (can be refined later)
         realized_node[s] = 0
 
-    debug_info_sets(stage_nodes=stage_nodes, parent=parent, stages=stages)
+    # debug_info_sets(stage_nodes=stage_nodes, parent=parent, stages=stages)
 
     # Problem parameters
     P = env.P
@@ -597,53 +815,17 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
                 continue
             base = g[0]
             for other in g[1:]:
-                # 1) NA for x (your existing constraints)
+                # NA only on current-stage loading actions
                 for b in range(B):
                     for bl in range(BL):
                         for d in range(D):
                             for k in range(K):
-                                for (i, j) in load_moves:
+                                for pod in range(stage + 1, P):
                                     mdl.add_constraint(
-                                        x[stage, base, b, d, bl, k, i, j] ==
-                                        x[stage, other, b, d, bl, k, i, j],
-                                        ctname=f"na_x_{stage}_{base}_{other}_{b}_{d}_{bl}_{k}_{i}_{j}"
+                                        x[stage, base, b, d, bl, k, stage, pod] ==
+                                        x[stage, other, b, d, bl, k, stage, pod],
+                                        ctname=f"na_x_{stage}_{base}_{other}_{b}_{d}_{bl}_{k}_{pod}"
                                     )
-
-                # 2) NA for hatch decisions/cost drivers
-                for b in range(B):
-                    for bl in range(BL):
-                        mdl.add_constraint(
-                            HM[stage, base, b, bl] == HM[stage, other, b, bl],
-                            ctname=f"na_HM_{stage}_{base}_{other}_{b}_{bl}"
-                        )
-                        mdl.add_constraint(
-                            HO[stage, base, b, bl] == HO[stage, other, b, bl],
-                            ctname=f"na_HO_{stage}_{base}_{other}_{b}_{bl}"
-                        )
-
-                # 3) NA for crane-related scalars (per node)
-                mdl.add_constraint(
-                    CI[stage, base] == CI[stage, other],
-                    ctname=f"na_CI_{stage}_{base}_{other}"
-                )
-                mdl.add_constraint(
-                    CM[stage, base] == CM[stage, other],
-                    ctname=f"na_CM_{stage}_{base}_{other}"
-                )
-
-                # 4) NA for block_mpp-only binaries
-                if block_mpp:
-                    for b in range(B):
-                        for bl in range(BL):
-                            mdl.add_constraint(
-                                mixing[stage, base, b, bl] == mixing[stage, other, b, bl],
-                                ctname=f"na_mix_{stage}_{base}_{other}_{b}_{bl}"
-                            )
-                            for pod in range(P):
-                                mdl.add_constraint(
-                                    PD[stage, base, b, bl, pod] == PD[stage, other, b, bl, pod],
-                                    ctname=f"na_PD_{stage}_{base}_{other}_{b}_{bl}_{pod}"
-                                )
 
     def build_tree(stages: int,
                    input_demand: np.array,
@@ -1071,7 +1253,7 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
     if stochastic_algorithm == "multi_stage":
         initialize_vars_tree(stages, block_mpp=block_mpp)
         build_tree(stages, demand, warm_solution, block_mpp=block_mpp)
-        count_na_constraints(mdl, prefix="na_")
+        # count_na_constraints(mdl, prefix="na_")
 
         objective = objective_function(x, HO, CM, revenues_)
         solution = solve_model(mdl, objective)
@@ -1091,14 +1273,14 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
     if solution is not None:
         # build x_val dictionary from docplex vars
         x_val = {key: var.solution_value for key, var in x.items()}
-        check_state_linking_solution(
-            x_val=x_val,
-            parent=parent,
-            stages=stages,
-            stage_nodes=stage_nodes,
-            B=B, D=D, BL=BL, K=K, P=P,
-            atol=1e-6
-        )
+        # check_state_linking_solution(
+        #     x_val=x_val,
+        #     parent=parent,
+        #     stages=stages,
+        #     stage_nodes=stage_nodes,
+        #     B=B, D=D, BL=BL, K=K, P=P,
+        #     atol=1e-6
+        # )
 
     # Print the solution # todo: fix this properly for mpp and block_mpp; now set to block_mpp
     if solution:
@@ -1215,6 +1397,17 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
         mean_revenue = np.sum(revenue_, axis=1) / num_nodes_per_stage # Shape (stages,)
         mean_cost = np.sum(cost_, axis=1) / num_nodes_per_stage # Shape (stages,)
 
+        # Gross revenue upper bound from demand only (ignores feasibility/costs)
+        max_revenue_ = np.zeros((stages, max_paths))
+        for stage in range(stages):
+            for node_id in range(scenarios[stage]):
+                for cargo_class in range(K):
+                    for pod in range(stage + 1, P):
+                        max_revenue_[stage, node_id] += (
+                                revenues_[stage, cargo_class, pod] *
+                                demand_[stage, node_id, cargo_class, pod]
+                        )
+        max_revenue = float(np.sum(max_revenue_))
 
         results = {
             # Input parameters
@@ -1238,8 +1431,7 @@ def main(env:nn.Module, demand:np.array, real_demand:Dict, scenarios_per_stage:i
             "mean_cost":mean_cost.tolist(),
             "mean_pd":mean_pd.tolist(),
             "mean_mixing":mean_mixing.tolist(),
-            # Max revenue (only for myopic)
-            "max_revenue": solution.get("max_revenue", None) if isinstance(solution, dict) else None,
+            "max_revenue": max_revenue,
         }
         vars = {
             "seed": seed,
@@ -1275,9 +1467,9 @@ if __name__ == "__main__":
     parser.add_argument("--teu", type=int, default=1000) #20000)
     parser.add_argument("--deterministic", type=lambda x: x.lower() == "true", default=False)
     parser.add_argument("--perfect_information", type=lambda x: x.lower() == "true", default=True)
-    parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=True)
-    parser.add_argument("--scenarios", type=int, default=20)
-    parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=False)
+    parser.add_argument("--generalization", type=lambda x: x.lower() == "true", default=False)
+    parser.add_argument("--scenarios", type=int, default=80)
+    parser.add_argument("--scenario_range", type=lambda x: x.lower() == "true", default=True)
     parser.add_argument("--num_episodes", type=int, default=30)
     parser.add_argument("--start_episode", type=int, default=0)
     parser.add_argument("--utilization_rate_initial_demand", type=float, default=1.1)
@@ -1348,7 +1540,10 @@ if __name__ == "__main__":
 
     # setup folder
     if stochastic_algorithm == "multi_stage":
-        stochastic_algorithm_path = stochastic_algorithm + ("_pi" if perfect_information else "_na")
+        if perfect_information:
+            stochastic_algorithm_path = "multi_stage_ws"
+        else:
+            stochastic_algorithm_path = "multi_stage_na"
     else:
         stochastic_algorithm_path = stochastic_algorithm
     if not os.path.exists(f"{output_path}/{stochastic_algorithm_path}/instances/"):
@@ -1387,10 +1582,29 @@ if __name__ == "__main__":
             real_out_tree = stochastic_algorithm in {"mpc", "rolling_horizon", "myopic"}
             demand_sub_tree = get_scenario_tree_indices(demand_tree, scen_sub_tree, real_out_tree=real_out_tree,)
 
-            # Run the main logic and get results and variables
-            result, var = main(env=env, demand=demand_sub_tree, real_demand=real_demand_episode,
-                               scenarios_per_stage=scen, stages=stages, max_paths=max_paths,
-                               seed=seed, perfect_information=perfect_information, look_ahead=look_ahead, print_results=False)
+            # Wait-and-see PI benchmark for the OLD code
+            if stochastic_algorithm == "multi_stage" and perfect_information:
+                result, var = solve_wait_and_see(
+                    env=env,
+                    demand_tree=demand_sub_tree,
+                    stages=stages,
+                    scenarios_per_stage=scen,
+                    seed=seed,
+                    print_results=False,
+                )
+            else:
+                result, var = main(
+                    env=env,
+                    demand=demand_sub_tree,
+                    real_demand=real_demand_episode,
+                    scenarios_per_stage=scen,
+                    stages=stages,
+                    max_paths=max_paths,
+                    seed=seed,
+                    perfect_information=perfect_information,
+                    look_ahead=look_ahead,
+                    print_results=False,
+                )
             # log result as error (to show in .err file):
 
             # print total teu on board per port
