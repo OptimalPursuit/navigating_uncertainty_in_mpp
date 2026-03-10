@@ -2,7 +2,7 @@
 #SBATCH --job-name=scenario_tree_mip.py
 #SBATCH --output=output_files/cpu_job.%j.out
 #SBATCH --error=output_files/cpu_job.%j.err
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=16
 #SBATCH --time=7-00:00:00
 #SBATCH --partition=pcn8
 #SBATCH --mail-type=FAIL,END
