@@ -4,7 +4,7 @@
 #SBATCH --error=output_files/cpu_job.%j.err
 #SBATCH --cpus-per-task=32
 #SBATCH --time=7-00:00:00
-#SBATCH --partition=cores
+#SBATCH --partition=pcn8
 #SBATCH --mail-type=FAIL,END
 #SBATCH --nodelist=cn8
 
