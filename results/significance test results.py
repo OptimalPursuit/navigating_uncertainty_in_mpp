@@ -192,11 +192,13 @@ def make_paper_sentence(
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        print("Usage: python paired_tests.py <csv_file>")
-        sys.exit(1)
+    # Default file path inside the script
+    csv_path = "stats_signif_gen.csv"
 
-    csv_path = sys.argv[1]
+    # If a file is provided in the terminal, use that instead
+    if len(sys.argv) >= 2:
+        csv_path = sys.argv[1]
+
     df = pd.read_csv(csv_path)
 
     results = []
@@ -205,12 +207,15 @@ def main() -> None:
 
     pretty_print(results, adjust_p=True)
 
-    # Optional: print paper-ready sentences
-    adj_pvals = holm_bonferroni([r.p_value for r in results]) if len(results) > 1 else [r.p_value for r in results]
+    adj_pvals = (
+        holm_bonferroni([r.p_value for r in results])
+        if len(results) > 1
+        else [r.p_value for r in results]
+    )
+
     print("\nPaper-ready sentences:\n")
     for r, p_adj in zip(results, adj_pvals):
         print(make_paper_sentence(r, adjusted_p=p_adj, split_name="test"))
-
 
 if __name__ == "__main__":
     main()
