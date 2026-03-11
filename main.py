@@ -259,7 +259,7 @@ def main(config: Optional[DotMap] = None, **kwargs) -> None:
                         f"_{config.training.projection_kwargs.slack_penalty}_PBS{config.env.block_stowage_mask}" \
                         f"_UR{config.env.utilization_rate_initial_demand}_VP{vp_str}.yaml"
         with open(f"{path}/{file_name}", "w") as file:
-                        yaml.dump(summary_stats, file)
+            yaml.dump(summary_stats, file)
 
         # Save real demand in csv, shape: (N, steps)
         # Save numpy array as csv
