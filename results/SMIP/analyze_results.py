@@ -14,7 +14,7 @@ parser.add_argument('--gen', type=bool, default=False)
 parser.add_argument('--cv', type=float, default=0.5, help='Coefficient of variation (cv)')
 parser.add_argument('--teu', type=int, default=1000, help='TEU value')
 parser.add_argument('--block_mpp', type=bool, default=False,)
-parser.add_argument('--stochastic_algorithm', type=str, default="multi_stage_na", help='Stochastic algorithm type')
+parser.add_argument('--stochastic_algorithm', type=str, default="multi_stage_ws", help='Stochastic algorithm type')
 args = parser.parse_args()
 
 # Access arguments like variables
@@ -31,7 +31,7 @@ stochastic_algorithm = args.stochastic_algorithm
 # path = f'{folder}/cv={cv}'
 base_dir = os.path.dirname(os.path.abspath(__file__))
 folder_test_gen = 'testing' if not gen else 'generalization'
-folder_pi_na = "multi_stage_pi" if perfect_information else "multi_stage_na"
+folder_pi_na = "multi_stage_ws" if perfect_information else "multi_stage_na"
 
 if teu == 1000 and not block_mpp:
     input_path = os.path.join(base_dir, "navigating_uncertainty", "teu1k", folder_pi_na, "instances")
