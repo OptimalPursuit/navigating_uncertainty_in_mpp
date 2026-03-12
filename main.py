@@ -314,8 +314,6 @@ def parse_args(sweep: bool = False) -> argparse.Namespace:
         }, help="Projection parameters as JSON string.")
 
     # Run parameters
-    # lr: 0.00014690714579803494
-    # pd_lr: 0.000034690714579803494
     parser.add_argument('--optimizer', type=str, default="Adam", help="Optimizer type.")
     parser.add_argument('--learning_rate', type=float, default=0.00014690714579803494, help="Learning rate for the optimizer.")
     parser.add_argument('--pd_learning_rate', type=float, default=0.001, help="Learning rate for primal-dual optimizer.")

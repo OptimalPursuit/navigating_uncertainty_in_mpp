@@ -2,7 +2,7 @@ algorithm:
   clip_range: 0.2
   demand_lambda: 1.0
   entropy_lambda: 0.010071090711145904
-  feasibility_lambda: 0.2828168389831236 #VP: 0.2828168389831236 #FR: 0.19541109874275892
+  feasibility_lambda: 0.2828168389831236
   gae_lambda: 0.95
   gamma: 0.99
   max_grad_norm: 0.5
@@ -49,7 +49,7 @@ env:
   spot_percentage: 0.3
   stability_difference: 0.1
   use_dirichlet_partition: true
-  utilization_rate_initial_demand: 1.1 #0.7, 0.9, 1.1., 1.3, 1.5
+  utilization_rate_initial_demand: 1.1
   target_util_start: 0.4
   target_util_end: 0.6
   weight_classes: 3
@@ -70,7 +70,7 @@ model:
   num_encoder_layers: 3
   num_heads: 8
   phase: train
-  scale_max: 9.46 #9.46, 1.931
+  scale_max: 9.46
   tanh_clipping: 0
   tanh_squashing: false
   temperature: 0.11243639449117128
@@ -80,12 +80,9 @@ model:
   iters_sinkhorn: 50
 testing:
   feasibility_recovery: false
-  folder: 'sac-pd' #'sac-ws+pc' #'SA_AM'
+  folder: 'sac-pd'
   num_episodes: 30
   path: results/trained_models/navigating_uncertainty
-  # results/trained_models/AI2STOW_JOURNAL_VERSION
-  # results/trained_models/navigating_uncertainty
-  # results/trained_models/AI2STOW
 training:
   lr: 0.00014690714579803494
   pd_lr: 0.000034690714579803494
@@ -93,17 +90,15 @@ training:
   priority_alpha: 0.5
   top_k: 0.2
   projection_kwargs:
-    eta: 0.01 #0.050 #0.01 #0.00987804770039214
-    delta: 0.01 #0.050 #0.01 #0.023908679032053855
+    eta: 0.01
+    delta: 0.01
     max_iter: 300 #300 #273
     n_action: 80 #20 #80        # todo: has dependency on main.py (make sure arguments have this role); set to 80 for AI2STOW
     n_constraints: 85 #25 #85   # todo: has dependency on main.py (make sure arguments have this role); set to 85 for AI2STOW
-    scale: 0.00025463040788043916 #0.00015463040788043916
-    slack_penalty: 10000 #1000
+    slack_penalty: 10000
     use_early_stopping: true
     jacobian_correction: true
   projection_type: None
-  # None, weighted_scaling_policy_clipping, linear_violation, linear_violation_policy_clipping, convex_program, convex_program_policy_clipping
   test_data_size: 5000
   train_data_size: 3600000 #7200000 #14400000 #7200000
   val_data_size: 5000
