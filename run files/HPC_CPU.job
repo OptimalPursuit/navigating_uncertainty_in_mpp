@@ -1,0 +1,32 @@
+#!/bin/bash
+#SBATCH --job-name=scenario_tree_mip.py
+#SBATCH --output=output_files/cpu_job.%j.out
+#SBATCH --error=output_files/cpu_job.%j.err
+#SBATCH --cpus-per-task=16
+#SBATCH --time=7-00:00:00
+#SBATCH --partition=pcn8
+#SBATCH --mail-type=FAIL,END
+#SBATCH --nodelist=cn8
+
+# Auto output name (unique per job)
+OUTPUT_NAME="scenario_tree_mip.${SLURM_JOB_ID}"
+OUTPUT_FILE="output_files/${OUTPUT_NAME}.out"
+
+mkdir -p output_files
+
+TMP_BASE="${SCRATCH:-$HOME/tmp}"
+mkdir -p "$TMP_BASE"
+JOB_TMPDIR="$(mktemp -d "$TMP_BASE/${SLURM_JOB_ID}.XXXX")"
+
+export TMPDIR="$JOB_TMPDIR"
+export TMP="$JOB_TMPDIR"
+export TEMP="$JOB_TMPDIR"
+export TMP_DIR="$JOB_TMPDIR"
+
+cleanup() { rm -rf "$JOB_TMPDIR"; }
+trap cleanup EXIT
+echo "Using TMPDIR=$TMPDIR"
+
+hostname
+
+python -u scenario_tree_mip.py > "$OUTPUT_FILE" 2>&1
