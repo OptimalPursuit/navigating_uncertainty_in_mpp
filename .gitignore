@@ -23,3 +23,5 @@
 /results/SMIP/navigating_uncertainty/teu1k/multi_stage_na/old_instances/
 /results/SMIP/navigating_uncertainty/teu1k/multi_stage_pi/old_instances/
 /cplex/
+
+cplex/*.bin
